@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Sprout, Lock, Sun, Waves, Moon, Flame, ChevronRight } from 'lucide-react-native';
+import { Sprout, Lock, Sun, Waves, Moon, Flame } from 'lucide-react-native';
 import {
   MorningSunriseLandscape,
   OpenDayLandscape,
@@ -10,43 +10,44 @@ import {
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import { colors, radii, shadows } from '../theme/tokens';
 import { useRouter } from 'expo-router';
+import {
+  formatSecondsToHHMMSS,
+  getRiskGroup,
+  getRoutineTargetTime,
+  getRoutineWindow,
+} from '../domain/selectors';
+import { useRemainingSeconds } from '../domain/timer';
 
 export const RhythmStateHeroCard: React.FC = () => {
   const router = useRouter();
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
-  const countdownSeconds = usePrototypeStore((s) => s.countdownSeconds);
-  const tickCountdown = usePrototypeStore((s) => s.tickCountdown);
+  const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
+  const routineWindows = usePrototypeStore((s) => s.routineWindows);
+  const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
 
-  // Live countdown tick
-  useEffect(() => {
-    const timer = setInterval(() => {
-      tickCountdown();
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [tickCountdown]);
+  const remainingSeconds = useRemainingSeconds(activeTimerEndsAt);
 
-  const formatTimer = (totalSeconds: number) => {
-    const hrs = Math.floor(totalSeconds / 3600);
-    const mins = Math.floor((totalSeconds % 3600) / 60);
-    const secs = totalSeconds % 60;
-    return `${hrs.toString().padStart(2, '0')}:${mins
-      .toString()
-      .padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+  const morning = getRoutineWindow(routineWindows, 'morning-buffer');
+  const activeGroup = getRiskGroup(riskGroups, activeRiskGroupId) || riskGroups[0];
+
+  const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
+  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
+  const currentUsage = activeGroup?.currentSessionMinutes ?? 18;
 
   const getCardContent = () => {
     switch (rhythmState) {
       case 'morning-buffer':
         return {
           title: 'Morning Buffer',
-          subtitle: 'Social apps unlock at 08:00',
+          subtitle: `Social apps unlock at ${morningUnlock}`,
           badgeText: 'Buffering',
           badgeIcon: Lock,
           badgeBg: '#E8EFE5',
           badgeTextCol: colors.forest,
           footerText: 'Time until Open',
-          timerDisplay: formatTimer(countdownSeconds),
+          timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Sprout,
           ArtworkComponent: MorningSunriseLandscape,
           onPress: () => setDemoSwitcherVisible(true),
@@ -67,28 +68,28 @@ export const RhythmStateHeroCard: React.FC = () => {
         };
       case 'risk-session':
         return {
-          title: 'Social Session Active',
-          subtitle: '18 min used of 30 min limit',
+          title: `${activeGroup.name} Active`,
+          subtitle: `${currentUsage} min used of ${threshold} min limit`,
           badgeText: 'Session Active',
           badgeIcon: Flame,
           badgeBg: colors.coralLight,
           badgeTextCol: colors.coralDark,
           footerText: 'Time until Cooldown break',
-          timerDisplay: formatTimer(countdownSeconds),
+          timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Flame,
           ArtworkComponent: OpenDayLandscape,
-          onPress: () => router.push('/risk-groups/social'),
+          onPress: () => router.push(`/risk-groups/${activeGroup.id}` as any),
         };
       case 'cooldown':
         return {
           title: 'Touch Grass 🌱',
-          subtitle: '30 min threshold reached',
+          subtitle: `${threshold} min threshold reached`,
           badgeText: 'Cooldown in progress',
           badgeIcon: Lock,
           badgeBg: colors.skyLight,
           badgeTextCol: colors.skyDark,
           footerText: 'Recovery time remaining',
-          timerDisplay: formatTimer(countdownSeconds),
+          timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Waves,
           ArtworkComponent: TouchGrassMeadowLandscape,
           onPress: () => router.push('/touch-grass'),
@@ -101,8 +102,8 @@ export const RhythmStateHeroCard: React.FC = () => {
           badgeIcon: Moon,
           badgeBg: colors.lavenderLight,
           badgeTextCol: colors.lavenderDark,
-          footerText: 'Until morning unlock (08:00)',
-          timerDisplay: formatTimer(countdownSeconds),
+          footerText: `Until morning unlock (${morningUnlock})`,
+          timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Moon,
           ArtworkComponent: EveningTwilightLandscape,
           onPress: () => setDemoSwitcherVisible(true),

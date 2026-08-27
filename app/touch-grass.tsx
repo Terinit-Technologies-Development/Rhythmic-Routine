@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -7,31 +7,23 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Sprout, Lock, ChevronRight, Sparkles, Sun } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { Sprout, Lock, Sparkles } from 'lucide-react-native';
 import { colors, radii, shadows } from '../src/theme/tokens';
 import { ScreenHeader } from '../src/components/ScreenHeader';
 import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
+import { useRemainingSeconds } from '../src/domain/timer';
 
 export default function TouchGrassScreen() {
-  const router = useRouter();
-  const countdownSeconds = usePrototypeStore((s) => s.countdownSeconds);
-  const tickCountdown = usePrototypeStore((s) => s.tickCountdown);
+  const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
 
   const group = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      tickCountdown();
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [tickCountdown]);
+  const countdownSeconds = useRemainingSeconds(activeTimerEndsAt);
 
   const hrs = Math.floor(countdownSeconds / 3600);
   const mins = Math.floor((countdownSeconds % 3600) / 60);

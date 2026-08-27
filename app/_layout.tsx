@@ -9,7 +9,22 @@ import { TimeSelectorModal } from '../src/components/TimeSelectorModal';
 import { AppEditModal } from '../src/components/AppEditModal';
 import { EmergencyAccessModal } from '../src/components/EmergencyAccessModal';
 
+import { usePrototypeStore } from '../src/store/usePrototypeStore';
+
 export default function RootLayout() {
+  const initializeApps = usePrototypeStore((s) => s.initializeApps);
+  const resolveExpiredTimer = usePrototypeStore((s) => s.resolveExpiredTimer);
+
+  React.useEffect(() => {
+    initializeApps();
+  }, [initializeApps]);
+
+  React.useEffect(() => {
+    const id = setInterval(() => {
+      resolveExpiredTimer();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [resolveExpiredTimer]);
   return (
     <SafeAreaProvider>
       <View style={styles.webCenteringContainer}>

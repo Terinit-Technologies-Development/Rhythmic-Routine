@@ -2,8 +2,9 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Sprout, Sun, Waves, Moon } from 'lucide-react-native';
 import { RhythmState } from '../types/domain';
-import { colors, radii } from '../theme/tokens';
+import { colors } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
+import { getOpenDayRange, getRoutineWindow } from '../domain/selectors';
 
 interface Props {
   currentState?: RhythmState;
@@ -12,13 +13,25 @@ interface Props {
 export const DayTimeline: React.FC<Props> = ({ currentState }) => {
   const storeState = usePrototypeStore((s) => s.rhythmState);
   const setRhythmState = usePrototypeStore((s) => s.setRhythmState);
+  const routineWindows = usePrototypeStore((s) => s.routineWindows);
+
   const activeState = currentState || storeState;
+
+  const morning = getRoutineWindow(routineWindows, 'morning-buffer');
+  const evening = getRoutineWindow(routineWindows, 'evening-wind-down');
+
+  const { start: openStart, end: openEnd } = getOpenDayRange(routineWindows);
+
+  const morningTime = `${morning?.startTime ?? '06:30'} – ${morning?.endTime ?? '08:00'}`;
+  const openTime = `${openStart} – ${openEnd}`;
+  const recoveryTime = activeState === 'cooldown' ? 'Active now' : 'As needed';
+  const eveningTime = `${evening?.startTime ?? '21:30'} – ${evening?.endTime ?? '23:30'}`;
 
   const phases = [
     {
       id: 'morning-buffer',
       label: 'Morning Buffer',
-      time: '06:30 – 08:00',
+      time: morningTime,
       icon: Sprout,
       activeColor: colors.forest,
       badgeBg: colors.sageLight,
@@ -27,7 +40,7 @@ export const DayTimeline: React.FC<Props> = ({ currentState }) => {
     {
       id: 'available',
       label: 'Open',
-      time: '08:00 – 13:00',
+      time: openTime,
       icon: Sun,
       activeColor: colors.amberDark,
       badgeBg: colors.amberLight,
@@ -36,7 +49,7 @@ export const DayTimeline: React.FC<Props> = ({ currentState }) => {
     {
       id: 'cooldown',
       label: 'Recovery',
-      time: '13:00 – 18:00',
+      time: recoveryTime,
       icon: Waves,
       activeColor: colors.skyDark,
       badgeBg: colors.skyLight,
@@ -45,7 +58,7 @@ export const DayTimeline: React.FC<Props> = ({ currentState }) => {
     {
       id: 'evening-wind-down',
       label: 'Evening Wind-Down',
-      time: '18:00 – 22:30',
+      time: eveningTime,
       icon: Moon,
       activeColor: colors.lavenderDark,
       badgeBg: colors.lavenderLight,

@@ -5,17 +5,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Plus,
   ChevronRight,
   MessageSquare,
-  PlaySquare,
-  Sparkles,
   Check,
-  RotateCcw,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../../src/theme/tokens';
@@ -23,12 +19,27 @@ import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { RoutineWindowCard } from '../../src/components/RoutineWindowCard';
 import { AddRiskGroupModal } from '../../src/components/AddRiskGroupModal';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
+import { getOpenDayRange } from '../../src/domain/selectors';
 
 export default function RoutineScreen() {
   const router = useRouter();
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const toggleRoutineDay = usePrototypeStore((s) => s.toggleRoutineDay);
+  const apps = usePrototypeStore((s) => s.apps);
+
+  const getGroupStatusTag = (groupId: string) => {
+    const protectedWindows = routineWindows.filter((w) =>
+      w.protectedGroupIds.includes(groupId)
+    );
+    const hasMorning = protectedWindows.some((w) => w.type === 'morning-buffer');
+    const hasEvening = protectedWindows.some((w) => w.type === 'evening-wind-down');
+
+    if (hasMorning && hasEvening) return 'Limited during focus times';
+    if (hasMorning) return 'Limited during Morning Buffer';
+    if (hasEvening) return 'Paused during Wind-Down';
+    return 'Not protected';
+  };
 
   const [addModalVisible, setAddModalVisible] = useState(false);
   const [templateApplied, setTemplateApplied] = useState(false);
@@ -98,9 +109,10 @@ export default function RoutineScreen() {
           {/* Routine Windows Vertical Sequence */}
           <View style={styles.windowsSequence}>
             {routineWindows.map((win) => {
+              const openRange = getOpenDayRange(routineWindows);
               const timeLabel =
                 win.type === 'open-day'
-                  ? `${win.startTime} – ${win.endTime || '21:30'}`
+                  ? `${openRange.start} – ${openRange.end}`
                   : win.startTime;
 
               return (
@@ -125,10 +137,13 @@ export default function RoutineScreen() {
 
           <View style={styles.groupsList}>
             {riskGroups.map((group) => {
-              const isSocial = group.id === 'social';
-              const statusTag = isSocial
-                ? 'Limited during focus times'
-                : 'Paused during Wind-Down';
+              const statusTag = getGroupStatusTag(group.id);
+              const isProtected = statusTag !== 'Not protected';
+              const groupApps = apps.filter((app) => group.appIds.includes(app.id));
+              const memberNames =
+                groupApps.length > 0
+                  ? groupApps.map((a) => a.name).join(', ')
+                  : 'No apps assigned';
 
               return (
                 <TouchableOpacity
@@ -138,19 +153,13 @@ export default function RoutineScreen() {
                   onPress={() => router.push(`/risk-groups/${group.id}` as any)}
                 >
                   <View style={[styles.groupIconCircle, { backgroundColor: group.iconBg }]}>
-                    {isSocial ? (
-                      <MessageSquare size={20} color={group.iconColor} />
-                    ) : (
-                      <PlaySquare size={20} color={group.iconColor} />
-                    )}
+                    <MessageSquare size={20} color={group.iconColor} />
                   </View>
 
                   <View style={styles.groupInfo}>
                     <Text style={styles.groupName}>{group.name}</Text>
                     <Text style={styles.groupAppsList} numberOfLines={1}>
-                      {group.id === 'social'
-                        ? 'Instagram, Facebook, X, Reddit'
-                        : 'YouTube Shorts, TikTok, Reels'}
+                      {memberNames}
                     </Text>
                   </View>
 
@@ -158,7 +167,7 @@ export default function RoutineScreen() {
                     <Text
                       style={[
                         styles.groupStatusText,
-                        { color: isSocial ? colors.forest : colors.lavenderDark },
+                        { color: isProtected ? colors.forest : colors.textMuted },
                       ]}
                     >
                       {statusTag}

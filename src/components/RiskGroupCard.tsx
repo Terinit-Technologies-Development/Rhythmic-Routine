@@ -48,7 +48,7 @@ export const RiskGroupCard: React.FC<Props> = ({ group }) => {
       <Text style={styles.groupName}>{group.name}</Text>
 
       {/* Usage Info & Progress */}
-      {group.id === 'social' ? (
+      {hasLimit ? (
         <View style={styles.usageContainer}>
           <Text style={styles.usageText}>
             <Text style={styles.usageBold}>{group.currentSessionMinutes}</Text> / {group.sessionThresholdMinutes} min

@@ -14,12 +14,9 @@ import {
   ShieldCheck,
   Smartphone,
   Cpu,
-  Heart,
-  ExternalLink,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
-import { ScreenHeader } from '../src/components/ScreenHeader';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 
 export default function SettingsScreen() {

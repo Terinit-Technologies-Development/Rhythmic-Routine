@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -10,25 +10,36 @@ import { Clock, Plus, Minus, X } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 
-export const TimeSelectorModal: React.FC = () => {
-  const timeSelector = usePrototypeStore((s) => s.timeSelector);
-  const closeTimeSelector = usePrototypeStore((s) => s.closeTimeSelector);
-  const saveSelectedTime = usePrototypeStore((s) => s.saveSelectedTime);
+interface FormProps {
+  title?: string;
+  initialTime?: string;
+  onClose: () => void;
+  onSave: (time: string) => void;
+}
 
-  const [hours, setHours] = useState(8);
-  const [minutes, setMinutes] = useState(0);
-
-  useEffect(() => {
-    if (timeSelector.initialTime) {
-      const parts = timeSelector.initialTime.split(':');
-      if (parts.length === 2) {
-        setHours(parseInt(parts[0], 10) || 8);
-        setMinutes(parseInt(parts[1], 10) || 0);
-      }
+const TimeSelectorForm: React.FC<FormProps> = ({
+  title,
+  initialTime,
+  onClose,
+  onSave,
+}) => {
+  const [hours, setHours] = useState(() => {
+    if (initialTime) {
+      const parts = initialTime.split(':');
+      const parsed = Number(parts[0]);
+      return Number.isNaN(parsed) ? 8 : parsed;
     }
-  }, [timeSelector.initialTime]);
+    return 8;
+  });
 
-  if (!timeSelector.visible) return null;
+  const [minutes, setMinutes] = useState(() => {
+    if (initialTime) {
+      const parts = initialTime.split(':');
+      const parsed = Number(parts[1]);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  });
 
   const adjustHours = (delta: number) => {
     setHours((prev) => (prev + delta + 24) % 24);
@@ -52,9 +63,114 @@ export const TimeSelectorModal: React.FC = () => {
       ? ['06:30', '07:00', '07:30', '08:00', '08:30', '09:00']
       : ['20:30', '21:00', '21:30', '22:00', '22:30', '23:00'];
 
-  const handleSave = () => {
-    saveSelectedTime(formattedTime);
-  };
+  return (
+    <View style={styles.modalCard}>
+      <View style={styles.header}>
+        <View style={styles.headerTitleRow}>
+          <Clock size={20} color={colors.forest} />
+          <Text style={styles.title}>{title || 'Adjust Routine Time'}</Text>
+        </View>
+        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <X size={20} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Central Time Picker Stepper */}
+      <View style={styles.stepperContainer}>
+        {/* Hours Box */}
+        <View style={styles.timeBox}>
+          <TouchableOpacity
+            style={styles.stepBtn}
+            onPress={() => adjustHours(1)}
+          >
+            <Plus size={20} color={colors.forest} />
+          </TouchableOpacity>
+          <Text style={styles.timeValueText}>
+            {hours.toString().padStart(2, '0')}
+          </Text>
+          <TouchableOpacity
+            style={styles.stepBtn}
+            onPress={() => adjustHours(-1)}
+          >
+            <Minus size={20} color={colors.forest} />
+          </TouchableOpacity>
+          <Text style={styles.boxLabel}>Hours</Text>
+        </View>
+
+        <Text style={styles.colon}>:</Text>
+
+        {/* Minutes Box */}
+        <View style={styles.timeBox}>
+          <TouchableOpacity
+            style={styles.stepBtn}
+            onPress={() => adjustMinutes(15)}
+          >
+            <Plus size={20} color={colors.forest} />
+          </TouchableOpacity>
+          <Text style={styles.timeValueText}>
+            {minutes.toString().padStart(2, '0')}
+          </Text>
+          <TouchableOpacity
+            style={styles.stepBtn}
+            onPress={() => adjustMinutes(-15)}
+          >
+            <Minus size={20} color={colors.forest} />
+          </TouchableOpacity>
+          <Text style={styles.boxLabel}>Minutes</Text>
+        </View>
+      </View>
+
+      {/* Quick Preset Buttons */}
+      <Text style={styles.presetLabel}>Quick Presets</Text>
+      <View style={styles.presetRow}>
+        {presets.map((preset) => {
+          const isSelected = formattedTime === preset;
+          return (
+            <TouchableOpacity
+              key={preset}
+              style={[
+                styles.presetChip,
+                isSelected && styles.presetChipSelected,
+              ]}
+              onPress={() => {
+                const [h, m] = preset.split(':');
+                setHours(Number(h));
+                setMinutes(Number(m));
+              }}
+            >
+              <Text
+                style={[
+                  styles.presetChipText,
+                  isSelected && styles.presetChipTextSelected,
+                ]}
+              >
+                {preset}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* Action Buttons */}
+      <View style={styles.footer}>
+        <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+          <Text style={styles.cancelBtnText}>Cancel</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.saveBtn} onPress={() => onSave(formattedTime)}>
+          <Text style={styles.saveBtnText}>Save Time</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+export const TimeSelectorModal: React.FC = () => {
+  const timeSelector = usePrototypeStore((s) => s.timeSelector);
+  const closeTimeSelector = usePrototypeStore((s) => s.closeTimeSelector);
+  const saveSelectedTime = usePrototypeStore((s) => s.saveSelectedTime);
+
+  if (!timeSelector.visible) return null;
 
   return (
     <View style={styles.overlay}>
@@ -62,106 +178,13 @@ export const TimeSelectorModal: React.FC = () => {
         <View style={StyleSheet.absoluteFill} />
       </TouchableWithoutFeedback>
 
-      <View style={styles.modalCard}>
-        <View style={styles.header}>
-          <View style={styles.headerTitleRow}>
-            <Clock size={20} color={colors.forest} />
-            <Text style={styles.title}>
-              {timeSelector.title || 'Adjust Routine Time'}
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.closeBtn} onPress={closeTimeSelector}>
-            <X size={20} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Central Time Picker Stepper */}
-        <View style={styles.stepperContainer}>
-          {/* Hours Box */}
-          <View style={styles.timeBox}>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => adjustHours(1)}
-            >
-              <Plus size={20} color={colors.forest} />
-            </TouchableOpacity>
-            <Text style={styles.timeValueText}>
-              {hours.toString().padStart(2, '0')}
-            </Text>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => adjustHours(-1)}
-            >
-              <Minus size={20} color={colors.forest} />
-            </TouchableOpacity>
-            <Text style={styles.boxLabel}>Hours</Text>
-          </View>
-
-          <Text style={styles.colon}>:</Text>
-
-          {/* Minutes Box */}
-          <View style={styles.timeBox}>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => adjustMinutes(15)}
-            >
-              <Plus size={20} color={colors.forest} />
-            </TouchableOpacity>
-            <Text style={styles.timeValueText}>
-              {minutes.toString().padStart(2, '0')}
-            </Text>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => adjustMinutes(-15)}
-            >
-              <Minus size={20} color={colors.forest} />
-            </TouchableOpacity>
-            <Text style={styles.boxLabel}>Minutes</Text>
-          </View>
-        </View>
-
-        {/* Quick Preset Buttons */}
-        <Text style={styles.presetLabel}>Quick Presets</Text>
-        <View style={styles.presetRow}>
-          {presets.map((preset) => {
-            const isSelected = formattedTime === preset;
-            return (
-              <TouchableOpacity
-                key={preset}
-                style={[
-                  styles.presetChip,
-                  isSelected && styles.presetChipSelected,
-                ]}
-                onPress={() => {
-                  const [h, m] = preset.split(':');
-                  setHours(parseInt(h, 10));
-                  setMinutes(parseInt(m, 10));
-                }}
-              >
-                <Text
-                  style={[
-                    styles.presetChipText,
-                    isSelected && styles.presetChipTextSelected,
-                  ]}
-                >
-                  {preset}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Action Buttons */}
-        <View style={styles.footer}>
-          <TouchableOpacity style={styles.cancelBtn} onPress={closeTimeSelector}>
-            <Text style={styles.cancelBtnText}>Cancel</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-            <Text style={styles.saveBtnText}>Save Time</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      <TimeSelectorForm
+        key={`${timeSelector.windowId}-${timeSelector.field}-${timeSelector.initialTime}`}
+        title={timeSelector.title}
+        initialTime={timeSelector.initialTime}
+        onClose={closeTimeSelector}
+        onSave={saveSelectedTime}
+      />
     </View>
   );
 };
