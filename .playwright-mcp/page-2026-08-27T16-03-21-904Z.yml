@@ -1,0 +1,50 @@
+- generic [ref=f4e286]:
+  - generic [ref=f4e288]:
+    - generic [ref=f4e289]: Rhythm
+    - generic [ref=f4e294] [cursor=pointer]
+  - generic [ref=f4e302]:
+    - generic [ref=f4e303]:
+      - generic [ref=f4e308]: Touch grass 🌱
+      - generic [ref=f4e309]: You’ve been in Social Feeds for 30 minutes. Come back in 1h 13m.
+    - generic [ref=f4e347]:
+      - generic [ref=f4e348]: Cooldown in progress
+      - generic [ref=f4e353]:
+        - generic [ref=f4e354]:
+          - generic [ref=f4e355]: "01"
+          - generic [ref=f4e356]: HRS
+        - generic [ref=f4e357]: ":"
+        - generic [ref=f4e358]:
+          - generic [ref=f4e359]: "13"
+          - generic [ref=f4e360]: MIN
+        - generic [ref=f4e361]: ":"
+        - generic [ref=f4e362]:
+          - generic [ref=f4e363]: "36"
+          - generic [ref=f4e364]: SEC
+    - generic [ref=f4e365]:
+      - generic [ref=f4e366]: While you’re away
+      - generic [ref=f4e371]: Try one of these feel-good things.
+      - generic [ref=f4e372]:
+        - generic [ref=f4e373] [cursor=pointer]:
+          - generic [ref=f4e374]: ☕
+          - generic [ref=f4e376]:
+            - generic [ref=f4e377]: Make coffee
+            - generic [ref=f4e378]: Grounding. Simple. Yours.
+        - generic [ref=f4e381] [cursor=pointer]:
+          - generic [ref=f4e382]: 🤸
+          - generic [ref=f4e384]:
+            - generic [ref=f4e385]: Stretch
+            - generic [ref=f4e386]: Move your body, reset your mind.
+        - generic [ref=f4e389] [cursor=pointer]:
+          - generic [ref=f4e390]: 📖
+          - generic [ref=f4e392]:
+            - generic [ref=f4e393]: Read 10 pages
+            - generic [ref=f4e394]: A little progress goes a long way.
+        - generic [ref=f4e397] [cursor=pointer]:
+          - generic [ref=f4e398]: 🚶
+          - generic [ref=f4e400]:
+            - generic [ref=f4e401]: Take a short walk
+            - generic [ref=f4e402]: Fresh air. Clear mind.
+    - generic [ref=f4e410]:
+      - generic [ref=f4e411]: You’ll feel better on the other side.
+      - generic [ref=f4e412]: See you soon. ☀️
+    - generic [ref=f4e413] [cursor=pointer]: Need emergency access?

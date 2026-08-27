@@ -1,0 +1,88 @@
+- generic [ref=f4e6]:
+  - generic [ref=f4e11]:
+    - generic [ref=f4e16]:
+      - generic [ref=f4e18]:
+        - generic [ref=f4e19]: Rhythm
+        - generic [ref=f4e24] [cursor=pointer]
+      - generic [ref=f4e32]:
+        - generic [ref=f4e33]:
+          - generic [ref=f4e34]: Good morning, Alex ⛅
+          - generic [ref=f4e35]: Find your rhythm. Protect your day.
+        - generic [ref=f4e53] [cursor=pointer]:
+          - generic [ref=f4e54]:
+            - generic [ref=f4e60]:
+              - generic [ref=f4e61]: Morning Buffer
+              - generic [ref=f4e62]: Social apps unlock at 08:00
+            - generic [ref=f4e63]: Buffering
+          - generic [ref=f4e68]:
+            - generic [ref=f4e69]: 01:17:13
+            - generic [ref=f4e70]: Time until Open
+        - generic [ref=f4e75]:
+          - generic [ref=f4e76] [cursor=pointer]:
+            - generic [ref=f4e81]: Morning Buffer
+            - generic [ref=f4e82]: 06:30 – 08:00
+          - generic [ref=f4e83] [cursor=pointer]:
+            - generic [ref=f4e91]: Open
+            - generic [ref=f4e92]: 08:00 – 13:00
+          - generic [ref=f4e93] [cursor=pointer]:
+            - generic [ref=f4e99]: Recovery
+            - generic [ref=f4e100]: 13:00 – 18:00
+          - generic [ref=f4e101] [cursor=pointer]:
+            - generic [ref=f4e105]: Evening Wind-Down
+            - generic [ref=f4e106]: 18:00 – 22:30
+        - generic [ref=f4e107]:
+          - generic [ref=f4e108]: Risk groups
+          - generic [ref=f4e109] [cursor=pointer]: Manage
+        - generic [ref=f4e113]:
+          - generic [ref=f4e114] [cursor=pointer]:
+            - generic [ref=f4e121]: Social Feeds
+            - generic [ref=f4e122]:
+              - generic [ref=f4e123]: 18 / 30 min
+              - generic [ref=f4e126]: Today
+          - generic [ref=f4e127] [cursor=pointer]:
+            - generic [ref=f4e134]: Entertainment
+            - generic [ref=f4e135]:
+              - generic [ref=f4e136]: Available
+              - generic [ref=f4e137]: No limit set
+        - generic [ref=f4e146] [cursor=pointer]:
+          - generic [ref=f4e147]: Protected today
+          - generic [ref=f4e148]: 1h 20m
+          - generic [ref=f4e149]: returned to you ✨
+        - generic [ref=f4e164] [cursor=pointer]:
+          - generic [ref=f4e165]: Try instead
+          - generic [ref=f4e166]: Make coffee, stretch, or read.
+          - generic [ref=f4e167]: Small choices, big impact.
+    - generic [ref=f4e172]:
+      - button "Today" [ref=f4e173] [cursor=pointer]
+      - button "Routine" [ref=f4e183] [cursor=pointer]
+      - button "Apps" [ref=f4e188] [cursor=pointer]
+      - button "Insights" [ref=f4e196] [cursor=pointer]
+  - generic [ref=f4e202]:
+    - generic [ref=f4e203]:
+      - generic [ref=f4e204]:
+        - generic [ref=f4e205]: Prototype Controls
+        - generic [ref=f4e209]: Switch Rhythm State
+      - generic [ref=f4e210] [cursor=pointer]
+    - generic [ref=f4e214]: Preview any Rhythm state instantly to evaluate UI adaptations and countdowns.
+    - generic [ref=f4e216]:
+      - generic [ref=f4e222] [cursor=pointer]:
+        - generic [ref=f4e223]:
+          - generic [ref=f4e224]: Morning Buffer
+          - generic [ref=f4e225]: ACTIVE
+        - generic [ref=f4e227]: Social apps locked until 08:00 AM (01:18:24 countdown)
+      - generic [ref=f4e236] [cursor=pointer]:
+        - generic [ref=f4e237]: Open Day (Available)
+        - generic [ref=f4e239]: Normal mindful phone usage with continuous protection
+      - generic [ref=f4e244] [cursor=pointer]:
+        - generic [ref=f4e245]: Active Risk Session
+        - generic [ref=f4e247]: 18 min elapsed of 30 min session limit in Social Feeds
+      - generic [ref=f4e254] [cursor=pointer]:
+        - generic [ref=f4e255]: Touch Grass Cooldown
+        - generic [ref=f4e257]: 30 min threshold reached, 90 min recovery countdown
+      - generic [ref=f4e262] [cursor=pointer]:
+        - generic [ref=f4e263]: Evening Wind-Down
+        - generic [ref=f4e265]: Evening rest protection active from 21:30 PM
+      - generic [ref=f4e267]: Prototype Navigation & Reset
+      - generic [ref=f4e268] [cursor=pointer]: Open Dedicated "Touch Grass" Screen
+      - generic [ref=f4e273] [cursor=pointer]: Revisit Onboarding Flow
+      - generic [ref=f4e278] [cursor=pointer]: Reset All Demo Data & Timers
