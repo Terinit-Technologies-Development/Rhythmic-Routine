@@ -4,6 +4,7 @@ import {
   createUniqueGroupId,
   formatSecondsToHHMMSS,
   getEditableTimeField,
+  getOpenDayRange,
   getProtectedWindowIdsForGroup,
   getRestrictableAppIds,
   getRiskGroup,
@@ -124,6 +125,20 @@ describe('Domain Selectors & Pure Helpers', () => {
 
     const missing = getRoutineWindow(mockWindows, 'open-day');
     assert.equal(missing, undefined);
+  });
+
+  test('getOpenDayRange derives start and end from adjacent boundaries', () => {
+    const range = getOpenDayRange(mockWindows);
+    assert.deepEqual(range, {
+      start: '08:30',
+      end: '22:00',
+    });
+
+    const fallbackRange = getOpenDayRange([]);
+    assert.deepEqual(fallbackRange, {
+      start: '08:00',
+      end: '21:30',
+    });
   });
 
   test('getRiskGroup finds group by id', () => {

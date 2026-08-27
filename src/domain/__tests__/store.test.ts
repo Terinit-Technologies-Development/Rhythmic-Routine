@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { usePrototypeStore } from '../../store/usePrototypeStore';
 import {
+  getOpenDayRange,
   getRoutineTargetTime,
   getRoutineWindow,
   getProtectedWindowIdsForGroup,
@@ -36,6 +37,22 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.ok(evening);
     assert.equal(evening?.startTime, '22:00');
     assert.equal(getRoutineTargetTime(evening!), '22:00');
+  });
+
+  test('Open Day Boundary Adjacency: Open Day range is cleanly derived from adjacent boundaries', () => {
+    const store = usePrototypeStore.getState();
+
+    // Set Morning Buffer unlock to 08:30 and Evening Wind-Down to 22:00
+    store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
+    store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
+
+    const updatedWindows = usePrototypeStore.getState().routineWindows;
+    const openRange = getOpenDayRange(updatedWindows);
+
+    assert.deepEqual(openRange, {
+      start: '08:30',
+      end: '22:00',
+    });
   });
 
   test('Risk Group threshold and cooldown propagation', () => {

@@ -4,7 +4,7 @@ import { Sprout, Sun, Waves, Moon } from 'lucide-react-native';
 import { RhythmState } from '../types/domain';
 import { colors } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
-import { getRoutineWindow } from '../domain/selectors';
+import { getOpenDayRange, getRoutineWindow } from '../domain/selectors';
 
 interface Props {
   currentState?: RhythmState;
@@ -18,12 +18,13 @@ export const DayTimeline: React.FC<Props> = ({ currentState }) => {
   const activeState = currentState || storeState;
 
   const morning = getRoutineWindow(routineWindows, 'morning-buffer');
-  const openDay = getRoutineWindow(routineWindows, 'open-day');
   const evening = getRoutineWindow(routineWindows, 'evening-wind-down');
 
+  const { start: openStart, end: openEnd } = getOpenDayRange(routineWindows);
+
   const morningTime = `${morning?.startTime ?? '06:30'} – ${morning?.endTime ?? '08:00'}`;
-  const openTime = `${openDay?.startTime ?? '08:00'} – ${openDay?.endTime ?? '21:30'}`;
-  const recoveryTime = '13:00 – 18:00';
+  const openTime = `${openStart} – ${openEnd}`;
+  const recoveryTime = activeState === 'cooldown' ? 'Active now' : 'As needed';
   const eveningTime = `${evening?.startTime ?? '21:30'} – ${evening?.endTime ?? '23:30'}`;
 
   const phases = [

@@ -11,6 +11,21 @@ export function getRoutineWindow(
 }
 
 /**
+ * Derives the active Open Day time range from the adjacent Morning Buffer and Evening Wind-Down boundaries.
+ */
+export function getOpenDayRange(
+  windows: RoutineWindow[]
+): { start: string; end: string } {
+  const morning = getRoutineWindow(windows, 'morning-buffer');
+  const evening = getRoutineWindow(windows, 'evening-wind-down');
+
+  return {
+    start: morning?.endTime ?? '08:00',
+    end: evening?.startTime ?? '21:30',
+  };
+}
+
+/**
  * Finds a risk group by ID.
  */
 export function getRiskGroup(

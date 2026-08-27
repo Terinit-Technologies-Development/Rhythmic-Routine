@@ -19,6 +19,7 @@ import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { RoutineWindowCard } from '../../src/components/RoutineWindowCard';
 import { AddRiskGroupModal } from '../../src/components/AddRiskGroupModal';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
+import { getOpenDayRange } from '../../src/domain/selectors';
 
 export default function RoutineScreen() {
   const router = useRouter();
@@ -37,7 +38,7 @@ export default function RoutineScreen() {
     if (hasMorning && hasEvening) return 'Limited during focus times';
     if (hasMorning) return 'Limited during Morning Buffer';
     if (hasEvening) return 'Paused during Wind-Down';
-    return 'Active in routine';
+    return 'Not protected';
   };
 
   const [addModalVisible, setAddModalVisible] = useState(false);
@@ -108,9 +109,10 @@ export default function RoutineScreen() {
           {/* Routine Windows Vertical Sequence */}
           <View style={styles.windowsSequence}>
             {routineWindows.map((win) => {
+              const openRange = getOpenDayRange(routineWindows);
               const timeLabel =
                 win.type === 'open-day'
-                  ? `${win.startTime} – ${win.endTime || '21:30'}`
+                  ? `${openRange.start} – ${openRange.end}`
                   : win.startTime;
 
               return (
@@ -136,6 +138,7 @@ export default function RoutineScreen() {
           <View style={styles.groupsList}>
             {riskGroups.map((group) => {
               const statusTag = getGroupStatusTag(group.id);
+              const isProtected = statusTag !== 'Not protected';
               const groupApps = apps.filter((app) => group.appIds.includes(app.id));
               const memberNames =
                 groupApps.length > 0
@@ -164,7 +167,7 @@ export default function RoutineScreen() {
                     <Text
                       style={[
                         styles.groupStatusText,
-                        { color: colors.forest },
+                        { color: isProtected ? colors.forest : colors.textMuted },
                       ]}
                     >
                       {statusTag}
