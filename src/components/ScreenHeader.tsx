@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Sun, ChevronLeft, MoreHorizontal, Sparkles } from 'lucide-react-native';
+import { Sun, ChevronLeft, MoreHorizontal } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
-import { colors, radii } from '../theme/tokens';
+import { colors } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import Svg, { Path } from 'react-native-svg';
 

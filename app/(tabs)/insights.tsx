@@ -4,22 +4,18 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  Clock,
-  Flame,
   ShieldCheck,
-  TrendingUp,
+  Award,
   Sunrise,
   Sunset,
-  Award,
+  Flame,
 } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
-import Svg, { Rect, Text as SvgText, G } from 'react-native-svg';
 
 export default function InsightsScreen() {
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);

@@ -15,7 +15,12 @@ import {
   initialRoutineWindows,
   offlineActivities as defaultOfflineActivities,
 } from '../data/mockData';
-import { mockRestrictionProvider } from '../platform/mock/MockRestrictionProvider';
+import { getPlatformServices } from '../platform/PlatformServices';
+import {
+  createUniqueGroupId,
+  getRestrictableAppIds,
+  getRoutineWindow,
+} from '../domain/selectors';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -34,7 +39,7 @@ interface PrototypeState {
   // Domain data
   rhythmState: RhythmState;
   activeRiskGroupId: string;
-  countdownSeconds: number; // e.g. 4704 = 01:18:24
+  activeTimerEndsAt?: number; // Absolute timestamp for countdowns
   apps: DeviceApp[];
   riskGroups: RiskGroup[];
   routineWindows: RoutineWindow[];
@@ -52,11 +57,13 @@ interface PrototypeState {
   timeSelector: TimeSelectorConfig;
   appEdit: AppEditConfig;
 
-  // Actions
-  setRhythmState: (state: RhythmState) => void;
-  simulateCooldown: (groupId?: string) => void;
+  // Core Actions
+  initializeApps: () => Promise<void>;
+  setRhythmState: (state: RhythmState) => Promise<void>;
+  simulateCooldown: (groupId?: string) => Promise<void>;
   simulateRiskSession: (groupId?: string) => void;
-  resetDemo: () => void;
+  resolveExpiredTimer: () => Promise<void>;
+  resetDemo: () => Promise<void>;
 
   updateAppClassification: (
     appId: string,
@@ -66,7 +73,7 @@ interface PrototypeState {
   updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => void;
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
   toggleRoutineDay: (day: number) => void;
-  toggleGroupInRoutineWindow: (windowId: string, groupId: string) => void;
+  toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
   addNewRiskGroup: (name: string, description: string) => string;
 
   setSearchQuery: (query: string) => void;
@@ -82,36 +89,22 @@ interface PrototypeState {
   closeAppEdit: () => void;
 
   completeOnboarding: () => void;
-  triggerEmergencyBypass: () => void;
-  tickCountdown: () => void;
+  triggerEmergencyBypass: () => Promise<void>;
 }
 
-const getDefaultTimer = (state: RhythmState): number => {
-  switch (state) {
-    case 'morning-buffer':
-      return 1 * 3600 + 18 * 60 + 24; // 01:18:24
-    case 'cooldown':
-      return 1 * 3600 + 12 * 60 + 34; // 01:12:34
-    case 'risk-session':
-      return 12 * 60 + 0; // 12:00 left of 30 min session
-    case 'evening-wind-down':
-      return 2 * 3600 + 45 * 60; // 02:45:00
-    case 'available':
-    default:
-      return 0;
-  }
-};
+// Initial demo timer: 01:18:24 remaining until morning unlock
+const INITIAL_TIMER_MS = (1 * 3600 + 18 * 60 + 24) * 1000;
 
 export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   rhythmState: 'morning-buffer',
   activeRiskGroupId: 'social',
-  countdownSeconds: 1 * 3600 + 18 * 60 + 24, // 01:18:24
+  activeTimerEndsAt: Date.now() + INITIAL_TIMER_MS,
   apps: [...initialApps],
   riskGroups: [...initialRiskGroups],
   routineWindows: [...initialRoutineWindows],
   offlineActivities: [...defaultOfflineActivities],
   insightMetrics: { ...initialInsightMetrics },
-  hasCompletedOnboarding: true, // starts true for immediate exploration; onboarding is fully accessible from switcher or route
+  hasCompletedOnboarding: true,
 
   searchQuery: '',
   filterClassification: 'all',
@@ -121,32 +114,87 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   timeSelector: { visible: false },
   appEdit: { visible: false },
 
-  setRhythmState: (state: RhythmState) => {
-    const timer = getDefaultTimer(state);
-    set({ rhythmState: state, countdownSeconds: timer });
-
-    // Sync mock restrictions
-    const { riskGroups } = get();
-    const socialGroup = riskGroups.find((g) => g.id === 'social');
-    if (socialGroup) {
-      if (state === 'morning-buffer' || state === 'cooldown' || state === 'evening-wind-down') {
-        mockRestrictionProvider.applyRestrictions(socialGroup.appIds);
-      } else {
-        mockRestrictionProvider.clearRestrictions(socialGroup.appIds);
+  initializeApps: async () => {
+    try {
+      const { usage } = getPlatformServices();
+      const deviceApps = await usage.getInstalledApps();
+      if (deviceApps && deviceApps.length > 0) {
+        set({ apps: deviceApps });
       }
+    } catch {
+      // Fallback to initialApps
     }
   },
 
-  simulateCooldown: (groupId = 'social') => {
+  setRhythmState: async (state: RhythmState) => {
+    let timerEndsAt: number | undefined;
+
+    switch (state) {
+      case 'morning-buffer':
+        timerEndsAt = Date.now() + (1 * 3600 + 18 * 60 + 24) * 1000;
+        break;
+      case 'cooldown':
+        timerEndsAt = Date.now() + (1 * 3600 + 12 * 60 + 34) * 1000;
+        break;
+      case 'risk-session':
+        timerEndsAt = Date.now() + 12 * 60 * 1000;
+        break;
+      case 'evening-wind-down':
+        timerEndsAt = Date.now() + (2 * 3600 + 45 * 60) * 1000;
+        break;
+      case 'available':
+      default:
+        timerEndsAt = undefined;
+        break;
+    }
+
+    set({ rhythmState: state, activeTimerEndsAt: timerEndsAt });
+
+    // Sync restrictions via PlatformServices with Essential-App safety
+    const { restrictions } = getPlatformServices();
+    const { routineWindows, riskGroups, apps } = get();
+
+    if (state === 'morning-buffer') {
+      const morningWin = getRoutineWindow(routineWindows, 'morning-buffer');
+      const protectedGroupIds = morningWin?.protectedGroupIds || [];
+      const protectedAppIds = riskGroups
+        .filter((g) => protectedGroupIds.includes(g.id))
+        .flatMap((g) => g.appIds);
+      const restrictable = getRestrictableAppIds(protectedAppIds, apps);
+      await restrictions.applyRestrictions(restrictable);
+    } else if (state === 'evening-wind-down') {
+      const eveningWin = getRoutineWindow(routineWindows, 'evening-wind-down');
+      const protectedGroupIds = eveningWin?.protectedGroupIds || [];
+      const protectedAppIds = riskGroups
+        .filter((g) => protectedGroupIds.includes(g.id))
+        .flatMap((g) => g.appIds);
+      const restrictable = getRestrictableAppIds(protectedAppIds, apps);
+      await restrictions.applyRestrictions(restrictable);
+    } else if (state === 'cooldown') {
+      const activeGroup = riskGroups.find((g) => g.id === get().activeRiskGroupId);
+      if (activeGroup) {
+        const restrictable = getRestrictableAppIds(activeGroup.appIds, apps);
+        await restrictions.applyRestrictions(restrictable);
+      }
+    } else {
+      await restrictions.clearRestrictions(apps.map((a) => a.id));
+    }
+  },
+
+  simulateCooldown: async (groupId = 'social') => {
     const group = get().riskGroups.find((g) => g.id === groupId);
-    const cooldownSeconds = (group ? group.cooldownMinutes : 90) * 60;
+    const durationMs = (group?.cooldownMinutes ?? 90) * 60 * 1000;
+
     set({
       rhythmState: 'cooldown',
       activeRiskGroupId: groupId,
-      countdownSeconds: cooldownSeconds,
+      activeTimerEndsAt: Date.now() + durationMs,
     });
+
     if (group) {
-      mockRestrictionProvider.applyRestrictions(group.appIds);
+      const { restrictions } = getPlatformServices();
+      const restrictable = getRestrictableAppIds(group.appIds, get().apps);
+      await restrictions.applyRestrictions(restrictable);
     }
   },
 
@@ -154,15 +202,38 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     set({
       rhythmState: 'risk-session',
       activeRiskGroupId: groupId,
-      countdownSeconds: 12 * 60,
+      activeTimerEndsAt: Date.now() + 12 * 60 * 1000,
     });
   },
 
-  resetDemo: () => {
+  resolveExpiredTimer: async () => {
+    const state = get();
+    if (
+      state.rhythmState === 'cooldown' &&
+      state.activeTimerEndsAt &&
+      Date.now() >= state.activeTimerEndsAt
+    ) {
+      const group = state.riskGroups.find((g) => g.id === state.activeRiskGroupId);
+      if (group) {
+        const { restrictions } = getPlatformServices();
+        await restrictions.clearRestrictions(group.appIds);
+      }
+
+      set({
+        rhythmState: 'available',
+        activeTimerEndsAt: undefined,
+      });
+    }
+  },
+
+  resetDemo: async () => {
+    const { restrictions } = getPlatformServices();
+    await restrictions.clearRestrictions(initialApps.map((a) => a.id));
+
     set({
       rhythmState: 'morning-buffer',
       activeRiskGroupId: 'social',
-      countdownSeconds: 1 * 3600 + 18 * 60 + 24,
+      activeTimerEndsAt: Date.now() + INITIAL_TIMER_MS,
       apps: [...initialApps],
       riskGroups: [...initialRiskGroups],
       routineWindows: [...initialRoutineWindows],
@@ -179,21 +250,23 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   updateAppClassification: (appId, classification, riskGroupId) => {
     set((state) => {
+      const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
+
       const updatedApps = state.apps.map((app) => {
         if (app.id === appId) {
           return {
             ...app,
             classification,
-            riskGroupId: classification === 'risk' ? riskGroupId || app.riskGroupId || 'social' : undefined,
+            riskGroupId: targetGroupId,
           };
         }
         return app;
       });
 
-      // Also update risk groups membership
+      // Maintain Invariant: if not 'risk', remove app from all risk groups
       const updatedRiskGroups = state.riskGroups.map((group) => {
         const hasApp = group.appIds.includes(appId);
-        const shouldHave = classification === 'risk' && (riskGroupId || 'social') === group.id;
+        const shouldHave = classification === 'risk' && group.id === targetGroupId;
 
         if (shouldHave && !hasApp) {
           return { ...group, appIds: [...group.appIds, appId] };
@@ -215,7 +288,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   updateRoutineWindow: (windowId, updates) => {
     set((state) => ({
-      routineWindows: state.routineWindows.map((w) => (w.id === windowId ? { ...w, ...updates } : w)),
+      routineWindows: state.routineWindows.map((w) =>
+        w.id === windowId ? { ...w, ...updates } : w
+      ),
     }));
   },
 
@@ -233,25 +308,28 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
-  toggleGroupInRoutineWindow: (windowId, groupId) => {
+  toggleGroupProtection: (windowId, groupId, enabled) => {
     set((state) => ({
       routineWindows: state.routineWindows.map((w) => {
-        if (w.id === windowId) {
-          const hasGroup = w.protectedGroupIds.includes(groupId);
-          return {
-            ...w,
-            protectedGroupIds: hasGroup
-              ? w.protectedGroupIds.filter((id) => id !== groupId)
-              : [...w.protectedGroupIds, groupId],
-          };
-        }
-        return w;
+        if (w.id !== windowId) return w;
+
+        const currentIds = w.protectedGroupIds;
+        const nextIds = enabled
+          ? Array.from(new Set([...currentIds, groupId]))
+          : currentIds.filter((id) => id !== groupId);
+
+        return {
+          ...w,
+          protectedGroupIds: nextIds,
+        };
       }),
     }));
   },
 
   addNewRiskGroup: (name, description) => {
-    const id = name.toLowerCase().replace(/\s+/g, '-');
+    const existingIds = get().riskGroups.map((g) => g.id);
+    const id = createUniqueGroupId(name, existingIds);
+
     const newGroup: RiskGroup = {
       id,
       name,
@@ -262,10 +340,10 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       appIds: [],
       sessionThresholdMinutes: 30,
       cooldownMinutes: 60,
-      routineWindowIds: ['morning-buffer', 'evening-wind-down'],
       currentSessionMinutes: 0,
       isBufferingToday: false,
     };
+
     set((state) => ({ riskGroups: [...state.riskGroups, newGroup] }));
     return id;
   },
@@ -290,23 +368,19 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   openAppEdit: (appId) => set({ appEdit: { visible: true, appId } }),
   closeAppEdit: () => set({ appEdit: { visible: false, appId: undefined } }),
 
-  completeOnboarding: () => set({ hasCompletedOnboarding: true, rhythmState: 'morning-buffer' }),
-
-  triggerEmergencyBypass: () => {
-    set({
-      rhythmState: 'available',
-      emergencyModalVisible: false,
-      countdownSeconds: 0,
-    });
-    mockRestrictionProvider.clearRestrictions(get().apps.map((a) => a.id));
+  completeOnboarding: () => {
+    get().setRhythmState('morning-buffer');
+    set({ hasCompletedOnboarding: true });
   },
 
-  tickCountdown: () => {
-    set((state) => {
-      if (state.countdownSeconds > 0) {
-        return { countdownSeconds: state.countdownSeconds - 1 };
-      }
-      return state;
+  triggerEmergencyBypass: async () => {
+    const { restrictions } = getPlatformServices();
+    await restrictions.clearRestrictions(get().apps.map((a) => a.id));
+
+    set({
+      rhythmState: 'available',
+      activeTimerEndsAt: undefined,
+      emergencyModalVisible: false,
     });
   },
 }));

@@ -10,7 +10,6 @@ import Svg, {
   G,
   Rect,
 } from 'react-native-svg';
-import { colors } from '../theme/tokens';
 
 interface ArtworkProps {
   style?: ViewStyle;

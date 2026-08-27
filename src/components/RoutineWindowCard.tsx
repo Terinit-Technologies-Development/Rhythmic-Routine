@@ -9,6 +9,10 @@ import {
   EveningTwilightLandscape,
 } from './Artwork';
 import { usePrototypeStore } from '../store/usePrototypeStore';
+import {
+  getEditableTimeField,
+  getRoutineTargetTime,
+} from '../domain/selectors';
 
 interface Props {
   window: RoutineWindow;
@@ -17,18 +21,6 @@ interface Props {
 
 export const RoutineWindowCard: React.FC<Props> = ({ window, timeLabel }) => {
   const openTimeSelector = usePrototypeStore((s) => s.openTimeSelector);
-
-  const getArtwork = () => {
-    switch (window.type) {
-      case 'morning-buffer':
-        return MorningSunriseLandscape;
-      case 'open-day':
-        return OpenDayLandscape;
-      case 'evening-wind-down':
-      default:
-        return EveningTwilightLandscape;
-    }
-  };
 
   const getIcon = () => {
     switch (window.type) {
@@ -54,14 +46,15 @@ export const RoutineWindowCard: React.FC<Props> = ({ window, timeLabel }) => {
     }
   };
 
-  const ArtworkComponent = getArtwork();
+  const editableField = getEditableTimeField(window);
+  const targetTime = getRoutineTargetTime(window);
 
   const handleEditTime = () => {
     openTimeSelector({
       windowId: window.id,
-      field: 'startTime',
+      field: editableField,
       title: window.type === 'morning-buffer' ? 'Morning Buffer Unlock' : 'Wind-Down Start',
-      initialTime: window.startTime,
+      initialTime: targetTime,
     });
   };
 
@@ -80,7 +73,9 @@ export const RoutineWindowCard: React.FC<Props> = ({ window, timeLabel }) => {
       <View style={styles.cardContainer}>
         {/* Background Landscape Artwork */}
         <View style={styles.artworkWrapper}>
-          <ArtworkComponent height={170} />
+          {window.type === 'morning-buffer' && <MorningSunriseLandscape height={170} />}
+          {window.type === 'open-day' && <OpenDayLandscape height={170} />}
+          {window.type === 'evening-wind-down' && <EveningTwilightLandscape height={170} />}
         </View>
 
         {/* Foreground Content */}
@@ -100,7 +95,7 @@ export const RoutineWindowCard: React.FC<Props> = ({ window, timeLabel }) => {
               activeOpacity={0.8}
               onPress={handleEditTime}
             >
-              <Text style={styles.timePillText}>{window.startTime}</Text>
+              <Text style={styles.timePillText}>{targetTime}</Text>
               <Edit3 size={14} color={colors.forest} style={{ marginLeft: 8 }} />
             </TouchableOpacity>
           )}

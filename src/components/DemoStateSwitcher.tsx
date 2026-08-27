@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   ScrollView,
-  Platform,
 } from 'react-native';
 import {
   Sprout,
@@ -24,6 +23,11 @@ import { usePrototypeStore } from '../store/usePrototypeStore';
 import { RhythmState } from '../types/domain';
 import { colors, radii, shadows } from '../theme/tokens';
 import { useRouter } from 'expo-router';
+import {
+  getRiskGroup,
+  getRoutineTargetTime,
+  getRoutineWindow,
+} from '../domain/selectors';
 
 export const DemoStateSwitcher: React.FC = () => {
   const router = useRouter();
@@ -34,6 +38,18 @@ export const DemoStateSwitcher: React.FC = () => {
   const simulateCooldown = usePrototypeStore((s) => s.simulateCooldown);
   const simulateRiskSession = usePrototypeStore((s) => s.simulateRiskSession);
   const resetDemo = usePrototypeStore((s) => s.resetDemo);
+  const routineWindows = usePrototypeStore((s) => s.routineWindows);
+  const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+
+  const morning = getRoutineWindow(routineWindows, 'morning-buffer');
+  const evening = getRoutineWindow(routineWindows, 'evening-wind-down');
+  const activeGroup = getRiskGroup(riskGroups, activeRiskGroupId) || riskGroups[0];
+
+  const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
+  const eveningStart = evening?.startTime ?? '21:30';
+  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
+  const cooldown = activeGroup?.cooldownMinutes ?? 90;
 
   if (!visible) return null;
 
@@ -49,7 +65,7 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'morning-buffer',
       label: 'Morning Buffer',
-      description: 'Social apps locked until 08:00 AM (01:18:24 countdown)',
+      description: `Social apps locked until ${morningUnlock} (01:18:24 countdown)`,
       icon: Sprout,
       color: colors.forest,
       bg: colors.sageLight,
@@ -67,25 +83,25 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'risk-session',
       label: 'Active Risk Session',
-      description: '18 min elapsed of 30 min session limit in Social Feeds',
+      description: `18 min elapsed of ${threshold} min session limit in ${activeGroup.name}`,
       icon: Flame,
       color: colors.coralDark,
       bg: colors.coralLight,
-      action: () => simulateRiskSession('social'),
+      action: () => simulateRiskSession(activeGroup.id),
     },
     {
       id: 'cooldown',
       label: 'Touch Grass Cooldown',
-      description: '30 min threshold reached, 90 min recovery countdown',
+      description: `${threshold} min threshold reached, ${cooldown} min recovery countdown`,
       icon: Waves,
       color: colors.skyDark,
       bg: colors.skyLight,
-      action: () => simulateCooldown('social'),
+      action: () => simulateCooldown(activeGroup.id),
     },
     {
       id: 'evening-wind-down',
       label: 'Evening Wind-Down',
-      description: 'Evening rest protection active from 21:30 PM',
+      description: `Evening rest protection active from ${eveningStart}`,
       icon: Moon,
       color: colors.lavenderDark,
       bg: colors.lavenderLight,
@@ -175,7 +191,7 @@ export const DemoStateSwitcher: React.FC = () => {
             }}
           >
             <Compass size={18} color={colors.forest} />
-            <Text style={styles.actionBtnText}>Open Dedicated "Touch Grass" Screen</Text>
+            <Text style={styles.actionBtnText}>Open Dedicated &quot;Touch Grass&quot; Screen</Text>
           </TouchableOpacity>
 
           <TouchableOpacity

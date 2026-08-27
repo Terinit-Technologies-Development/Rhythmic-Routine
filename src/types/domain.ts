@@ -34,7 +34,6 @@ export interface RiskGroup {
   appIds: string[];
   sessionThresholdMinutes: number; // e.g. 30
   cooldownMinutes: number;         // e.g. 90
-  routineWindowIds: string[];      // routine windows where this group is protected
   currentSessionMinutes: number;
   isBufferingToday?: boolean;
 }
@@ -43,8 +42,8 @@ export interface RoutineWindow {
   id: string;
   name: string;
   type: 'morning-buffer' | 'open-day' | 'evening-wind-down' | 'custom';
-  startTime: string; // e.g. "08:00"
-  endTime?: string;  // e.g. "21:30"
+  startTime: string; // e.g. "06:30"
+  endTime?: string;  // e.g. "08:00"
   activeDays: number[]; // 1=Mon, 2=Tue, ..., 7=Sun
   protectedGroupIds: string[];
   enabled: boolean;

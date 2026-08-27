@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,7 @@ import {
 import { XLogoIcon } from '../../src/components/BrandIcons';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
-import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
+import Svg, { Path, Circle } from 'react-native-svg';
 
 export default function RiskGroupDetailScreen() {
   const router = useRouter();
@@ -35,6 +35,8 @@ export default function RiskGroupDetailScreen() {
 
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const updateRiskGroup = usePrototypeStore((s) => s.updateRiskGroup);
+  const routineWindows = usePrototypeStore((s) => s.routineWindows);
+  const toggleGroupProtection = usePrototypeStore((s) => s.toggleGroupProtection);
   const apps = usePrototypeStore((s) => s.apps);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
 
@@ -43,12 +45,11 @@ export default function RiskGroupDetailScreen() {
   const sessionThresholds = [15, 30, 45, 60];
   const cooldownOptions = [30, 60, 90, 120, 180];
 
-  const [morningBufferEnabled, setMorningBufferEnabled] = useState(
-    group.routineWindowIds.includes('morning-buffer')
-  );
-  const [eveningWindDownEnabled, setEveningWindDownEnabled] = useState(
-    group.routineWindowIds.includes('evening-wind-down')
-  );
+  const morningWin = routineWindows.find((w) => w.type === 'morning-buffer');
+  const eveningWin = routineWindows.find((w) => w.type === 'evening-wind-down');
+
+  const morningBufferEnabled = morningWin?.protectedGroupIds.includes(group.id) ?? false;
+  const eveningWindDownEnabled = eveningWin?.protectedGroupIds.includes(group.id) ?? false;
 
   const memberApps = apps.filter((a) => group.appIds.includes(a.id));
 
@@ -85,19 +86,15 @@ export default function RiskGroupDetailScreen() {
   };
 
   const toggleMorning = (val: boolean) => {
-    setMorningBufferEnabled(val);
-    const newWindows = val
-      ? [...group.routineWindowIds, 'morning-buffer']
-      : group.routineWindowIds.filter((w) => w !== 'morning-buffer');
-    updateRiskGroup(group.id, { routineWindowIds: newWindows });
+    if (morningWin) {
+      toggleGroupProtection(morningWin.id, group.id, val);
+    }
   };
 
   const toggleEvening = (val: boolean) => {
-    setEveningWindDownEnabled(val);
-    const newWindows = val
-      ? [...group.routineWindowIds, 'evening-wind-down']
-      : group.routineWindowIds.filter((w) => w !== 'evening-wind-down');
-    updateRiskGroup(group.id, { routineWindowIds: newWindows });
+    if (eveningWin) {
+      toggleGroupProtection(eveningWin.id, group.id, val);
+    }
   };
 
   const renderAppIcon = (appId: string) => {
@@ -349,7 +346,9 @@ export default function RiskGroupDetailScreen() {
               </View>
               <View>
                 <Text style={styles.toggleTitle}>Morning Buffer</Text>
-                <Text style={styles.toggleTime}>06:30 – 08:00</Text>
+                <Text style={styles.toggleTime}>
+                  {morningWin ? `${morningWin.startTime} – ${morningWin.endTime || '08:00'}` : '06:30 – 08:00'}
+                </Text>
               </View>
             </View>
             <Switch
@@ -367,7 +366,9 @@ export default function RiskGroupDetailScreen() {
               </View>
               <View>
                 <Text style={styles.toggleTitle}>Evening Wind-Down</Text>
-                <Text style={styles.toggleTime}>18:00 – 22:30</Text>
+                <Text style={styles.toggleTime}>
+                  {eveningWin ? `${eveningWin.startTime} – ${eveningWin.endTime || '23:30'}` : '21:30 – 23:30'}
+                </Text>
               </View>
             </View>
             <Switch
