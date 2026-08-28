@@ -58,7 +58,7 @@ export default function RootLayout() {
           {/* Global Modals */}
           <TimeSelectorModal />
           <AppEditModal />
-          <EmergencyAccessModal />
+          {Platform.OS === 'web' && <EmergencyAccessModal />}
         </View>
       </View>
     </SafeAreaProvider>

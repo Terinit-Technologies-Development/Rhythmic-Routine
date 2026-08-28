@@ -254,15 +254,20 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const { storage } = getPlatformServices();
     await storage.clearAll();
     coordinator.destroy();
-    await coordinator.initialize();
+    const runtime = await coordinator.initialize();
+    const config = coordinator.getConfiguration();
+    const primaryCooldown = getPrimaryCooldown(runtime);
 
     set({
-      rhythmState: 'morning-buffer',
-      activeRiskGroupId: 'social',
-      activeTimerEndsAt: Date.now() + INITIAL_TIMER_MS,
-      apps: [...initialApps],
-      riskGroups: [...initialRiskGroups],
-      routineWindows: [...initialRoutineWindows],
+      rhythmState: runtime.state,
+      activeRiskGroupId:
+        primaryCooldown?.groupId ??
+        runtime.activeSession?.groupId ??
+        'social',
+      activeTimerEndsAt: primaryCooldown?.endsAt,
+      apps: config?.apps ?? [...initialApps],
+      riskGroups: config?.riskGroups ?? [...initialRiskGroups],
+      routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
       insightMetrics: { ...initialInsightMetrics },
       searchQuery: '',
