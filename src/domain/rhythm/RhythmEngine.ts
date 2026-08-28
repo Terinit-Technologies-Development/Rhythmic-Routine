@@ -24,10 +24,12 @@ export class RhythmEngine {
 
     if (normalized) {
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
+      const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
       this.runtime = {
         state: normalized.state,
         activeSession: normalized.activeSession,
         activeCooldowns: restoredCooldowns,
+        activeAccessLeases: restoredLeases,
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
@@ -35,6 +37,7 @@ export class RhythmEngine {
       this.runtime = {
         state: 'available',
         activeCooldowns: {},
+        activeAccessLeases: {},
         activeRoutineWindowIds: [],
         activeRestrictions: [], // Start with empty baseline
       };
@@ -91,6 +94,7 @@ export class RhythmEngine {
     return {
       ...this.runtime,
       activeCooldowns: { ...this.runtime.activeCooldowns },
+      activeAccessLeases: { ...this.runtime.activeAccessLeases },
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
@@ -116,6 +120,7 @@ export class RhythmEngine {
     const res: PersistedRuntime = {
       state: this.runtime.state,
       activeCooldowns: { ...this.runtime.activeCooldowns },
+      activeAccessLeases: { ...this.runtime.activeAccessLeases },
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
       lastReconciledAt: now,
     };

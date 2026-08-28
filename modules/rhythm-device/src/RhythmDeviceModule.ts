@@ -8,11 +8,14 @@ const FallbackModule = {
     familyControlsStatus: 'unsupported',
   }),
   requestUsagePermission: async (): Promise<void> => {},
+  requestRestrictionPermission: async (): Promise<void> => {},
   requestFamilyControls: async (): Promise<string> => 'unsupported',
+  revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
+  setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
 };
 
 let NativeModule: typeof FallbackModule = FallbackModule;
@@ -22,7 +25,10 @@ try {
   const { requireNativeModule } = require('expo-modules-core');
   const mod = requireNativeModule('RhythmDevice');
   if (mod) {
-    NativeModule = mod;
+    NativeModule = {
+      ...FallbackModule,
+      ...mod,
+    };
   }
 } catch {
   // Use fallback

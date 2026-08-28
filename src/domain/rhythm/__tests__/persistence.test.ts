@@ -26,6 +26,7 @@ describe('Rhythm Engine — Local Persistence Adapter & Migration', () => {
         endsAt: 1700005400000,
       },
     },
+    activeAccessLeases: {},
     activeRoutineWindowIds: [],
     lastReconciledAt: 1700000000000,
   };

@@ -1,21 +1,26 @@
-import { DeviceApp, RiskGroup, RoutineWindow } from '../../types/domain';
-import { ActiveCooldown, AppRestriction, getActiveCooldowns } from './types';
+import { AccessLease, DeviceApp, RiskGroup, RoutineWindow } from '../../types/domain';
+import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns } from './types';
 
 /**
- * Computes effective desired app restrictions across active routine windows and all active cooldowns.
+ * Computes effective desired app restrictions across active routine windows, all active cooldowns,
+ * minus active access lease suppressions.
  * Maintains the fundamental invariant: Essential apps are NEVER restricted.
  */
 export function computeEffectiveRestrictions(
   activeWindows: RoutineWindow[],
-  activeCooldowns: Record<string, ActiveCooldown> | ActiveCooldown | undefined,
+  activeCooldowns: Record<string, ActiveCooldown> | ActiveCooldown[] | ActiveCooldown | undefined,
   riskGroups: RiskGroup[],
   apps: DeviceApp[],
-  now: number = Date.now()
+  now: number = Date.now(),
+  activeAccessLeases: Record<string, AccessLease> = {}
 ): {
   appRestrictions: AppRestriction[];
   effectiveAppIds: string[];
 } {
   const restrictionMap = new Map<string, AppRestriction>();
+  const activeLeaseGroupIds = new Set(
+    getActiveAccessLeases(activeAccessLeases, now).map((l) => l.groupId)
+  );
 
   // Helper to ensure an app is never restricted if essential
   const isRestrictable = (appId: string): boolean => {
@@ -28,6 +33,9 @@ export function computeEffectiveRestrictions(
     if (!window.enabled) continue;
 
     for (const groupId of window.protectedGroupIds) {
+      // If group has an active access lease, suppress restriction for this group
+      if (activeLeaseGroupIds.has(groupId)) continue;
+
       const group = riskGroups.find((g) => g.id === groupId);
       if (!group) continue;
 
@@ -58,6 +66,9 @@ export function computeEffectiveRestrictions(
 
   for (const cooldown of cooldownList) {
     if (cooldown.endsAt <= now) continue;
+
+    // If group has an active access lease, suppress cooldown restriction for this group
+    if (activeLeaseGroupIds.has(cooldown.groupId)) continue;
 
     const group = riskGroups.find((g) => g.id === cooldown.groupId);
     if (!group) continue;

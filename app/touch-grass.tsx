@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Sprout, Lock, Sparkles } from 'lucide-react-native';
@@ -121,16 +120,14 @@ export default function TouchGrassScreen() {
           </View>
         </View>
 
-        {/* Need Emergency Access Link (Web/Demo prototype) */}
-        {Platform.OS === 'web' && (
-          <TouchableOpacity
-            style={styles.emergencyLink}
-            onPress={() => setEmergencyModalVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.emergencyLinkText}>Need emergency access?</Text>
-          </TouchableOpacity>
-        )}
+        {/* Need Emergency Access Link */}
+        <TouchableOpacity
+          style={styles.emergencyLink}
+          onPress={() => setEmergencyModalVisible(true)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.emergencyLinkText}>Need emergency access?</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );

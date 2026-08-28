@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   AppClassification,
   DeviceApp,
+  EMERGENCY_ACCESS_MINUTES,
   InsightMetrics,
   OfflineActivity,
   RhythmState,
@@ -20,6 +21,12 @@ import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
 import { getPrimaryCooldown } from '../domain/rhythm/types';
+import {
+  DailyRhythmSummary,
+  LocalInsightsRepository,
+  WeeklyRhythmSummary,
+  getLocalDateKey,
+} from '../domain/insights';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -44,6 +51,8 @@ interface PrototypeState {
   routineWindows: RoutineWindow[];
   offlineActivities: OfflineActivity[];
   insightMetrics: InsightMetrics;
+  weeklySummary?: WeeklyRhythmSummary;
+  todaySummary?: DailyRhythmSummary;
   hasCompletedOnboarding: boolean;
   permissionState: PermissionState;
 
@@ -59,6 +68,7 @@ interface PrototypeState {
 
   // Core Actions
   initializeApps: () => Promise<void>;
+  refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
   setRhythmState: (state: RhythmState) => Promise<void>;
@@ -66,6 +76,9 @@ interface PrototypeState {
   simulateRiskSession: (groupId?: string) => void;
   resolveExpiredTimer: () => Promise<void>;
   resetDemo: () => Promise<void>;
+
+  startAccessLease: (groupId: string, durationMinutes?: number) => Promise<void>;
+  triggerEmergencyBypass: () => Promise<void>;
 
   updateAppClassification: (
     appId: string,
@@ -91,7 +104,6 @@ interface PrototypeState {
   closeAppEdit: () => void;
 
   completeOnboarding: () => void;
-  triggerEmergencyBypass: () => Promise<void>;
 }
 
 // Initial demo timer: 01:18:24 remaining until morning unlock
@@ -106,6 +118,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   routineWindows: [...initialRoutineWindows],
   offlineActivities: [...defaultOfflineActivities],
   insightMetrics: { ...initialInsightMetrics },
+  weeklySummary: undefined,
+  todaySummary: undefined,
   hasCompletedOnboarding: true,
   permissionState: {
     usageAccess: 'unknown',
@@ -150,8 +164,45 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         activeRiskGroupId: primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
         permissionState: permStatus,
       });
+
+      // Load real local insights
+      await get().refreshInsights();
     } catch {
       // Fallback
+    }
+  },
+
+  refreshInsights: async () => {
+    try {
+      const { storage } = getPlatformServices();
+      const windows = get().routineWindows;
+      const repo = new LocalInsightsRepository(storage, windows);
+
+      const todayKey = getLocalDateKey();
+      const todaySummary = await repo.getDailySummary(todayKey);
+      const weeklySummary = await repo.getWeeklySummary(todayKey);
+
+      set({
+        todaySummary: todaySummary || undefined,
+        weeklySummary,
+        insightMetrics: weeklySummary.hasData
+          ? {
+              protectedTimeTodayMinutes: (todaySummary?.routineProtectedMinutes || 0) + (Object.values(todaySummary?.cooldownMinutesByGroup || {}).reduce((a, b) => a + b, 0)),
+              protectedTimeWeeklyHours: Math.round((weeklySummary.totalProtectedMinutes / 60) * 10) / 10,
+              averageRiskSessionMinutes: weeklySummary.averageRiskSessionMinutes,
+              cooldownTriggersCount: weeklySummary.totalCooldownCount,
+              firstRiskAppUseTime: todaySummary?.firstRiskAppUseTime || '08:00',
+              finalRiskAppUseTime: todaySummary?.finalRiskAppUseTime || '21:30',
+              weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
+                day: t.day,
+                protectedMinutes: t.protectedMinutes,
+                riskMinutes: t.riskMinutes,
+              })),
+            }
+          : get().insightMetrics,
+      });
+    } catch {
+      // Keep existing metrics on error
     }
   },
 
@@ -249,6 +300,29 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
   },
 
+  startAccessLease: async (groupId: string, durationMinutes = EMERGENCY_ACCESS_MINUTES) => {
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = await coordinator.dispatch({
+      type: 'START_ACCESS_LEASE',
+      groupId,
+      durationMinutes,
+      reason: 'emergency',
+      timestamp: Date.now(),
+    });
+
+    set({
+      rhythmState: runtime.state,
+      emergencyModalVisible: false,
+    });
+
+    await get().refreshInsights();
+  },
+
+  triggerEmergencyBypass: async () => {
+    const activeGroupId = get().activeRiskGroupId || 'social';
+    await get().startAccessLease(activeGroupId, EMERGENCY_ACCESS_MINUTES);
+  },
+
   resetDemo: async () => {
     const coordinator = RhythmCoordinator.getInstance();
     const { storage } = getPlatformServices();
@@ -270,6 +344,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
       insightMetrics: { ...initialInsightMetrics },
+      weeklySummary: undefined,
+      todaySummary: undefined,
       searchQuery: '',
       filterClassification: 'all',
       demoSwitcherVisible: false,
@@ -437,19 +513,5 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   completeOnboarding: () => {
     get().setRhythmState('morning-buffer');
     set({ hasCompletedOnboarding: true });
-  },
-
-  triggerEmergencyBypass: async () => {
-    const { storage } = getPlatformServices();
-    await storage.appendHistoryEvent({
-      type: 'emergency-bypass',
-      timestamp: Date.now(),
-    });
-
-    set({
-      rhythmState: 'available',
-      activeTimerEndsAt: undefined,
-      emergencyModalVisible: false,
-    });
   },
 }));

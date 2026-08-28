@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { PermissionProvider, PermissionState } from '../PermissionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 
@@ -8,16 +9,20 @@ export class NativePermissionProvider implements PermissionProvider {
       const usageAccess = nativeStatus.hasUsagePermission ? 'granted' : 'denied';
 
       let restrictionAuthorization: PermissionState['restrictionAuthorization'] = 'unsupported';
-      if (nativeStatus.familyControlsStatus === 'approved') {
-        restrictionAuthorization = 'granted';
-      } else if (nativeStatus.familyControlsStatus === 'denied') {
-        restrictionAuthorization = 'denied';
+      if (Platform.OS === 'ios') {
+        if (nativeStatus.familyControlsStatus === 'approved') {
+          restrictionAuthorization = 'granted';
+        } else if (nativeStatus.familyControlsStatus === 'denied') {
+          restrictionAuthorization = 'denied';
+        }
+      } else if (Platform.OS === 'android') {
+        restrictionAuthorization = nativeStatus.hasRestrictionPermission ? 'granted' : 'denied';
       }
 
       return {
         usageAccess,
         restrictionAuthorization,
-        restrictionCapability: 'foundation-only',
+        restrictionCapability: nativeStatus.hasRestrictionPermission ? 'enforced' : 'foundation-only',
       };
     } catch {
       return {
@@ -38,7 +43,11 @@ export class NativePermissionProvider implements PermissionProvider {
 
   async requestRestrictionAccess(): Promise<void> {
     try {
-      await RhythmDeviceModule.requestFamilyControls();
+      if (Platform.OS === 'ios') {
+        await RhythmDeviceModule.requestFamilyControls();
+      } else if (Platform.OS === 'android') {
+        await RhythmDeviceModule.requestRestrictionPermission();
+      }
     } catch {
       // Ignored
     }

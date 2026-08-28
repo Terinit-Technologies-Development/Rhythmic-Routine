@@ -19,10 +19,12 @@ import {
   BatteryCharging,
   Key,
   Info,
+  ShieldAlert,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
+import { getPlatformServices } from '../src/platform/PlatformServices';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -36,6 +38,12 @@ export default function SettingsScreen() {
   useEffect(() => {
     checkPermissions();
   }, [checkPermissions]);
+
+  const requestRestriction = async () => {
+    const { permissions } = getPlatformServices();
+    await permissions.requestRestrictionAccess();
+    await checkPermissions();
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -55,14 +63,14 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Pass 02A Architecture Banner */}
+        {/* Pass 03 Release Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>
               <Cpu size={22} color={colors.forest} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Pass 02A: Native Rhythm Engine</Text>
+              <Text style={styles.cardTitle}>Release Candidate: Native Rhythm Engine</Text>
               <Text style={styles.cardSub}>Local-First SQLite & Multi-Cooldown State</Text>
             </View>
           </View>
@@ -87,7 +95,7 @@ export default function SettingsScreen() {
           <View style={styles.checkItem}>
             <Lock size={18} color={permissionState.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.checkTitle}>Screen Time Authorization</Text>
+              <Text style={styles.checkTitle}>Screen Time & Shielding Authorization</Text>
               <Text style={styles.checkText}>Status: {permissionState.restrictionAuthorization.toUpperCase()}</Text>
             </View>
           </View>
@@ -111,7 +119,32 @@ export default function SettingsScreen() {
               <Text style={styles.permissionBtnText}>Configure System Usage Access</Text>
             </TouchableOpacity>
           )}
+
+          {permissionState.restrictionAuthorization !== 'granted' && (
+            <TouchableOpacity
+              style={[styles.permissionBtn, { marginTop: 8 }]}
+              activeOpacity={0.8}
+              onPress={requestRestriction}
+            >
+              <Text style={styles.permissionBtnText}>
+                {Platform.OS === 'ios' ? 'Request Family Controls Permission' : 'Configure Accessibility Intervention'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* Android Privacy Disclosure */}
+        {Platform.OS === 'android' && (
+          <View style={styles.disclosureCard}>
+            <View style={styles.disclosureHeader}>
+              <ShieldAlert size={18} color={colors.forestDark} />
+              <Text style={styles.disclosureTitle}>Privacy Notice (Android Accessibility)</Text>
+            </View>
+            <Text style={styles.disclosureText}>
+              Rhythmic-Routine is not an accessibility tool for people with disabilities. We use Android&#39;s Window State Change observation solely to present the mindful Touch Grass intervention when a restricted app is opened during an active cooldown or buffer window. We never read screen text, passwords, or personal content.
+            </Text>
+          </View>
+        )}
 
         {/* Boundary Integrity & Battery Discipline */}
         <View style={styles.card}>
@@ -292,6 +325,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: colors.forestDark,
+  },
+  disclosureCard: {
+    backgroundColor: '#FAF5EA',
+    borderRadius: radii.xl,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EFE2CC',
+    marginBottom: 14,
+  },
+  disclosureHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  disclosureTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  disclosureText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 18,
   },
   actionRow: {
     flexDirection: 'row',

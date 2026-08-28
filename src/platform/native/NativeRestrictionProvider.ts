@@ -1,4 +1,9 @@
-import { RestrictionProvider, RestrictionResult } from '../RestrictionProvider';
+import { Platform } from 'react-native';
+import {
+  RestrictionCapability,
+  RestrictionProvider,
+  RestrictionResult,
+} from '../RestrictionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 
 export class NativeRestrictionProvider implements RestrictionProvider {
@@ -20,11 +25,10 @@ export class NativeRestrictionProvider implements RestrictionProvider {
       // Platform restriction boundary
     }
 
-    // Honest reporting: Native shielding is currently in foundation-only phase
     return {
       status: 'unsupported',
       appIds,
-      reason: 'Physical app shielding requires active platform Screen Time token binding.',
+      reason: 'Physical app shielding requires active platform authorization and token binding.',
     };
   }
 
@@ -54,7 +58,47 @@ export class NativeRestrictionProvider implements RestrictionProvider {
     return Array.from(this.activeRestrictedApps);
   }
 
-  async getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'> {
-    return 'foundation-only';
+  async getCapability(): Promise<RestrictionCapability> {
+    try {
+      const perms = await RhythmDeviceModule.checkPermissions();
+      const isEnforced = perms.hasRestrictionPermission === true;
+
+      if (Platform.OS === 'ios') {
+        return {
+          status: isEnforced ? 'enforced' : 'foundation-only',
+          mode: 'system-activity-threshold',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: false, // iOS uses privacy-preserving system-managed activity thresholds
+          supportsEmergencyOverride: true,
+          reason: isEnforced
+            ? 'iOS Screen Time & ManagedSettings shielding active'
+            : 'iOS Screen Time requires Apple Family Controls authorization and provisioning',
+        };
+      }
+
+      // Android
+      return {
+        status: isEnforced ? 'enforced' : 'foundation-only',
+        mode: 'continuous-session',
+        supportsRoutineWindows: true,
+        supportsGroupCooldowns: true,
+        supportsContinuousSessionGap: true,
+        supportsEmergencyOverride: true,
+        reason: isEnforced
+          ? 'Android Rhythm accessibility intervention service active'
+          : 'Android requires enabling Rhythm accessibility intervention in System Settings',
+      };
+    } catch {
+      return {
+        status: 'foundation-only',
+        mode: Platform.OS === 'ios' ? 'system-activity-threshold' : 'continuous-session',
+        supportsRoutineWindows: true,
+        supportsGroupCooldowns: true,
+        supportsContinuousSessionGap: Platform.OS === 'android',
+        supportsEmergencyOverride: true,
+        reason: 'Native module unavailable or uninitialized',
+      };
+    }
   }
 }

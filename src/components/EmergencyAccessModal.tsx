@@ -6,16 +6,21 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
 } from 'react-native';
-import { HeartHandshake } from 'lucide-react-native';
+import { HeartHandshake, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
+import { EMERGENCY_ACCESS_MINUTES } from '../types/domain';
 
 export const EmergencyAccessModal: React.FC = () => {
   const visible = usePrototypeStore((s) => s.emergencyModalVisible);
   const setVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const triggerEmergencyBypass = usePrototypeStore((s) => s.triggerEmergencyBypass);
+  const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
 
   if (!visible) return null;
+
+  const targetGroup = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
 
   return (
     <View style={styles.overlay}>
@@ -31,16 +36,18 @@ export const EmergencyAccessModal: React.FC = () => {
         <Text style={styles.title}>Need emergency access?</Text>
 
         <Text style={styles.message}>
-          Take a gentle breath. Rhythm is here to protect your attention, not to punish you.
+          Take a gentle breath. Rhythm is here to protect your attention, not to lock you out.
           {'\n\n'}
-          If you have an urgent message, travel update, or emergency, you can unlock your apps
-          immediately without penalty.
+          You will receive <Text style={styles.bold}>{EMERGENCY_ACCESS_MINUTES} minutes</Text> of temporary access to <Text style={styles.bold}>{targetGroup?.name ?? 'your apps'}</Text>.
+          {'\n\n'}
+          Your active cooldown will continue running in the background and restrictions will resume automatically when the lease expires.
         </Text>
 
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.cancelBtn}
             onPress={() => setVisible(false)}
+            activeOpacity={0.8}
           >
             <Text style={styles.cancelBtnText}>Stay in Rhythm</Text>
           </TouchableOpacity>
@@ -48,8 +55,12 @@ export const EmergencyAccessModal: React.FC = () => {
           <TouchableOpacity
             style={styles.unlockBtn}
             onPress={triggerEmergencyBypass}
+            activeOpacity={0.8}
           >
-            <Text style={styles.unlockBtnText}>Unlock Apps</Text>
+            <View style={styles.unlockRow}>
+              <ShieldAlert size={16} color={colors.amberDark} />
+              <Text style={styles.unlockBtnText}>Grant {EMERGENCY_ACCESS_MINUTES}-Min Override</Text>
+            </View>
           </TouchableOpacity>
         </View>
       </View>
@@ -100,6 +111,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 24,
   },
+  bold: {
+    fontWeight: '700',
+    color: colors.text,
+  },
   actions: {
     width: '100%',
     gap: 10,
@@ -120,12 +135,17 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingVertical: 12,
     borderRadius: radii.full,
-    backgroundColor: '#F3EFE6',
+    backgroundColor: '#F7EFE9',
     alignItems: 'center',
+  },
+  unlockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   unlockBtnText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: colors.textSecondary,
+    fontWeight: '700',
+    color: colors.amberDark,
   },
 });

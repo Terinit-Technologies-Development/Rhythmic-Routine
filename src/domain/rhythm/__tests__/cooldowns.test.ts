@@ -57,6 +57,7 @@ describe('Rhythm Engine — Multi-Group Cooldown Lifecycle', () => {
     const primary = getPrimaryCooldown({
       state: 'cooldown',
       activeCooldowns: restored,
+      activeAccessLeases: {},
       activeRoutineWindowIds: [],
       activeRestrictions: [],
     }, restartTime);

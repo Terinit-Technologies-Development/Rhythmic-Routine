@@ -1,4 +1,8 @@
-import { RestrictionProvider, RestrictionResult } from '../RestrictionProvider';
+import {
+  RestrictionCapability,
+  RestrictionProvider,
+  RestrictionResult,
+} from '../RestrictionProvider';
 
 export class MockRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
@@ -27,8 +31,16 @@ export class MockRestrictionProvider implements RestrictionProvider {
     return Array.from(this.activeRestrictedApps);
   }
 
-  async getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'> {
-    return 'enforced'; // Mock provider simulates complete enforcement for web/tests
+  async getCapability(): Promise<RestrictionCapability> {
+    return {
+      status: 'enforced',
+      mode: 'continuous-session',
+      supportsRoutineWindows: true,
+      supportsGroupCooldowns: true,
+      supportsContinuousSessionGap: true,
+      supportsEmergencyOverride: true,
+      reason: 'Mock/Web simulation environment',
+    };
   }
 }
 

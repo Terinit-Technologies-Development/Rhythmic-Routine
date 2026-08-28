@@ -1,5 +1,22 @@
 export type RestrictionApplyStatus = 'applied' | 'unsupported' | 'failed';
 
+export type EnforcementMode =
+  | 'continuous-session'
+  | 'system-activity-threshold'
+  | 'routine-only'
+  | 'foundation-only'
+  | 'unsupported';
+
+export interface RestrictionCapability {
+  status: 'enforced' | 'foundation-only' | 'unsupported';
+  mode: EnforcementMode;
+  supportsRoutineWindows: boolean;
+  supportsGroupCooldowns: boolean;
+  supportsContinuousSessionGap: boolean;
+  supportsEmergencyOverride: boolean;
+  reason?: string;
+}
+
 export interface RestrictionResult {
   status: RestrictionApplyStatus;
   appIds: string[];
@@ -25,5 +42,5 @@ export interface RestrictionProvider {
   /**
    * Reports the actual platform capability state truthfully.
    */
-  getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'>;
+  getCapability(): Promise<RestrictionCapability>;
 }

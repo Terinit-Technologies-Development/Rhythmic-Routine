@@ -1,5 +1,7 @@
 import {
+  AccessLease,
   ActiveCooldown,
+  EMERGENCY_ACCESS_MINUTES,
   RhythmConfiguration,
   RhythmEffect,
   RhythmEvent,
@@ -42,6 +44,7 @@ export function processRhythmEvent(
 
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
+  const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
   const effects: RhythmEffect[] = [];
 
   // 1. Check expired cooldowns individually (multi-group support)
@@ -63,7 +66,26 @@ export function processRhythmEvent(
     }
   }
 
-  // 2. Process specific event
+  // 2. Check expired access leases (multi-group support)
+  for (const [groupId, lease] of Object.entries(nextAccessLeases)) {
+    if (lease.endsAt <= nowMs) {
+      delete nextAccessLeases[groupId];
+      effects.push({
+        type: 'END_ACCESS_LEASE',
+        groupId,
+      });
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: {
+          type: 'access-lease-ended',
+          groupId,
+          timestamp: nowMs,
+        },
+      });
+    }
+  }
+
+  // 3. Process specific event
   switch (event.type) {
     case 'CLOCK_TICK':
     case 'RECONCILE': {
@@ -258,23 +280,72 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'START_ACCESS_LEASE': {
+      const durationMinutes = event.durationMinutes ?? EMERGENCY_ACCESS_MINUTES;
+      const endsAt = nowMs + durationMinutes * 60 * 1000;
+      const lease: AccessLease = {
+        id: `lease-${event.groupId}-${nowMs}`,
+        groupId: event.groupId,
+        startedAt: nowMs,
+        endsAt,
+        reason: event.reason ?? 'emergency',
+      };
+      nextAccessLeases[event.groupId] = lease;
+
+      effects.push({
+        type: 'START_ACCESS_LEASE',
+        groupId: event.groupId,
+        endsAt,
+      });
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: {
+          type: 'access-lease-started',
+          groupId: event.groupId,
+          reason: lease.reason,
+          timestamp: nowMs,
+        },
+      });
+      break;
+    }
+
+    case 'END_ACCESS_LEASE': {
+      if (nextAccessLeases[event.groupId]) {
+        delete nextAccessLeases[event.groupId];
+        effects.push({
+          type: 'END_ACCESS_LEASE',
+          groupId: event.groupId,
+        });
+        effects.push({
+          type: 'RECORD_HISTORY',
+          event: {
+            type: 'access-lease-ended',
+            groupId: event.groupId,
+            timestamp: event.timestamp,
+          },
+        });
+      }
+      break;
+    }
+
     case 'ROUTINE_STARTED':
     case 'ROUTINE_ENDED':
       break;
   }
 
-  // 3. Resolve active routine windows
+  // 4. Resolve active routine windows
   const activeRoutineWindowIds = getActiveRoutineWindowIds(nowDate, config.routineWindows);
   const activeRoutineWindows = config.routineWindows.filter((w) => isInsideWindow(nowDate, w));
 
-  // 4. Compute desired effective restrictions and diff against previous
+  // 5. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(
     activeRoutineWindows,
     nextCooldowns,
     config.riskGroups,
     config.apps,
-    nowMs
+    nowMs,
+    nextAccessLeases
   );
 
   const { toApply, toClear } = diffRestrictions(
@@ -296,7 +367,7 @@ export function processRhythmEvent(
     });
   }
 
-  // 5. Resolve high-level state
+  // 6. Resolve high-level state
   const nextState = resolveRhythmState(
     nowDate,
     config.routineWindows,
@@ -308,6 +379,7 @@ export function processRhythmEvent(
     state: nextState,
     activeSession: nextSession,
     activeCooldowns: nextCooldowns,
+    activeAccessLeases: nextAccessLeases,
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
   };
