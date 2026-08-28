@@ -9,6 +9,7 @@
     "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.8",
     "expo-router": "~57.0.17",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "lucide-react-native": "^1.34.0",
     "react": "19.2.3",
@@ -37,7 +38,7 @@
     "lint": "expo lint",
     "typecheck": "node --stack-size=8192 ./node_modules/typescript/bin/tsc --noEmit",
     "build:web": "expo export -p web",
-    "test": "tsx --test src/domain/__tests__/*.test.ts"
+    "test": "tsx --test src/domain/__tests__/*.test.ts src/domain/rhythm/__tests__/*.test.ts"
   },
   "private": true
 }

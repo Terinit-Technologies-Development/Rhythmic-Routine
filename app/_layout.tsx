@@ -8,23 +8,30 @@ import { DemoStateSwitcher } from '../src/components/DemoStateSwitcher';
 import { TimeSelectorModal } from '../src/components/TimeSelectorModal';
 import { AppEditModal } from '../src/components/AppEditModal';
 import { EmergencyAccessModal } from '../src/components/EmergencyAccessModal';
-
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
+import { configurePlatformServices } from '../src/platform/PlatformServices';
+import { NativeUsageProvider } from '../src/platform/native/NativeUsageProvider';
+import { NativeRestrictionProvider } from '../src/platform/native/NativeRestrictionProvider';
+import { NativePermissionProvider } from '../src/platform/native/NativePermissionProvider';
+import { NativeStorageProvider } from '../src/platform/storage/NativeStorageProvider';
+
+// Configure platform-specific services if running on native device
+if (Platform.OS === 'android' || Platform.OS === 'ios') {
+  configurePlatformServices({
+    usage: new NativeUsageProvider(),
+    restrictions: new NativeRestrictionProvider(),
+    storage: new NativeStorageProvider(),
+    permissions: new NativePermissionProvider(),
+  });
+}
 
 export default function RootLayout() {
   const initializeApps = usePrototypeStore((s) => s.initializeApps);
-  const resolveExpiredTimer = usePrototypeStore((s) => s.resolveExpiredTimer);
 
   React.useEffect(() => {
     initializeApps();
   }, [initializeApps]);
 
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      resolveExpiredTimer();
-    }, 1000);
-    return () => clearInterval(id);
-  }, [resolveExpiredTimer]);
   return (
     <SafeAreaProvider>
       <View style={styles.webCenteringContainer}>
@@ -45,11 +52,13 @@ export default function RootLayout() {
             <Stack.Screen name="settings" />
           </Stack>
 
-          {/* Global Prototype Overlays */}
-          <DemoStateSwitcher />
+          {/* Web-only interactive state simulation switcher */}
+          {Platform.OS === 'web' && <DemoStateSwitcher />}
+
+          {/* Global Modals */}
           <TimeSelectorModal />
           <AppEditModal />
-          <EmergencyAccessModal />
+          {Platform.OS === 'web' && <EmergencyAccessModal />}
         </View>
       </View>
     </SafeAreaProvider>

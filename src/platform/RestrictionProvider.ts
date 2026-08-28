@@ -1,16 +1,29 @@
+export type RestrictionApplyStatus = 'applied' | 'unsupported' | 'failed';
+
+export interface RestrictionResult {
+  status: RestrictionApplyStatus;
+  appIds: string[];
+  reason?: string;
+}
+
 export interface RestrictionProvider {
   /**
-   * Applies temporary restriction overlay/blocking to specified applications.
+   * Applies shielding restrictions to the given app IDs.
    */
-  applyRestrictions(appIds: string[]): Promise<void>;
+  applyRestrictions(appIds: string[]): Promise<RestrictionResult>;
 
   /**
-   * Removes restrictions for specified applications.
+   * Clears shielding restrictions for the given app IDs.
    */
-  clearRestrictions(appIds: string[]): Promise<void>;
+  clearRestrictions(appIds: string[]): Promise<RestrictionResult>;
 
   /**
-   * Retrieves list of currently restricted application IDs.
+   * Returns list of currently confirmed restricted app IDs.
    */
   getActiveRestrictedApps(): Promise<string[]>;
+
+  /**
+   * Reports the actual platform capability state truthfully.
+   */
+  getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'>;
 }

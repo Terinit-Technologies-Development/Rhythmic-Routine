@@ -16,11 +16,10 @@ import {
   offlineActivities as defaultOfflineActivities,
 } from '../data/mockData';
 import { getPlatformServices } from '../platform/PlatformServices';
-import {
-  createUniqueGroupId,
-  getRestrictableAppIds,
-  getRoutineWindow,
-} from '../domain/selectors';
+import { createUniqueGroupId } from '../domain/selectors';
+import { RhythmCoordinator } from '../application/RhythmCoordinator';
+import { PermissionState } from '../platform/PermissionProvider';
+import { getPrimaryCooldown } from '../domain/rhythm/types';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -36,7 +35,7 @@ export interface AppEditConfig {
 }
 
 interface PrototypeState {
-  // Domain data
+  // Domain data (projected from RhythmCoordinator / Engine)
   rhythmState: RhythmState;
   activeRiskGroupId: string;
   activeTimerEndsAt?: number; // Absolute timestamp for countdowns
@@ -46,6 +45,7 @@ interface PrototypeState {
   offlineActivities: OfflineActivity[];
   insightMetrics: InsightMetrics;
   hasCompletedOnboarding: boolean;
+  permissionState: PermissionState;
 
   // Search & Filters
   searchQuery: string;
@@ -59,6 +59,8 @@ interface PrototypeState {
 
   // Core Actions
   initializeApps: () => Promise<void>;
+  checkPermissions: () => Promise<void>;
+  requestUsagePermission: () => Promise<void>;
   setRhythmState: (state: RhythmState) => Promise<void>;
   simulateCooldown: (groupId?: string) => Promise<void>;
   simulateRiskSession: (groupId?: string) => void;
@@ -105,6 +107,11 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   offlineActivities: [...defaultOfflineActivities],
   insightMetrics: { ...initialInsightMetrics },
   hasCompletedOnboarding: true,
+  permissionState: {
+    usageAccess: 'unknown',
+    restrictionAuthorization: 'unknown',
+    restrictionCapability: 'foundation-only',
+  },
 
   searchQuery: '',
   filterClassification: 'all',
@@ -116,13 +123,56 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   initializeApps: async () => {
     try {
-      const { usage } = getPlatformServices();
-      const deviceApps = await usage.getInstalledApps();
-      if (deviceApps && deviceApps.length > 0) {
-        set({ apps: deviceApps });
-      }
+      const coordinator = RhythmCoordinator.getInstance();
+      const runtime = await coordinator.initialize();
+      const config = coordinator.getConfiguration();
+
+      // Subscribe store to live runtime engine updates
+      coordinator.subscribe((nextRuntime) => {
+        const primaryCooldown = getPrimaryCooldown(nextRuntime);
+        set({
+          rhythmState: nextRuntime.state,
+          activeTimerEndsAt: primaryCooldown?.endsAt,
+          activeRiskGroupId: primaryCooldown?.groupId || nextRuntime.activeSession?.groupId || get().activeRiskGroupId,
+        });
+      });
+
+      const { permissions } = getPlatformServices();
+      const permStatus = await permissions.getStatus();
+      const primaryCooldown = getPrimaryCooldown(runtime);
+
+      set({
+        apps: config?.apps ?? get().apps,
+        riskGroups: config?.riskGroups ?? get().riskGroups,
+        routineWindows: config?.routineWindows ?? get().routineWindows,
+        rhythmState: runtime.state,
+        activeTimerEndsAt: primaryCooldown?.endsAt || (runtime.state === 'morning-buffer' ? Date.now() + INITIAL_TIMER_MS : undefined),
+        activeRiskGroupId: primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
+        permissionState: permStatus,
+      });
     } catch {
-      // Fallback to initialApps
+      // Fallback
+    }
+  },
+
+  checkPermissions: async () => {
+    try {
+      const { permissions } = getPlatformServices();
+      const status = await permissions.getStatus();
+      set({ permissionState: status });
+    } catch {
+      // Fallback
+    }
+  },
+
+  requestUsagePermission: async () => {
+    try {
+      const { permissions } = getPlatformServices();
+      await permissions.requestUsageAccess();
+      const status = await permissions.getStatus();
+      set({ permissionState: status });
+    } catch {
+      // Fallback
     }
   },
 
@@ -149,53 +199,27 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
 
     set({ rhythmState: state, activeTimerEndsAt: timerEndsAt });
-
-    // Sync restrictions via PlatformServices with Essential-App safety
-    const { restrictions } = getPlatformServices();
-    const { routineWindows, riskGroups, apps } = get();
-
-    if (state === 'morning-buffer') {
-      const morningWin = getRoutineWindow(routineWindows, 'morning-buffer');
-      const protectedGroupIds = morningWin?.protectedGroupIds || [];
-      const protectedAppIds = riskGroups
-        .filter((g) => protectedGroupIds.includes(g.id))
-        .flatMap((g) => g.appIds);
-      const restrictable = getRestrictableAppIds(protectedAppIds, apps);
-      await restrictions.applyRestrictions(restrictable);
-    } else if (state === 'evening-wind-down') {
-      const eveningWin = getRoutineWindow(routineWindows, 'evening-wind-down');
-      const protectedGroupIds = eveningWin?.protectedGroupIds || [];
-      const protectedAppIds = riskGroups
-        .filter((g) => protectedGroupIds.includes(g.id))
-        .flatMap((g) => g.appIds);
-      const restrictable = getRestrictableAppIds(protectedAppIds, apps);
-      await restrictions.applyRestrictions(restrictable);
-    } else if (state === 'cooldown') {
-      const activeGroup = riskGroups.find((g) => g.id === get().activeRiskGroupId);
-      if (activeGroup) {
-        const restrictable = getRestrictableAppIds(activeGroup.appIds, apps);
-        await restrictions.applyRestrictions(restrictable);
-      }
-    } else {
-      await restrictions.clearRestrictions(apps.map((a) => a.id));
-    }
   },
 
   simulateCooldown: async (groupId = 'social') => {
     const group = get().riskGroups.find((g) => g.id === groupId);
     const durationMs = (group?.cooldownMinutes ?? 90) * 60 * 1000;
+    const endsAt = Date.now() + durationMs;
 
     set({
       rhythmState: 'cooldown',
       activeRiskGroupId: groupId,
-      activeTimerEndsAt: Date.now() + durationMs,
+      activeTimerEndsAt: endsAt,
     });
 
-    if (group) {
-      const { restrictions } = getPlatformServices();
-      const restrictable = getRestrictableAppIds(group.appIds, get().apps);
-      await restrictions.applyRestrictions(restrictable);
-    }
+    // Route through coordinator dispatch so engine owns state and executes effects
+    const coordinator = RhythmCoordinator.getInstance();
+    await coordinator.dispatch({
+      type: 'COOLDOWN_STARTED',
+      groupId,
+      endsAt,
+      timestamp: Date.now(),
+    });
   },
 
   simulateRiskSession: (groupId = 'social') => {
@@ -213,30 +237,37 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       state.activeTimerEndsAt &&
       Date.now() >= state.activeTimerEndsAt
     ) {
-      const group = state.riskGroups.find((g) => g.id === state.activeRiskGroupId);
-      if (group) {
-        const { restrictions } = getPlatformServices();
-        await restrictions.clearRestrictions(group.appIds);
-      }
+      // Reconcile through coordinator; let engine's restriction union determine clear deltas
+      const coordinator = RhythmCoordinator.getInstance();
+      const nextRuntime = await coordinator.reconcile(Date.now());
 
+      const primaryCooldown = getPrimaryCooldown(nextRuntime);
       set({
-        rhythmState: 'available',
-        activeTimerEndsAt: undefined,
+        rhythmState: nextRuntime.state,
+        activeTimerEndsAt: primaryCooldown?.endsAt,
       });
     }
   },
 
   resetDemo: async () => {
-    const { restrictions } = getPlatformServices();
-    await restrictions.clearRestrictions(initialApps.map((a) => a.id));
+    const coordinator = RhythmCoordinator.getInstance();
+    const { storage } = getPlatformServices();
+    await storage.clearAll();
+    coordinator.destroy();
+    const runtime = await coordinator.initialize();
+    const config = coordinator.getConfiguration();
+    const primaryCooldown = getPrimaryCooldown(runtime);
 
     set({
-      rhythmState: 'morning-buffer',
-      activeRiskGroupId: 'social',
-      activeTimerEndsAt: Date.now() + INITIAL_TIMER_MS,
-      apps: [...initialApps],
-      riskGroups: [...initialRiskGroups],
-      routineWindows: [...initialRoutineWindows],
+      rhythmState: runtime.state,
+      activeRiskGroupId:
+        primaryCooldown?.groupId ??
+        runtime.activeSession?.groupId ??
+        'social',
+      activeTimerEndsAt: primaryCooldown?.endsAt,
+      apps: config?.apps ?? [...initialApps],
+      riskGroups: config?.riskGroups ?? [...initialRiskGroups],
+      routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
       insightMetrics: { ...initialInsightMetrics },
       searchQuery: '',
@@ -276,22 +307,41 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         return group;
       });
 
+      RhythmCoordinator.getInstance().updateConfig({
+        apps: updatedApps,
+        riskGroups: updatedRiskGroups,
+      }).catch(() => {});
+
       return { apps: updatedApps, riskGroups: updatedRiskGroups };
     });
   },
 
   updateRiskGroup: (groupId, updates) => {
-    set((state) => ({
-      riskGroups: state.riskGroups.map((g) => (g.id === groupId ? { ...g, ...updates } : g)),
-    }));
+    set((state) => {
+      const updatedRiskGroups = state.riskGroups.map((g) =>
+        g.id === groupId ? { ...g, ...updates } : g
+      );
+
+      RhythmCoordinator.getInstance().updateConfig({
+        riskGroups: updatedRiskGroups,
+      }).catch(() => {});
+
+      return { riskGroups: updatedRiskGroups };
+    });
   },
 
   updateRoutineWindow: (windowId, updates) => {
-    set((state) => ({
-      routineWindows: state.routineWindows.map((w) =>
+    set((state) => {
+      const updatedWindows = state.routineWindows.map((w) =>
         w.id === windowId ? { ...w, ...updates } : w
-      ),
-    }));
+      );
+
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
+      return { routineWindows: updatedWindows };
+    });
   },
 
   toggleRoutineDay: (day) => {
@@ -302,15 +352,19 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         ? currentDays.filter((d) => d !== day)
         : [...currentDays, day].sort();
 
-      return {
-        routineWindows: state.routineWindows.map((w) => ({ ...w, activeDays: newDays })),
-      };
+      const updatedWindows = state.routineWindows.map((w) => ({ ...w, activeDays: newDays }));
+
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
+      return { routineWindows: updatedWindows };
     });
   },
 
   toggleGroupProtection: (windowId, groupId, enabled) => {
-    set((state) => ({
-      routineWindows: state.routineWindows.map((w) => {
+    set((state) => {
+      const updatedWindows = state.routineWindows.map((w) => {
         if (w.id !== windowId) return w;
 
         const currentIds = w.protectedGroupIds;
@@ -322,8 +376,14 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
           ...w,
           protectedGroupIds: nextIds,
         };
-      }),
-    }));
+      });
+
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
+      return { routineWindows: updatedWindows };
+    });
   },
 
   addNewRiskGroup: (name, description) => {
@@ -344,7 +404,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       isBufferingToday: false,
     };
 
-    set((state) => ({ riskGroups: [...state.riskGroups, newGroup] }));
+    const nextGroups = [...get().riskGroups, newGroup];
+    set({ riskGroups: nextGroups });
+
+    RhythmCoordinator.getInstance().updateConfig({
+      riskGroups: nextGroups,
+    }).catch(() => {});
+
     return id;
   },
 
@@ -374,8 +440,11 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   triggerEmergencyBypass: async () => {
-    const { restrictions } = getPlatformServices();
-    await restrictions.clearRestrictions(get().apps.map((a) => a.id));
+    const { storage } = getPlatformServices();
+    await storage.appendHistoryEvent({
+      type: 'emergency-bypass',
+      timestamp: Date.now(),
+    });
 
     set({
       rhythmState: 'available',

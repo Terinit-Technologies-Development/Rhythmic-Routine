@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -14,6 +15,10 @@ import {
   ShieldCheck,
   Smartphone,
   Cpu,
+  Lock,
+  BatteryCharging,
+  Key,
+  Info,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
@@ -24,6 +29,13 @@ export default function SettingsScreen() {
   const resetDemo = usePrototypeStore((s) => s.resetDemo);
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
+  const permissionState = usePrototypeStore((s) => s.permissionState);
+  const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
+  const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
+
+  useEffect(() => {
+    checkPermissions();
+  }, [checkPermissions]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -35,7 +47,7 @@ export default function SettingsScreen() {
         >
           <ChevronLeft size={22} color={colors.forestDark} strokeWidth={2.3} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Settings & Prototype</Text>
+        <Text style={styles.headerTitle}>Settings & Native Engine</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -43,45 +55,86 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Pass 01 Architecture Banner */}
+        {/* Pass 02A Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>
               <Cpu size={22} color={colors.forest} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Pass 01: Frontend Prototype</Text>
-              <Text style={styles.cardSub}>Universal Expo / React Native Web</Text>
+              <Text style={styles.cardTitle}>Pass 02A: Native Rhythm Engine</Text>
+              <Text style={styles.cardSub}>Local-First SQLite & Multi-Cooldown State</Text>
             </View>
           </View>
           <Text style={styles.cardText}>
-            This pass validates the complete user experience, typography, interaction design, and
-            Rhythm Engine domain states before native monitoring and device blocking are linked.
+            Operates on a pure TypeScript Rhythm Engine, multi-group concurrent cooldowns,
+            continuous Risk Group session accounting, SQLite persistence, and truthful platform capability reporting.
           </Text>
         </View>
 
-        {/* Boundary Integrity Checklist */}
+        {/* Device Permissions & Authorization */}
         <View style={styles.card}>
-          <Text style={styles.sectionHeader}>Native Boundary Architecture</Text>
+          <Text style={styles.sectionHeader}>Platform Authorization & Enforcement</Text>
+
+          <View style={styles.checkItem}>
+            <Key size={18} color={permissionState.usageAccess === 'granted' ? colors.forest : colors.amberDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Usage Access Observation</Text>
+              <Text style={styles.checkText}>Status: {permissionState.usageAccess.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          <View style={styles.checkItem}>
+            <Lock size={18} color={permissionState.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Screen Time Authorization</Text>
+              <Text style={styles.checkText}>Status: {permissionState.restrictionAuthorization.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          <View style={styles.checkItem}>
+            <Info size={18} color={permissionState.restrictionCapability === 'enforced' ? colors.forest : colors.amberDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Restriction Capability</Text>
+              <Text style={styles.checkText}>
+                Status: {permissionState.restrictionCapability.toUpperCase().replace('-', ' ')}
+              </Text>
+            </View>
+          </View>
+
+          {permissionState.usageAccess !== 'granted' && (
+            <TouchableOpacity
+              style={styles.permissionBtn}
+              activeOpacity={0.8}
+              onPress={requestUsagePermission}
+            >
+              <Text style={styles.permissionBtnText}>Configure System Usage Access</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Boundary Integrity & Battery Discipline */}
+        <View style={styles.card}>
+          <Text style={styles.sectionHeader}>Engine Architecture & Battery Discipline</Text>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>MockUsageProvider active (24 installed apps)</Text>
+            <Text style={styles.checkText}>Pure RhythmEngine state machine active</Text>
+          </View>
+
+          <View style={styles.checkItem}>
+            <BatteryCharging size={18} color={colors.forest} />
+            <Text style={styles.checkText}>Bounded 15s sampling & clock reconciliation (no battery drain)</Text>
           </View>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>MockRestrictionProvider active (no native block)</Text>
+            <Text style={styles.checkText}>SQLite Native Persistence (Zero backend / Zero cloud auth)</Text>
           </View>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>Zero backend / Zero cloud auth required</Text>
-          </View>
-
-          <View style={styles.checkItem}>
-            <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>Current active state: {rhythmState}</Text>
+            <Text style={styles.checkText}>Current active engine state: {rhythmState}</Text>
           </View>
         </View>
 
@@ -89,13 +142,15 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionHeader}>Quick Actions</Text>
 
-          <TouchableOpacity
-            style={styles.actionRow}
-            onPress={() => setDemoSwitcherVisible(true)}
-          >
-            <Sparkles size={18} color={colors.forest} />
-            <Text style={styles.actionText}>Open Rhythm State Switcher</Text>
-          </TouchableOpacity>
+          {Platform.OS === 'web' && (
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => setDemoSwitcherVisible(true)}
+            >
+              <Sparkles size={18} color={colors.forest} />
+              <Text style={styles.actionText}>Open Rhythm State Switcher</Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             style={styles.actionRow}
@@ -111,7 +166,7 @@ export default function SettingsScreen() {
           >
             <RotateCcw size={18} color={colors.coralDark} />
             <Text style={[styles.actionText, { color: colors.coralDark }]}>
-              Reset All Prototype State
+              Reset Local Storage & Engine State
             </Text>
           </TouchableOpacity>
         </View>
@@ -215,9 +270,28 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 10,
   },
-  checkText: {
+  checkTitle: {
     fontSize: 13,
+    fontWeight: '700',
     color: colors.text,
+  },
+  checkText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  permissionBtn: {
+    marginTop: 8,
+    paddingVertical: 10,
+    borderRadius: radii.lg,
+    backgroundColor: colors.sageLight,
+    borderWidth: 1,
+    borderColor: colors.sage,
+    alignItems: 'center',
+  },
+  permissionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.forestDark,
   },
   actionRow: {
     flexDirection: 'row',

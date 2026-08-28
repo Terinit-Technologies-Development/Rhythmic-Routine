@@ -1,5 +1,11 @@
 import { DeviceApp, AppUsageSnapshot } from '../types/domain';
 
+export type UsageActivityEvent = {
+  appId: string;
+  timestamp: number;
+  state: 'foreground' | 'background';
+};
+
 export interface UsageProvider {
   /**
    * Retrieves list of installed applications on the device.
@@ -10,6 +16,11 @@ export interface UsageProvider {
    * Retrieves live snapshot of app usage.
    */
   getCurrentUsage(): Promise<AppUsageSnapshot[]>;
+
+  /**
+   * Subscribes to normalized native activity events (foreground / background).
+   */
+  onActivityEvent?(callback: (event: UsageActivityEvent) => void): () => void;
 
   /**
    * Subscribes to foreground app change events.
