@@ -73,7 +73,11 @@ describe('RhythmCoordinator — Platform Composition, Lifecycle & Native Identit
     assert.equal(xApp?.name, 'X');
 
     // Classify com.twitter.android as Risk in Social Feeds
-    await usePrototypeStore.getState().updateAppClassification('com.twitter.android', 'risk', 'social');
+    usePrototypeStore.getState().updateAppClassification('com.twitter.android', 'risk', 'social');
+    await coordinator.updateConfig({
+      apps: usePrototypeStore.getState().apps,
+      riskGroups: usePrototypeStore.getState().riskGroups,
+    });
 
     const updatedX = usePrototypeStore.getState().apps.find((a) => a.id === 'com.twitter.android');
     assert.equal(updatedX?.classification, 'risk');

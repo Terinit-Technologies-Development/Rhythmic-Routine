@@ -43,7 +43,7 @@ UI (React Native / Expo Router)
         ↓
 Zustand Store (Application State Projection)
         ↓
-RhythmCoordinator (Lifecycle & Event Dispatcher + 15s Clock)
+RhythmCoordinator (Lifecycle & Event Dispatcher + 15s Engine Clock)
         ↓
 Pure TypeScript Rhythm Engine (State Machine & Reducer)
         ↓
@@ -64,9 +64,9 @@ Platform Adapters:
 * **Restriction Reason Union:** Tracks multi-reason restrictions (`routine` + `cooldown`) preventing premature unlocking when overlapping windows change.
 
 ### 2. Battery Discipline & Observation Model
-* **No permanent tight JavaScript polling loops.**
+* **No permanent tight JavaScript polling loops:** Root 1-second domain intervals removed; UI animations calculate remaining time directly against absolute timestamps (`endsAt - Date.now()`).
 * Android uses bounded 15-second interval querying with timestamp deduplication during active monitoring.
-* iOS maps to native `FamilyControls` and `DeviceActivity` schedules without JavaScript battery drain.
+* iOS authorization and entitlements configured through config plugin.
 
 ### 3. Local-First Privacy (Zero Backend)
 * **No Cloud Accounts / No Firebase / No Supabase / No Analytics Trackers.**
@@ -79,9 +79,9 @@ Platform Adapters:
 
 * **Framework:** [Expo SDK 57](https://expo.dev) + [Expo Router](https://docs.expo.dev/router/introduction/)
 * **UI & Components:** [React Native](https://reactnative.dev), [React Native Web](https://necolas.github.io/react-native-web/), [Lucide React Native](https://lucide.dev)
-* **Local Persistence:** [expo-sqlite](https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/)
+* **Local Persistence:** [expo-sqlite](https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/) (`expo-sqlite/kv-store`)
 * **Native Module:** Local Expo Module (`modules/rhythm-device/`) with Kotlin (Android) and Swift (iOS)
-* **Config Plugins:** `plugins/withRhythmScreenTime.ts` (FamilyControls entitlement & `PACKAGE_USAGE_STATS`)
+* **Config Plugins:** `plugins/withRhythmScreenTime.ts` (FamilyControls entitlement & `PACKAGE_USAGE_STATS` manifest entry)
 * **Vector Graphics & Artwork:** [React Native SVG](https://github.com/software-mansion/react-native-svg)
 * **State Management:** [Zustand](https://github.com/pmndrs/zustand)
 * **Code Quality & Testing:** TypeScript, ESLint 9 (Expo Flat Config), Node Test Runner (`tsx`)
@@ -103,7 +103,7 @@ npm install
 
 ### Running the Development Server
 ```bash
-# Start the web client (runs with full mock platform adapters)
+# Start the web client (runs with full mock platform adapters and interactive state switcher)
 npm run web
 
 # Start Expo dev client for mobile simulators
@@ -132,10 +132,11 @@ npm run build:web
 ### Android
 * **Usage Access:** Requires system authorization via `Settings.ACTION_USAGE_ACCESS_SETTINGS` (`PACKAGE_USAGE_STATS`). The Settings screen provides direct navigation to grant permission.
 * **Event Deduplication:** Query cursor tracking prevents double-counting events spanning polling intervals.
+* **Restriction Capability:** Truthfully reported as `foundation-only` (`status: unsupported`) until physical app blocking/overlay integration is linked in next phase.
 
 ### iOS
-* **Family Controls:** Implemented using `FamilyControls.AuthorizationCenter.shared.requestAuthorization(for: .individual)` and `ManagedSettingsStore`.
-* **Apple Entitlement:** Production device shielding requires Apple's `com.apple.developer.family-controls` entitlement in your provisioning profile. Until token binding is linked, capability is truthfully reported as `foundation-only`.
+* **Family Controls:** Config plugin `plugins/withRhythmScreenTime.ts` configures `com.apple.developer.family-controls` entitlement in Entitlements.plist.
+* **Screen Time Foundation:** `ios-targets/RhythmDeviceActivityMonitor/` provides the scaffold for DeviceActivity monitor extensions. Shielding capability is truthfully reported as `foundation-only` until `FamilyActivityPicker` token selection binding is wired.
 
 ---
 

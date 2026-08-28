@@ -26,7 +26,7 @@ class RhythmDeviceModule : Module() {
       val hasUsage = checkUsageStatsPermission(context)
       return@AsyncFunction mapOf(
         "hasUsagePermission" to hasUsage,
-        "hasRestrictionPermission" to true,
+        "hasRestrictionPermission" to false, // Truthful reporting: foundation only until OS shielding overlay/Accessibility integration
         "familyControlsStatus" to "unsupported"
       )
     }
@@ -97,13 +97,13 @@ class RhythmDeviceModule : Module() {
     }
 
     AsyncFunction("applyShieldRestrictions") { packageNames: List<String> ->
-      // Native restriction registry (Android policy boundary)
-      return@AsyncFunction true
+      // Truthful reporting: Physical application blocking is in foundation-only phase
+      return@AsyncFunction false
     }
 
     AsyncFunction("clearShieldRestrictions") { packageNames: List<String> ->
       // Clear restriction registry
-      return@AsyncFunction true
+      return@AsyncFunction false
     }
   }
 

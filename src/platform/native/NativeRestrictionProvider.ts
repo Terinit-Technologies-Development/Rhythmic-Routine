@@ -30,20 +30,24 @@ export class NativeRestrictionProvider implements RestrictionProvider {
 
   async clearRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
-      await RhythmDeviceModule.clearShieldRestrictions(appIds);
-      for (const id of appIds) {
-        this.activeRestrictedApps.delete(id);
+      const nativeCleared = await RhythmDeviceModule.clearShieldRestrictions(appIds);
+      if (nativeCleared === true) {
+        for (const id of appIds) {
+          this.activeRestrictedApps.delete(id);
+        }
+        return {
+          status: 'applied',
+          appIds,
+        };
       }
-      return {
-        status: 'applied',
-        appIds,
-      };
     } catch {
-      return {
-        status: 'unsupported',
-        appIds,
-      };
+      // Platform restriction boundary
     }
+
+    return {
+      status: 'unsupported',
+      appIds,
+    };
   }
 
   async getActiveRestrictedApps(): Promise<string[]> {

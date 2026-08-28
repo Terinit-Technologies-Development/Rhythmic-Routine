@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -141,13 +142,15 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionHeader}>Quick Actions</Text>
 
-          <TouchableOpacity
-            style={styles.actionRow}
-            onPress={() => setDemoSwitcherVisible(true)}
-          >
-            <Sparkles size={18} color={colors.forest} />
-            <Text style={styles.actionText}>Open Rhythm State Switcher</Text>
-          </TouchableOpacity>
+          {Platform.OS === 'web' && (
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => setDemoSwitcherVisible(true)}
+            >
+              <Sparkles size={18} color={colors.forest} />
+              <Text style={styles.actionText}>Open Rhythm State Switcher</Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             style={styles.actionRow}

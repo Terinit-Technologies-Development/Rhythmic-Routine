@@ -27,18 +27,10 @@ if (Platform.OS === 'android' || Platform.OS === 'ios') {
 
 export default function RootLayout() {
   const initializeApps = usePrototypeStore((s) => s.initializeApps);
-  const resolveExpiredTimer = usePrototypeStore((s) => s.resolveExpiredTimer);
 
   React.useEffect(() => {
     initializeApps();
   }, [initializeApps]);
-
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      resolveExpiredTimer();
-    }, 1000);
-    return () => clearInterval(id);
-  }, [resolveExpiredTimer]);
 
   return (
     <SafeAreaProvider>
@@ -60,8 +52,10 @@ export default function RootLayout() {
             <Stack.Screen name="settings" />
           </Stack>
 
-          {/* Global Prototype Overlays */}
-          <DemoStateSwitcher />
+          {/* Web-only interactive state simulation switcher */}
+          {Platform.OS === 'web' && <DemoStateSwitcher />}
+
+          {/* Global Modals */}
           <TimeSelectorModal />
           <AppEditModal />
           <EmergencyAccessModal />
