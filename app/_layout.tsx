@@ -8,8 +8,22 @@ import { DemoStateSwitcher } from '../src/components/DemoStateSwitcher';
 import { TimeSelectorModal } from '../src/components/TimeSelectorModal';
 import { AppEditModal } from '../src/components/AppEditModal';
 import { EmergencyAccessModal } from '../src/components/EmergencyAccessModal';
-
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
+import { configurePlatformServices, getPlatformServices } from '../src/platform/PlatformServices';
+import { NativeUsageProvider } from '../src/platform/native/NativeUsageProvider';
+import { NativeRestrictionProvider } from '../src/platform/native/NativeRestrictionProvider';
+import { NativePermissionProvider } from '../src/platform/native/NativePermissionProvider';
+
+// Configure platform-specific services if running on native device
+if (Platform.OS === 'android' || Platform.OS === 'ios') {
+  const current = getPlatformServices();
+  configurePlatformServices({
+    usage: new NativeUsageProvider(),
+    restrictions: new NativeRestrictionProvider(),
+    storage: current.storage,
+    permissions: new NativePermissionProvider(),
+  });
+}
 
 export default function RootLayout() {
   const initializeApps = usePrototypeStore((s) => s.initializeApps);
@@ -25,6 +39,7 @@ export default function RootLayout() {
     }, 1000);
     return () => clearInterval(id);
   }, [resolveExpiredTimer]);
+
   return (
     <SafeAreaProvider>
       <View style={styles.webCenteringContainer}>

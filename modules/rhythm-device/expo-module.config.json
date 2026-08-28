@@ -1,0 +1,10 @@
+{
+  "name": "rhythm-device",
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["RhythmDeviceModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.rhythmdevice.RhythmDeviceModule"]
+  }
+}

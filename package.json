@@ -37,7 +37,7 @@
     "lint": "expo lint",
     "typecheck": "node --stack-size=8192 ./node_modules/typescript/bin/tsc --noEmit",
     "build:web": "expo export -p web",
-    "test": "tsx --test src/domain/__tests__/*.test.ts"
+    "test": "tsx --test src/domain/__tests__/*.test.ts src/domain/rhythm/__tests__/*.test.ts"
   },
   "private": true
 }

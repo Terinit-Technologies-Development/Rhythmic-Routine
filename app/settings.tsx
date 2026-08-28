@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,9 @@ import {
   ShieldCheck,
   Smartphone,
   Cpu,
+  Lock,
+  BatteryCharging,
+  Key,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
@@ -24,6 +27,13 @@ export default function SettingsScreen() {
   const resetDemo = usePrototypeStore((s) => s.resetDemo);
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
+  const permissionState = usePrototypeStore((s) => s.permissionState);
+  const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
+  const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
+
+  useEffect(() => {
+    checkPermissions();
+  }, [checkPermissions]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -35,7 +45,7 @@ export default function SettingsScreen() {
         >
           <ChevronLeft size={22} color={colors.forestDark} strokeWidth={2.3} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Settings & Prototype</Text>
+        <Text style={styles.headerTitle}>Settings & Native Engine</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -43,45 +53,76 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Pass 01 Architecture Banner */}
+        {/* Pass 02 Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>
               <Cpu size={22} color={colors.forest} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Pass 01: Frontend Prototype</Text>
-              <Text style={styles.cardSub}>Universal Expo / React Native Web</Text>
+              <Text style={styles.cardTitle}>Pass 02: Native Rhythm Engine</Text>
+              <Text style={styles.cardSub}>Local-First Native Foundation</Text>
             </View>
           </View>
           <Text style={styles.cardText}>
-            This pass validates the complete user experience, typography, interaction design, and
-            Rhythm Engine domain states before native monitoring and device blocking are linked.
+            Operates on a pure TypeScript Rhythm Engine, continuous Risk Group session accounting,
+            cross-midnight routine evaluation, local persistence, and platform service composition.
           </Text>
         </View>
 
-        {/* Boundary Integrity Checklist */}
+        {/* Device Permissions & Authorization */}
         <View style={styles.card}>
-          <Text style={styles.sectionHeader}>Native Boundary Architecture</Text>
+          <Text style={styles.sectionHeader}>Platform Authorization</Text>
+
+          <View style={styles.checkItem}>
+            <Key size={18} color={permissionState.usageAccess === 'granted' ? colors.forest : colors.amberDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Usage Access</Text>
+              <Text style={styles.checkText}>Status: {permissionState.usageAccess.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          <View style={styles.checkItem}>
+            <Lock size={18} color={permissionState.restrictionAccess === 'granted' ? colors.forest : colors.textMuted} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Restriction Shielding</Text>
+              <Text style={styles.checkText}>Status: {permissionState.restrictionAccess.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          {permissionState.usageAccess !== 'granted' && (
+            <TouchableOpacity
+              style={styles.permissionBtn}
+              activeOpacity={0.8}
+              onPress={requestUsagePermission}
+            >
+              <Text style={styles.permissionBtnText}>Configure System Usage Access</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Boundary Integrity & Battery Discipline */}
+        <View style={styles.card}>
+          <Text style={styles.sectionHeader}>Engine Architecture & Battery Discipline</Text>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>MockUsageProvider active (24 installed apps)</Text>
+            <Text style={styles.checkText}>Pure RhythmEngine state machine active</Text>
+          </View>
+
+          <View style={styles.checkItem}>
+            <BatteryCharging size={18} color={colors.forest} />
+            <Text style={styles.checkText}>Bounded 15s sampling (no battery-draining tight loops)</Text>
           </View>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>MockRestrictionProvider active (no native block)</Text>
+            <Text style={styles.checkText}>100% Local Persistence (Zero backend / Zero cloud auth)</Text>
           </View>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>Zero backend / Zero cloud auth required</Text>
-          </View>
-
-          <View style={styles.checkItem}>
-            <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>Current active state: {rhythmState}</Text>
+            <Text style={styles.checkText}>Current active engine state: {rhythmState}</Text>
           </View>
         </View>
 
@@ -111,7 +152,7 @@ export default function SettingsScreen() {
           >
             <RotateCcw size={18} color={colors.coralDark} />
             <Text style={[styles.actionText, { color: colors.coralDark }]}>
-              Reset All Prototype State
+              Reset Local Storage & Engine State
             </Text>
           </TouchableOpacity>
         </View>
@@ -215,9 +256,28 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 10,
   },
-  checkText: {
+  checkTitle: {
     fontSize: 13,
+    fontWeight: '700',
     color: colors.text,
+  },
+  checkText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  permissionBtn: {
+    marginTop: 8,
+    paddingVertical: 10,
+    borderRadius: radii.lg,
+    backgroundColor: colors.sageLight,
+    borderWidth: 1,
+    borderColor: colors.sage,
+    alignItems: 'center',
+  },
+  permissionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.forestDark,
   },
   actionRow: {
     flexDirection: 'row',

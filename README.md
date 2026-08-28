@@ -28,22 +28,47 @@ Instead of locking you out of your device with arbitrary limits, Rhythm structur
 2. **Evening Wind-Down** 🌙
    * Help your mind disconnect before sleep by gently pausing social feeds and entertainment after your evening threshold (e.g., 21:30 PM).
 3. **Risk Groups** 🛡️
-   * Monitor related apps collectively (e.g. *X, Instagram, TikTok, Reddit, Discord* share continuous session limits).
+   * Monitor related apps collectively (e.g. *X, Instagram, TikTok, Reddit, Discord* share continuous session limits: 18m X + 12m Instagram = 30m Social Feeds).
 4. **Touch Grass Recovery** 🌱
-   * Reaching a session threshold (e.g. 30 min of continuous browsing) triggers a mandatory offline recovery period (e.g. 90 min) with feel-good grounding suggestions.
+   * Reaching a session threshold triggers a mandatory offline recovery period (e.g. 90 min) with feel-good grounding suggestions.
 5. **Essential-App Invariant Safety** 🔒
    * Core utility apps (*Phone, Maps, Camera, Clock*) are strictly classified as **Essential** and are never restricted under any routine or cooldown.
 
 ---
 
-## 🛠️ Current Status: Pass 01 & 01A (Frontend Prototype & Reconciliation)
+## 🏗️ Architecture: Pass 02 (Native Rhythm Engine & Local Foundation)
 
-This repository contains the completed **Pass 01 & Pass 01A frontend experience prototype**:
+```text
+UI (React Native / Expo Router)
+        ↓
+Zustand Store (Application State Projection)
+        ↓
+RhythmCoordinator (Lifecycle & Event Dispatcher)
+        ↓
+Pure TypeScript Rhythm Engine (State Machine & Reducer)
+        ↓
+PlatformServices Layer (Usage, Restrictions, Storage, Permissions)
+        ↓
+Platform Adapters:
+  ├── Web / Test Mocks: MockUsageProvider, MockRestrictionProvider, MockStorageProvider
+  ├── Android Native: UsageStatsManager (Bounded 15s query, AppOpsManager permission intent)
+  └── iOS Native: FamilyControls (AuthorizationCenter), ManagedSettingsStore shield foundation
+```
 
-* **Universal Web & Mobile Shell:** Powered by Expo Router (file-based navigation) and React Native Web.
-* **Platform Service Composition:** Clear native interface boundaries (`UsageProvider`, `RestrictionProvider`) wired through a service registry (`PlatformServices.ts`).
-* **Authoritative State Engine:** Centralized Zustand store owning countdown timestamps (`activeTimerEndsAt`), reactive routine time models, and automated expiry lifecycle.
-* **Local-First & Zero Backend:** Completely standalone — no cloud auth, Supabase, Firebase, or remote tracking.
+### 1. Pure TypeScript Rhythm Engine (`src/domain/rhythm/`)
+* **Zero Dependencies:** Completely decoupled from React, Zustand, SQLite, or OS APIs.
+* **Routine Resolution:** Evaluates real clock time, same-day windows, and cross-midnight routines (e.g. 22:00 to 06:30) across active weekdays.
+* **Continuous Group Sessions:** Tracks cumulative usage across member apps in a Risk Group with a 5-minute inactivity gap tolerance.
+* **Restriction Reason Union:** Tracks multi-reason restrictions (`routine` + `cooldown`) preventing premature unlocking when overlapping windows change.
+
+### 2. Battery Discipline & Observation Model
+* **No permanent tight JavaScript polling loops.**
+* Android uses bounded 15-second interval reconciliation during active monitoring.
+* iOS maps to native `FamilyControls` and `DeviceActivity` schedules without JavaScript battery drain.
+
+### 3. Local-First Privacy (Zero Backend)
+* **No Cloud Accounts / No Firebase / No Supabase / No Analytics Trackers.**
+* 100% of routines, app classifications, active cooldown timestamps, and local history remain on the device.
 
 ---
 
@@ -51,9 +76,10 @@ This repository contains the completed **Pass 01 & Pass 01A frontend experience 
 
 * **Framework:** [Expo SDK 57](https://expo.dev) + [Expo Router](https://docs.expo.dev/router/introduction/)
 * **UI & Components:** [React Native](https://reactnative.dev), [React Native Web](https://necolas.github.io/react-native-web/), [Lucide React Native](https://lucide.dev)
+* **Native Module:** Local Expo Module (`modules/rhythm-device/`) with Kotlin (Android) and Swift (iOS)
 * **Vector Graphics & Artwork:** [React Native SVG](https://github.com/software-mansion/react-native-svg)
 * **State Management:** [Zustand](https://github.com/pmndrs/zustand)
-* **Code Quality & Testing:** TypeScript, ESLint (Expo Flat Config), Node Test Runner (`tsx`)
+* **Code Quality & Testing:** TypeScript, ESLint 9 (Expo Flat Config), Node Test Runner (`tsx`)
 
 ---
 
@@ -72,7 +98,7 @@ npm install
 
 ### Running the Development Server
 ```bash
-# Start the web client
+# Start the web client (runs with full mock platform adapters)
 npm run web
 
 # Start Expo dev client for mobile simulators
@@ -81,7 +107,7 @@ npm run start
 
 ### Quality & Testing Commands
 ```bash
-# Run unit tests for domain selectors and helpers
+# Run 36 domain, engine, persistence, and coordinator unit tests
 npm test
 
 # Run TypeScript typecheck
@@ -96,13 +122,15 @@ npm run build:web
 
 ---
 
-## 🛣️ Roadmap
+## 📱 Platform Specifics & Entitlement Notes
 
-* **Pass 01 & 01A (Complete):** Design system, routes, UI components, prototype state engine, and platform service composition.
-* **Pass 02 (Planned):** Native device integration:
-  * Android `UsageStatsManager` / `AccessibilityService` background monitoring.
-  * iOS `FamilyControls` & `ManagedSettings` Screen Time framework.
-  * Local SQLite persistent storage for routine windows and classification records.
+### Android
+* **Usage Access:** Requires system authorization via `Settings.ACTION_USAGE_ACCESS_SETTINGS` (`PACKAGE_USAGE_STATS`). The Settings screen provides direct navigation to grant permission.
+* **Restriction Enforcement:** Native restriction registry interface configured behind `RestrictionProvider`.
+
+### iOS
+* **Family Controls:** Implemented using `FamilyControls.AuthorizationCenter.shared.requestAuthorization(for: .individual)` and `ManagedSettingsStore`.
+* **Apple Entitlement:** Production device shielding requires Apple's `com.apple.developer.family-controls` entitlement in your provisioning profile.
 
 ---
 

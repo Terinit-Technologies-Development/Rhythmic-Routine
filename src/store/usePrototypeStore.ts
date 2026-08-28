@@ -21,6 +21,8 @@ import {
   getRestrictableAppIds,
   getRoutineWindow,
 } from '../domain/selectors';
+import { RhythmCoordinator } from '../application/RhythmCoordinator';
+import { PermissionState } from '../platform/PermissionProvider';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -36,7 +38,7 @@ export interface AppEditConfig {
 }
 
 interface PrototypeState {
-  // Domain data
+  // Domain data (projected from RhythmCoordinator / Engine)
   rhythmState: RhythmState;
   activeRiskGroupId: string;
   activeTimerEndsAt?: number; // Absolute timestamp for countdowns
@@ -46,6 +48,7 @@ interface PrototypeState {
   offlineActivities: OfflineActivity[];
   insightMetrics: InsightMetrics;
   hasCompletedOnboarding: boolean;
+  permissionState: PermissionState;
 
   // Search & Filters
   searchQuery: string;
@@ -59,6 +62,8 @@ interface PrototypeState {
 
   // Core Actions
   initializeApps: () => Promise<void>;
+  checkPermissions: () => Promise<void>;
+  requestUsagePermission: () => Promise<void>;
   setRhythmState: (state: RhythmState) => Promise<void>;
   simulateCooldown: (groupId?: string) => Promise<void>;
   simulateRiskSession: (groupId?: string) => void;
@@ -105,6 +110,10 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   offlineActivities: [...defaultOfflineActivities],
   insightMetrics: { ...initialInsightMetrics },
   hasCompletedOnboarding: true,
+  permissionState: {
+    usageAccess: 'unknown',
+    restrictionAccess: 'unknown',
+  },
 
   searchQuery: '',
   filterClassification: 'all',
@@ -116,13 +125,50 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   initializeApps: async () => {
     try {
-      const { usage } = getPlatformServices();
-      const deviceApps = await usage.getInstalledApps();
-      if (deviceApps && deviceApps.length > 0) {
-        set({ apps: deviceApps });
-      }
+      const coordinator = RhythmCoordinator.getInstance();
+      const runtime = await coordinator.initialize();
+
+      // Subscribe store to live runtime engine updates
+      coordinator.subscribe((nextRuntime) => {
+        set({
+          rhythmState: nextRuntime.state,
+          activeTimerEndsAt: nextRuntime.activeCooldown?.endsAt,
+          activeRiskGroupId: nextRuntime.activeCooldown?.groupId || nextRuntime.activeSession?.groupId || get().activeRiskGroupId,
+        });
+      });
+
+      const { permissions } = getPlatformServices();
+      const permStatus = await permissions.getStatus();
+
+      set({
+        rhythmState: runtime.state,
+        activeTimerEndsAt: runtime.activeCooldown?.endsAt || (runtime.state === 'morning-buffer' ? Date.now() + INITIAL_TIMER_MS : undefined),
+        activeRiskGroupId: runtime.activeCooldown?.groupId || runtime.activeSession?.groupId || 'social',
+        permissionState: permStatus,
+      });
     } catch {
-      // Fallback to initialApps
+      // Fallback
+    }
+  },
+
+  checkPermissions: async () => {
+    try {
+      const { permissions } = getPlatformServices();
+      const status = await permissions.getStatus();
+      set({ permissionState: status });
+    } catch {
+      // Fallback
+    }
+  },
+
+  requestUsagePermission: async () => {
+    try {
+      const { permissions } = getPlatformServices();
+      await permissions.requestUsageAccess();
+      const status = await permissions.getStatus();
+      set({ permissionState: status });
+    } catch {
+      // Fallback
     }
   },
 
@@ -213,6 +259,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       state.activeTimerEndsAt &&
       Date.now() >= state.activeTimerEndsAt
     ) {
+      const coordinator = RhythmCoordinator.getInstance();
+      await coordinator.reconcile(Date.now());
+
       const group = state.riskGroups.find((g) => g.id === state.activeRiskGroupId);
       if (group) {
         const { restrictions } = getPlatformServices();
@@ -227,8 +276,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   resetDemo: async () => {
-    const { restrictions } = getPlatformServices();
+    const { restrictions, storage } = getPlatformServices();
     await restrictions.clearRestrictions(initialApps.map((a) => a.id));
+    await storage.clearAll();
 
     set({
       rhythmState: 'morning-buffer',
@@ -276,22 +326,39 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         return group;
       });
 
+      RhythmCoordinator.getInstance().updateConfig({
+        apps: updatedApps,
+        riskGroups: updatedRiskGroups,
+      }).catch(() => {});
+
       return { apps: updatedApps, riskGroups: updatedRiskGroups };
     });
   },
 
   updateRiskGroup: (groupId, updates) => {
-    set((state) => ({
-      riskGroups: state.riskGroups.map((g) => (g.id === groupId ? { ...g, ...updates } : g)),
-    }));
+    set((state) => {
+      const updatedRiskGroups = state.riskGroups.map((g) =>
+        g.id === groupId ? { ...g, ...updates } : g
+      );
+      RhythmCoordinator.getInstance().updateConfig({
+        riskGroups: updatedRiskGroups,
+      }).catch(() => {});
+
+      return { riskGroups: updatedRiskGroups };
+    });
   },
 
   updateRoutineWindow: (windowId, updates) => {
-    set((state) => ({
-      routineWindows: state.routineWindows.map((w) =>
+    set((state) => {
+      const updatedWindows = state.routineWindows.map((w) =>
         w.id === windowId ? { ...w, ...updates } : w
-      ),
-    }));
+      );
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
+      return { routineWindows: updatedWindows };
+    });
   },
 
   toggleRoutineDay: (day) => {
@@ -302,15 +369,20 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         ? currentDays.filter((d) => d !== day)
         : [...currentDays, day].sort();
 
+      const updatedWindows = state.routineWindows.map((w) => ({ ...w, activeDays: newDays }));
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
       return {
-        routineWindows: state.routineWindows.map((w) => ({ ...w, activeDays: newDays })),
+        routineWindows: updatedWindows,
       };
     });
   },
 
   toggleGroupProtection: (windowId, groupId, enabled) => {
-    set((state) => ({
-      routineWindows: state.routineWindows.map((w) => {
+    set((state) => {
+      const updatedWindows = state.routineWindows.map((w) => {
         if (w.id !== windowId) return w;
 
         const currentIds = w.protectedGroupIds;
@@ -322,8 +394,16 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
           ...w,
           protectedGroupIds: nextIds,
         };
-      }),
-    }));
+      });
+
+      RhythmCoordinator.getInstance().updateConfig({
+        routineWindows: updatedWindows,
+      }).catch(() => {});
+
+      return {
+        routineWindows: updatedWindows,
+      };
+    });
   },
 
   addNewRiskGroup: (name, description) => {
@@ -344,7 +424,14 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       isBufferingToday: false,
     };
 
-    set((state) => ({ riskGroups: [...state.riskGroups, newGroup] }));
+    set((state) => {
+      const nextGroups = [...state.riskGroups, newGroup];
+      RhythmCoordinator.getInstance().updateConfig({
+        riskGroups: nextGroups,
+      }).catch(() => {});
+      return { riskGroups: nextGroups };
+    });
+
     return id;
   },
 
