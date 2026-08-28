@@ -7,6 +7,8 @@ export class NativeUsageProvider implements UsageProvider {
   private activityListeners: Set<(event: UsageActivityEvent) => void> = new Set();
   private pollingTimer?: NodeJS.Timeout;
   private lastQueryTime: number = Date.now() - 60000;
+  private lastProcessedTimestamp: number = 0;
+  private processedEventSignatures: Set<string> = new Set();
 
   async getInstalledApps(): Promise<DeviceApp[]> {
     try {
@@ -65,32 +67,67 @@ export class NativeUsageProvider implements UsageProvider {
     });
   }
 
+  /**
+   * Internal helper to process incoming native usage events with deduplication.
+   */
+  public processRawUsageEvents(events: { packageName: string; timestamp: number; eventType: string }[]): UsageActivityEvent[] {
+    const emitted: UsageActivityEvent[] = [];
+
+    // Sort by timestamp
+    const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
+
+    for (const e of sorted) {
+      if (e.eventType !== 'foreground' && e.eventType !== 'background') continue;
+
+      const signature = `${e.packageName}:${e.eventType}:${Math.floor(e.timestamp)}`;
+
+      // Deduplicate events already processed at interval boundaries
+      if (this.processedEventSignatures.has(signature)) continue;
+      if (e.timestamp < this.lastProcessedTimestamp) continue;
+
+      this.processedEventSignatures.add(signature);
+      if (this.processedEventSignatures.size > 200) {
+        // Keep signature set bounded
+        const firstKey = this.processedEventSignatures.values().next().value;
+        if (firstKey) this.processedEventSignatures.delete(firstKey);
+      }
+
+      this.lastProcessedTimestamp = Math.max(this.lastProcessedTimestamp, e.timestamp);
+
+      const normalizedEvent: UsageActivityEvent = {
+        appId: e.packageName,
+        timestamp: e.timestamp,
+        state: e.eventType,
+      };
+
+      emitted.push(normalizedEvent);
+
+      for (const listener of this.activityListeners) {
+        listener(normalizedEvent);
+      }
+    }
+
+    return emitted;
+  }
+
   private ensureObservationStarted(): void {
     if (this.pollingTimer) return;
 
-    // Bounded, low-frequency 15-second background query (battery discipline)
+    // Bounded 15-second OS event querying (battery discipline)
     this.pollingTimer = setInterval(async () => {
       const now = Date.now();
       try {
         const events = await RhythmDeviceModule.queryUsageEvents(this.lastQueryTime, now);
         this.lastQueryTime = now;
-
-        for (const e of events) {
-          if (e.eventType === 'foreground' || e.eventType === 'background') {
-            const normalizedEvent: UsageActivityEvent = {
-              appId: e.packageName,
-              timestamp: e.timestamp,
-              state: e.eventType,
-            };
-            for (const listener of this.activityListeners) {
-              listener(normalizedEvent);
-            }
-          }
-        }
+        this.processRawUsageEvents(events);
       } catch {
         // Ignored
       }
     }, 15000);
+
+    if (this.pollingTimer && typeof (this.pollingTimer as any).unref === 'function') {
+      (this.pollingTimer as any).unref();
+    }
   }
 
   private stopObservation(): void {

@@ -2,6 +2,7 @@ import {
   PersistedRuntime,
   RhythmHistoryEvent,
   RhythmPreferences,
+  normalizePersistedRuntime,
 } from '../../domain/rhythm/types';
 import { StorageProvider } from '../StorageProvider';
 
@@ -12,10 +13,10 @@ export class MockStorageProvider implements StorageProvider {
 
   constructor(
     initialPreferences?: RhythmPreferences | null,
-    initialRuntime?: PersistedRuntime | null
+    initialRuntime?: any | null
   ) {
     this.preferences = initialPreferences || null;
-    this.runtime = initialRuntime || null;
+    this.runtime = initialRuntime ? normalizePersistedRuntime(initialRuntime) : null;
   }
 
   async loadPreferences(): Promise<RhythmPreferences | null> {
@@ -27,7 +28,7 @@ export class MockStorageProvider implements StorageProvider {
   }
 
   async loadRuntime(): Promise<PersistedRuntime | null> {
-    return this.runtime ? { ...this.runtime } : null;
+    return this.runtime ? normalizePersistedRuntime(this.runtime) : null;
   }
 
   async saveRuntime(runtime: PersistedRuntime): Promise<void> {

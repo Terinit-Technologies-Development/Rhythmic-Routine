@@ -4,7 +4,7 @@ import { StorageProvider } from './StorageProvider';
 import { PermissionProvider } from './PermissionProvider';
 import { mockUsageProvider } from './mock/MockUsageProvider';
 import { mockRestrictionProvider } from './mock/MockRestrictionProvider';
-import { LocalStorageProvider } from './storage/LocalStorageProvider';
+import { WebStorageProvider } from './storage/WebStorageProvider';
 import { MockPermissionProvider } from './permissions/MockPermissionProvider';
 
 export interface PlatformServices {
@@ -17,7 +17,7 @@ export interface PlatformServices {
 let services: PlatformServices = {
   usage: mockUsageProvider,
   restrictions: mockRestrictionProvider,
-  storage: new LocalStorageProvider(),
+  storage: new WebStorageProvider(),
   permissions: new MockPermissionProvider(),
 };
 

@@ -1,5 +1,5 @@
 import { RoutineWindow, RhythmState } from '../../types/domain';
-import { ActiveCooldown, ActiveRiskSession } from './types';
+import { ActiveCooldown, ActiveRiskSession, getActiveCooldowns } from './types';
 
 /**
  * Converts "HH:MM" string to minutes since midnight (0 - 1439).
@@ -90,14 +90,14 @@ export function getActiveRoutineWindowIds(
  * Priority:
  * 1. Evening Wind-Down
  * 2. Morning Buffer
- * 3. Cooldown
+ * 3. Cooldown (if any active cooldown exists)
  * 4. Active Risk Session
  * 5. Available
  */
 export function resolveRhythmState(
   now: Date,
   windows: RoutineWindow[],
-  cooldown?: ActiveCooldown,
+  cooldowns?: Record<string, ActiveCooldown> | ActiveCooldown,
   session?: ActiveRiskSession
 ): RhythmState {
   if (isInsideRoutineWindow(now, windows, 'evening-wind-down')) {
@@ -108,7 +108,14 @@ export function resolveRhythmState(
     return 'morning-buffer';
   }
 
-  if (cooldown && cooldown.endsAt > now.getTime()) {
+  const nowMs = now.getTime();
+  const hasActiveCooldown = cooldowns && 'groupId' in cooldowns
+    ? (cooldowns as ActiveCooldown).endsAt > nowMs
+    : cooldowns
+    ? getActiveCooldowns(cooldowns as Record<string, ActiveCooldown>, nowMs).length > 0
+    : false;
+
+  if (hasActiveCooldown) {
     return 'cooldown';
   }
 

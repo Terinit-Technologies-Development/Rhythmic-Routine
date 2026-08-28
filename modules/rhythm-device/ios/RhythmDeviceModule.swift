@@ -32,7 +32,7 @@ public class RhythmDeviceModule: Module {
 
         return [
           "hasUsagePermission": status == .approved,
-          "hasRestrictionPermission": status == .approved,
+          "hasRestrictionPermission": false, // Honest reporting: foundation only until ManagedSettings token binding
           "familyControlsStatus": statusString
         ]
       }
@@ -73,7 +73,6 @@ public class RhythmDeviceModule: Module {
 
     AsyncFunction("getInstalledApps") { () -> [[String: Any]] in
       // iOS FamilyControls does not expose plaintext installed applications
-      // Opaque native selection tokens are used when authorized
       return []
     }
 
@@ -84,10 +83,8 @@ public class RhythmDeviceModule: Module {
     AsyncFunction("applyShieldRestrictions") { (packageNames: [String]) -> Bool in
       #if canImport(ManagedSettings)
       if #available(iOS 16.0, *) {
-        // ManagedSettingsStore shield activation foundation
-        // let store = ManagedSettingsStore()
-        // store.shield.applications = ...
-        return true
+        // Foundation seam: Real shielding requires FamilyActivitySelection application tokens
+        return false
       }
       #endif
       return false
@@ -96,10 +93,7 @@ public class RhythmDeviceModule: Module {
     AsyncFunction("clearShieldRestrictions") { (packageNames: [String]) -> Bool in
       #if canImport(ManagedSettings)
       if #available(iOS 16.0, *) {
-        // ManagedSettingsStore shield clear foundation
-        // let store = ManagedSettingsStore()
-        // store.shield.applications = nil
-        return true
+        return false
       }
       #endif
       return false

@@ -1,32 +1,56 @@
-import { RestrictionProvider } from '../RestrictionProvider';
+import { RestrictionProvider, RestrictionResult } from '../RestrictionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 
 export class NativeRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
 
-  async applyRestrictions(appIds: string[]): Promise<void> {
+  async applyRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
-      await RhythmDeviceModule.applyShieldRestrictions(appIds);
+      const nativeApplied = await RhythmDeviceModule.applyShieldRestrictions(appIds);
+      if (nativeApplied === true) {
+        for (const id of appIds) {
+          this.activeRestrictedApps.add(id);
+        }
+        return {
+          status: 'applied',
+          appIds,
+        };
+      }
     } catch {
       // Platform restriction boundary
     }
-    for (const id of appIds) {
-      this.activeRestrictedApps.add(id);
-    }
+
+    // Honest reporting: Native shielding is currently in foundation-only phase
+    return {
+      status: 'unsupported',
+      appIds,
+      reason: 'Physical app shielding requires active platform Screen Time token binding.',
+    };
   }
 
-  async clearRestrictions(appIds: string[]): Promise<void> {
+  async clearRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
       await RhythmDeviceModule.clearShieldRestrictions(appIds);
+      for (const id of appIds) {
+        this.activeRestrictedApps.delete(id);
+      }
+      return {
+        status: 'applied',
+        appIds,
+      };
     } catch {
-      // Platform restriction boundary
-    }
-    for (const id of appIds) {
-      this.activeRestrictedApps.delete(id);
+      return {
+        status: 'unsupported',
+        appIds,
+      };
     }
   }
 
   async getActiveRestrictedApps(): Promise<string[]> {
     return Array.from(this.activeRestrictedApps);
+  }
+
+  async getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'> {
+    return 'foundation-only';
   }
 }

@@ -1,4 +1,5 @@
 import {
+  ActiveCooldown,
   RhythmConfiguration,
   RhythmEffect,
   RhythmEvent,
@@ -14,7 +15,8 @@ import {
   createNewRiskSession,
   getAppRiskGroupId,
   isThresholdReached,
-  recordSessionActivity,
+  recordActiveUsage,
+  resumeRiskSession,
   shouldContinueSession,
 } from './sessions';
 import { isCooldownExpired, startCooldown } from './cooldowns';
@@ -39,44 +41,49 @@ export function processRhythmEvent(
   const gapMs = config.sessionResetGapMs ?? SESSION_RESET_GAP_MS;
 
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
-  let nextCooldown = currentRuntime.activeCooldown ? { ...currentRuntime.activeCooldown } : undefined;
+  const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
   const effects: RhythmEffect[] = [];
 
-  // Check if existing cooldown has expired
-  if (nextCooldown && isCooldownExpired(nextCooldown, nowMs)) {
-    effects.push({
-      type: 'END_COOLDOWN',
-      groupId: nextCooldown.groupId,
-    });
-    effects.push({
-      type: 'RECORD_HISTORY',
-      event: {
-        type: 'cooldown-ended',
-        groupId: nextCooldown.groupId,
-        timestamp: nowMs,
-      },
-    });
-    nextCooldown = undefined;
+  // 1. Check expired cooldowns individually (multi-group support)
+  for (const [groupId, cooldown] of Object.entries(nextCooldowns)) {
+    if (isCooldownExpired(cooldown, nowMs)) {
+      delete nextCooldowns[groupId];
+      effects.push({
+        type: 'END_COOLDOWN',
+        groupId,
+      });
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: {
+          type: 'cooldown-ended',
+          groupId,
+          timestamp: nowMs,
+        },
+      });
+    }
   }
 
+  // 2. Process specific event
   switch (event.type) {
     case 'CLOCK_TICK':
     case 'RECONCILE': {
       if (nextSession) {
         if (nextSession.activeAppId) {
           // App actively foregrounded; accumulate time
-          nextSession = recordSessionActivity(nextSession, nextSession.activeAppId, nowMs);
+          nextSession = recordActiveUsage(nextSession, nextSession.activeAppId, nowMs);
           const group = config.riskGroups.find((g) => g.id === nextSession?.groupId);
           if (group && isThresholdReached(nextSession, group)) {
-            nextCooldown = startCooldown(
+            const newCooldown = startCooldown(
               nextSession.groupId,
               nowMs,
               group.cooldownMinutes
             );
+            nextCooldowns[nextSession.groupId] = newCooldown;
+
             effects.push({
               type: 'START_COOLDOWN',
               groupId: nextSession.groupId,
-              endsAt: nextCooldown.endsAt,
+              endsAt: newCooldown.endsAt,
             });
             effects.push({
               type: 'RECORD_HISTORY',
@@ -124,7 +131,10 @@ export function processRhythmEvent(
 
         if (nextSession) {
           if (shouldContinueSession(nextSession, targetGroupId, event.timestamp, gapMs)) {
-            nextSession = recordSessionActivity(nextSession, event.appId, event.timestamp);
+            // If already active, record active usage; if returning after inactive gap, resume pointer without adding gap time
+            nextSession = nextSession.activeAppId
+              ? recordActiveUsage(nextSession, event.appId, event.timestamp)
+              : resumeRiskSession(nextSession, event.appId, event.timestamp);
           } else {
             // End old session and start new
             effects.push({
@@ -140,20 +150,30 @@ export function processRhythmEvent(
           }
         } else {
           nextSession = createNewRiskSession(targetGroupId, event.appId, event.timestamp);
+          effects.push({
+            type: 'RECORD_HISTORY',
+            event: {
+              type: 'risk-session-started',
+              groupId: targetGroupId,
+              appId: event.appId,
+              timestamp: event.timestamp,
+            },
+          });
         }
 
         // Check if group threshold is now exceeded
         if (group && isThresholdReached(nextSession, group)) {
-          nextCooldown = startCooldown(
+          const newCooldown = startCooldown(
             targetGroupId,
             event.timestamp,
             group.cooldownMinutes
           );
+          nextCooldowns[targetGroupId] = newCooldown;
 
           effects.push({
             type: 'START_COOLDOWN',
             groupId: targetGroupId,
-            endsAt: nextCooldown.endsAt,
+            endsAt: newCooldown.endsAt,
           });
 
           effects.push({
@@ -180,8 +200,8 @@ export function processRhythmEvent(
         // App is not a risk app (essential or normal)
         if (nextSession) {
           if (nextSession.activeAppId) {
-            // Record elapsed time on previously active risk app
-            nextSession = recordSessionActivity(nextSession, undefined, event.timestamp);
+            // Finalize active interval on previously active risk app
+            nextSession = recordActiveUsage(nextSession, undefined, event.timestamp);
           }
           if (event.timestamp - nextSession.lastActivityAt > gapMs) {
             effects.push({
@@ -202,23 +222,26 @@ export function processRhythmEvent(
 
     case 'APP_BACKGROUND': {
       if (nextSession && nextSession.activeAppId === event.appId) {
-        nextSession = recordSessionActivity(nextSession, undefined, event.timestamp);
+        nextSession = recordActiveUsage(nextSession, undefined, event.timestamp);
       }
       break;
     }
 
     case 'COOLDOWN_STARTED': {
-      nextCooldown = {
+      nextCooldowns[event.groupId] = {
         groupId: event.groupId,
         startedAt: nowMs,
         endsAt: event.endsAt,
       };
-      nextSession = undefined;
+      if (nextSession?.groupId === event.groupId) {
+        nextSession = undefined;
+      }
       break;
     }
 
     case 'COOLDOWN_ENDED': {
-      if (nextCooldown && nextCooldown.groupId === event.groupId) {
+      if (nextCooldowns[event.groupId]) {
+        delete nextCooldowns[event.groupId];
         effects.push({
           type: 'END_COOLDOWN',
           groupId: event.groupId,
@@ -231,7 +254,6 @@ export function processRhythmEvent(
             timestamp: event.timestamp,
           },
         });
-        nextCooldown = undefined;
       }
       break;
     }
@@ -241,17 +263,18 @@ export function processRhythmEvent(
       break;
   }
 
-  // Resolve active routine window IDs
+  // 3. Resolve active routine windows
   const activeRoutineWindowIds = getActiveRoutineWindowIds(nowDate, config.routineWindows);
   const activeRoutineWindows = config.routineWindows.filter((w) => isInsideWindow(nowDate, w));
 
-  // Compute effective restrictions and diff against previous
+  // 4. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(
     activeRoutineWindows,
-    nextCooldown,
+    nextCooldowns,
     config.riskGroups,
-    config.apps
+    config.apps,
+    nowMs
   );
 
   const { toApply, toClear } = diffRestrictions(
@@ -273,18 +296,18 @@ export function processRhythmEvent(
     });
   }
 
-  // Resolve overall high-level state
+  // 5. Resolve high-level state
   const nextState = resolveRhythmState(
     nowDate,
     config.routineWindows,
-    nextCooldown,
+    nextCooldowns,
     nextSession
   );
 
   const nextRuntime: RhythmRuntime = {
     state: nextState,
     activeSession: nextSession,
-    activeCooldown: nextCooldown,
+    activeCooldowns: nextCooldowns,
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
   };

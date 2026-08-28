@@ -11,8 +11,8 @@ const FallbackModule = {
   requestFamilyControls: async (): Promise<string> => 'unsupported',
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
-  applyShieldRestrictions: async (_packageNames: string[]): Promise<void> => {},
-  clearShieldRestrictions: async (_packageNames: string[]): Promise<void> => {},
+  applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
+  clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
 };
 
 let NativeModule: typeof FallbackModule = FallbackModule;

@@ -1,51 +1,54 @@
-import { ActiveCooldown } from './types';
+import { ActiveCooldown, getActiveCooldowns } from './types';
 
 /**
- * Creates an active cooldown with absolute start and end timestamps.
+ * Creates an active cooldown with absolute timestamp boundaries.
  */
 export function startCooldown(
   groupId: string,
-  now: number,
-  cooldownMinutes: number
+  startedAt: number,
+  durationMinutes: number
 ): ActiveCooldown {
-  const durationMs = Math.max(1, cooldownMinutes) * 60 * 1000;
+  const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
   return {
     groupId,
-    startedAt: now,
-    endsAt: now + durationMs,
+    startedAt,
+    endsAt: startedAt + durationMs,
   };
 }
 
 /**
- * Checks if a cooldown is currently active.
+ * Checks if a specific cooldown is currently active.
  */
 export function isCooldownActive(
   cooldown: ActiveCooldown | undefined,
-  now: number
+  now: number = Date.now()
 ): boolean {
   if (!cooldown) return false;
-  return cooldown.endsAt > now;
+  return now < cooldown.endsAt;
 }
 
 /**
- * Checks if a cooldown has expired.
+ * Checks if a specific cooldown has expired.
  */
 export function isCooldownExpired(
   cooldown: ActiveCooldown | undefined,
-  now: number
+  now: number = Date.now()
 ): boolean {
   if (!cooldown) return true;
-  return cooldown.endsAt <= now;
+  return now >= cooldown.endsAt;
 }
 
 /**
- * Restores a persisted cooldown, returning undefined if it already expired.
+ * Restores and purges expired cooldowns from a persisted cooldowns map upon app startup.
  */
-export function restoreCooldown(
-  persisted: ActiveCooldown | undefined,
-  now: number
-): ActiveCooldown | undefined {
-  if (!persisted) return undefined;
-  if (persisted.endsAt <= now) return undefined;
-  return persisted;
+export function restoreCooldowns(
+  cooldowns: Record<string, ActiveCooldown> = {},
+  now: number = Date.now()
+): Record<string, ActiveCooldown> {
+  const activeList = getActiveCooldowns(cooldowns, now);
+  const result: Record<string, ActiveCooldown> = {};
+  for (const c of activeList) {
+    result[c.groupId] = c;
+  }
+  return result;
 }

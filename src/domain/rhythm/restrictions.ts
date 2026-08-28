@@ -1,67 +1,84 @@
 import { DeviceApp, RiskGroup, RoutineWindow } from '../../types/domain';
-import { getRestrictableAppIds } from '../selectors';
-import { ActiveCooldown, RestrictionReason } from './types';
+import { ActiveCooldown, AppRestriction, getActiveCooldowns } from './types';
 
 /**
- * Computes all restriction reasons and active restricted app IDs from
- * active routine windows and active cooldowns.
+ * Computes effective desired app restrictions across active routine windows and all active cooldowns.
+ * Maintains the fundamental invariant: Essential apps are NEVER restricted.
  */
 export function computeEffectiveRestrictions(
-  activeRoutineWindows: RoutineWindow[],
-  activeCooldown: ActiveCooldown | undefined,
+  activeWindows: RoutineWindow[],
+  activeCooldowns: Record<string, ActiveCooldown> | ActiveCooldown | undefined,
   riskGroups: RiskGroup[],
-  apps: DeviceApp[]
+  apps: DeviceApp[],
+  now: number = Date.now()
 ): {
-  appRestrictions: { appId: string; reasons: RestrictionReason[] }[];
+  appRestrictions: AppRestriction[];
   effectiveAppIds: string[];
 } {
-  const reasonsByAppId = new Map<string, RestrictionReason[]>();
+  const restrictionMap = new Map<string, AppRestriction>();
+
+  // Helper to ensure an app is never restricted if essential
+  const isRestrictable = (appId: string): boolean => {
+    const app = apps.find((a) => a.id === appId);
+    return app !== undefined && app.classification !== 'essential';
+  };
 
   // 1. Process active Routine Windows
-  for (const window of activeRoutineWindows) {
+  for (const window of activeWindows) {
     if (!window.enabled) continue;
 
     for (const groupId of window.protectedGroupIds) {
       const group = riskGroups.find((g) => g.id === groupId);
       if (!group) continue;
 
-      const restrictableApps = getRestrictableAppIds(group.appIds, apps);
-      for (const appId of restrictableApps) {
-        const existing = reasonsByAppId.get(appId) || [];
-        existing.push({
+      for (const appId of group.appIds) {
+        if (!isRestrictable(appId)) continue;
+
+        const existing = restrictionMap.get(appId) || {
+          appId,
+          reasons: [],
+        };
+        existing.reasons.push({
           type: 'routine',
-          windowId: window.id,
-          groupId: group.id,
+          sourceId: window.id,
         });
-        reasonsByAppId.set(appId, existing);
+        restrictionMap.set(appId, existing);
       }
     }
   }
 
-  // 2. Process active Cooldown
-  if (activeCooldown) {
-    const group = riskGroups.find((g) => g.id === activeCooldown.groupId);
-    if (group) {
-      const restrictableApps = getRestrictableAppIds(group.appIds, apps);
-      for (const appId of restrictableApps) {
-        const existing = reasonsByAppId.get(appId) || [];
-        existing.push({
-          type: 'cooldown',
-          groupId: group.id,
-        });
-        reasonsByAppId.set(appId, existing);
-      }
+  // 2. Process all active Cooldowns (multi-group support)
+  const cooldownList: ActiveCooldown[] = Array.isArray(activeCooldowns)
+    ? activeCooldowns
+    : activeCooldowns && 'groupId' in activeCooldowns
+    ? [activeCooldowns as ActiveCooldown]
+    : activeCooldowns
+    ? getActiveCooldowns(activeCooldowns as Record<string, ActiveCooldown>, now)
+    : [];
+
+  for (const cooldown of cooldownList) {
+    if (cooldown.endsAt <= now) continue;
+
+    const group = riskGroups.find((g) => g.id === cooldown.groupId);
+    if (!group) continue;
+
+    for (const appId of group.appIds) {
+      if (!isRestrictable(appId)) continue;
+
+      const existing = restrictionMap.get(appId) || {
+        appId,
+        reasons: [],
+      };
+      existing.reasons.push({
+        type: 'cooldown',
+        sourceId: cooldown.groupId,
+      });
+      restrictionMap.set(appId, existing);
     }
   }
 
-  const appRestrictions = Array.from(reasonsByAppId.entries()).map(
-    ([appId, reasons]) => ({
-      appId,
-      reasons,
-    })
-  );
-
-  const effectiveAppIds = appRestrictions.map((item) => item.appId);
+  const appRestrictions = Array.from(restrictionMap.values());
+  const effectiveAppIds = appRestrictions.map((r) => r.appId);
 
   return {
     appRestrictions,
@@ -70,8 +87,7 @@ export function computeEffectiveRestrictions(
 }
 
 /**
- * Given the previous set of restricted app IDs and the newly computed set,
- * returns the delta: apps to newly restrict and apps to safely clear.
+ * Computes restriction delta to apply / clear.
  */
 export function diffRestrictions(
   previousAppIds: string[],

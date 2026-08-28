@@ -6,23 +6,52 @@ import { MockRestrictionProvider } from '../../../platform/mock/MockRestrictionP
 import { MockStorageProvider } from '../../../platform/storage/MockStorageProvider';
 import { MockPermissionProvider } from '../../../platform/permissions/MockPermissionProvider';
 import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
-import { initialRiskGroups, initialRoutineWindows } from '../../../data/mockData';
+import { initialRoutineWindows } from '../../../data/mockData';
+import { usePrototypeStore } from '../../../store/usePrototypeStore';
+import { DeviceApp } from '../../../types/domain';
 
-describe('RhythmCoordinator — Platform Composition & Lifecycle', () => {
-  test('Coordinator initializes platform services, dispatches events, and enforces restrictions safely', async () => {
-    const mockUsage = new MockUsageProvider();
+describe('RhythmCoordinator — Platform Composition, Lifecycle & Native Identity', () => {
+  const nativeInstalledApps: DeviceApp[] = [
+    {
+      id: 'com.twitter.android',
+      name: 'X',
+      classification: 'normal',
+      iconName: 'smartphone',
+      iconColor: '#000',
+      iconBg: '#eee',
+      defaultCategory: 'Social',
+      usageTodayMinutes: 0,
+      sessionMinutes: 0,
+    },
+    {
+      id: 'com.instagram.android',
+      name: 'Instagram',
+      classification: 'risk',
+      riskGroupId: 'social',
+      iconName: 'camera',
+      iconColor: '#E1306C',
+      iconBg: '#FCE8EF',
+      defaultCategory: 'Social',
+      usageTodayMinutes: 0,
+      sessionMinutes: 0,
+    },
+    {
+      id: 'com.google.android.dialer',
+      name: 'Phone',
+      classification: 'essential',
+      iconName: 'phone',
+      iconColor: '#2E7D32',
+      iconBg: '#E8F5E9',
+      defaultCategory: 'Communication',
+      usageTodayMinutes: 0,
+      sessionMinutes: 0,
+    },
+  ];
+
+  test('Native app identity: bootstrapped package IDs reach Zustand and OS events match configured Risk app', async () => {
+    const mockUsage = new MockUsageProvider(nativeInstalledApps);
     const mockRestrictions = new MockRestrictionProvider();
-    const mockStorage = new MockStorageProvider({
-      routineWindows: initialRoutineWindows,
-      riskGroups: initialRiskGroups,
-      appClassifications: {
-        x: { classification: 'risk', riskGroupId: 'social' },
-        instagram: { classification: 'risk', riskGroupId: 'social' },
-        phone: { classification: 'essential' },
-      },
-      sessionResetGapMs: 5 * 60 * 1000,
-      onboardingCompleted: true,
-    });
+    const mockStorage = new MockStorageProvider();
     const mockPermissions = new MockPermissionProvider();
 
     configurePlatformServices({
@@ -33,50 +62,134 @@ describe('RhythmCoordinator — Platform Composition & Lifecycle', () => {
     });
 
     const coordinator = RhythmCoordinator.getInstance();
-    coordinator.destroy(); // Clear any previous singleton state
+    coordinator.destroy();
 
-    // Initialize and reconcile at 14:00 (Open Day)
+    // Initialize through store
+    await usePrototypeStore.getState().initializeApps();
+
+    const storeApps = usePrototypeStore.getState().apps;
+    const xApp = storeApps.find((a) => a.id === 'com.twitter.android');
+    assert.ok(xApp, 'Store must contain native package ID com.twitter.android');
+    assert.equal(xApp?.name, 'X');
+
+    // Classify com.twitter.android as Risk in Social Feeds
+    await usePrototypeStore.getState().updateAppClassification('com.twitter.android', 'risk', 'social');
+
+    const updatedX = usePrototypeStore.getState().apps.find((a) => a.id === 'com.twitter.android');
+    assert.equal(updatedX?.classification, 'risk');
+    assert.equal(updatedX?.riskGroupId, 'social');
+
+    // Dispatch OS foreground event with native package ID
     const t0 = new Date('2026-08-31T14:00:00').getTime();
-    await coordinator.initialize();
-    await coordinator.reconcile(t0);
-
-    assert.equal(coordinator.getRuntime()?.state, 'available');
-
-    // 1. User opens X (foreground)
     await coordinator.dispatch({
       type: 'APP_FOREGROUND',
-      appId: 'x',
+      appId: 'com.twitter.android',
       timestamp: t0,
     });
-    assert.equal(coordinator.getRuntime()?.state, 'risk-session');
 
-    // 2. 30 minutes continuous usage -> threshold reached!
-    await coordinator.dispatch({
-      type: 'APP_FOREGROUND',
-      appId: 'x',
-      timestamp: t0 + 30 * 60 * 1000,
+    assert.equal(coordinator.getRuntime()?.state, 'risk-session');
+    assert.equal(coordinator.getRuntime()?.activeSession?.groupId, 'social');
+    assert.equal(coordinator.getRuntime()?.activeSession?.activeAppId, 'com.twitter.android');
+  });
+
+  test('Cold start: unexpired cooldown on startup restores and reapplies restrictions to provider', async () => {
+    const mockUsage = new MockUsageProvider(nativeInstalledApps);
+    const mockRestrictions = new MockRestrictionProvider();
+    const tNow = Date.now();
+    const mockStorage = new MockStorageProvider(
+      {
+        routineWindows: initialRoutineWindows,
+        riskGroups: [
+          {
+            id: 'social',
+            name: 'Social Feeds',
+            description: 'Social',
+            iconName: 'message-square',
+            iconColor: '#235D43',
+            iconBg: '#E8EFE5',
+            appIds: ['com.twitter.android', 'com.instagram.android'],
+            sessionThresholdMinutes: 30,
+            cooldownMinutes: 90,
+            currentSessionMinutes: 0,
+          },
+        ],
+        appClassifications: {
+          'com.twitter.android': { classification: 'risk', riskGroupId: 'social' },
+          'com.instagram.android': { classification: 'risk', riskGroupId: 'social' },
+          'com.google.android.dialer': { classification: 'essential' },
+        },
+        sessionResetGapMs: 5 * 60 * 1000,
+        onboardingCompleted: true,
+      },
+      {
+        state: 'cooldown',
+        activeCooldowns: {
+          social: {
+            groupId: 'social',
+            startedAt: tNow - 30 * 60 * 1000,
+            endsAt: tNow + 60 * 60 * 1000, // Still 60m remaining
+          },
+        },
+        activeRoutineWindowIds: [],
+        lastReconciledAt: tNow,
+      }
+    );
+    const mockPermissions = new MockPermissionProvider();
+
+    configurePlatformServices({
+      usage: mockUsage,
+      restrictions: mockRestrictions,
+      storage: mockStorage,
+      permissions: mockPermissions,
     });
+
+    const coordinator = RhythmCoordinator.getInstance();
+    coordinator.destroy();
+
+    await coordinator.initialize();
 
     assert.equal(coordinator.getRuntime()?.state, 'cooldown');
-    const restrictedApps = await mockRestrictions.getActiveRestrictedApps();
-    assert.equal(restrictedApps.includes('x'), true);
-    assert.equal(restrictedApps.includes('instagram'), true);
-    assert.equal(restrictedApps.includes('tiktok'), true);
-    assert.equal(restrictedApps.includes('phone'), false);
+    assert.ok(coordinator.getRuntime()?.activeCooldowns.social);
 
-    // 3. Cooldown expires -> restriction cleared
-    await coordinator.dispatch({
-      type: 'CLOCK_TICK',
-      timestamp: t0 + 125 * 60 * 1000,
+    // Assert restrictions were reapplied on cold start!
+    const activeRestricted = await mockRestrictions.getActiveRestrictedApps();
+    assert.deepEqual(activeRestricted.sort(), ['com.instagram.android', 'com.twitter.android']);
+    assert.equal(activeRestricted.includes('com.google.android.dialer'), false);
+  });
+
+  test('Cold start: expired cooldown on startup is discarded without reapplication', async () => {
+    const mockUsage = new MockUsageProvider(nativeInstalledApps);
+    const mockRestrictions = new MockRestrictionProvider();
+    const tNow = Date.now();
+    const mockStorage = new MockStorageProvider(
+      null,
+      {
+        state: 'cooldown',
+        activeCooldowns: {
+          social: {
+            groupId: 'social',
+            startedAt: tNow - 120 * 60 * 1000,
+            endsAt: tNow - 30 * 60 * 1000, // Expired 30 minutes ago
+          },
+        },
+        activeRoutineWindowIds: [],
+        lastReconciledAt: tNow,
+      }
+    );
+    const mockPermissions = new MockPermissionProvider();
+
+    configurePlatformServices({
+      usage: mockUsage,
+      restrictions: mockRestrictions,
+      storage: mockStorage,
+      permissions: mockPermissions,
     });
 
-    assert.equal(coordinator.getRuntime()?.state, 'available');
-    const clearedApps = await mockRestrictions.getActiveRestrictedApps();
-    assert.equal(clearedApps.length, 0);
+    const coordinator = RhythmCoordinator.getInstance();
+    coordinator.destroy();
 
-    // 4. Verify permission status handling
-    mockPermissions.setMockStatus({ usageAccess: 'denied' });
-    const permStatus = await mockPermissions.getStatus();
-    assert.equal(permStatus.usageAccess, 'denied');
+    await coordinator.initialize();
+
+    assert.equal(coordinator.getRuntime()?.activeCooldowns.social, undefined);
   });
 });

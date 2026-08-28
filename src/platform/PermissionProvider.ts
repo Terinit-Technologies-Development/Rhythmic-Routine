@@ -1,11 +1,12 @@
 export interface PermissionState {
   usageAccess: 'unknown' | 'granted' | 'denied';
-  restrictionAccess: 'unknown' | 'granted' | 'denied' | 'unsupported';
+  restrictionAuthorization: 'unknown' | 'granted' | 'denied' | 'unsupported';
+  restrictionCapability: 'enforced' | 'foundation-only' | 'unsupported';
 }
 
 /**
  * PermissionProvider abstraction for native OS authorization flows.
- * Handles Android Usage Access & iOS Family Controls authorization.
+ * Accurately distinguishes between observation permissions, authorization, and actual enforcement capability.
  */
 export interface PermissionProvider {
   /**

@@ -1,7 +1,9 @@
 import { getPlatformServices } from '../platform/PlatformServices';
 import { RhythmEngine } from '../domain/rhythm/RhythmEngine';
 import {
+  EngineStatus,
   RhythmConfiguration,
+  RhythmEffect,
   RhythmEvent,
   RhythmRuntime,
 } from '../domain/rhythm/types';
@@ -10,12 +12,16 @@ import { reconcileRhythm } from './reconcileRhythm';
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
+const ENGINE_RECONCILE_INTERVAL_MS = 15_000;
+
 export class RhythmCoordinator {
   private static instance: RhythmCoordinator | null = null;
   private engine: RhythmEngine | null = null;
   private config: RhythmConfiguration | null = null;
+  private status: EngineStatus = { health: 'ready', issues: [] };
   private listeners: Set<RuntimeListener> = new Set();
   private unsubscribeActivity?: () => void;
+  private reconcileTimer?: ReturnType<typeof setInterval>;
   private isInitialized = false;
 
   public static getInstance(): RhythmCoordinator {
@@ -33,9 +39,10 @@ export class RhythmCoordinator {
       return this.engine.getRuntime();
     }
 
-    const { engine, config } = await bootstrapRhythm();
+    const { engine, config, status } = await bootstrapRhythm();
     this.engine = engine;
     this.config = config;
+    this.status = status;
     this.isInitialized = true;
 
     // Subscribe to platform usage activity events
@@ -54,27 +61,22 @@ export class RhythmCoordinator {
                 appId: event.appId,
                 timestamp: event.timestamp,
               }
-        );
+        ).catch(() => {});
       });
     }
+
+    // Start bounded domain clock reconciliation for continuous foreground progress
+    this.startReconciliationClock();
 
     this.notifyListeners();
     return this.engine.getRuntime();
   }
 
   /**
-   * Dispatches an event into the engine and executes resulting effects.
+   * Centralized executor for engine effects.
    */
-  public async dispatch(event: RhythmEvent): Promise<RhythmRuntime> {
-    if (!this.engine || !this.config) {
-      await this.initialize();
-    }
-    if (!this.engine || !this.config) {
-      throw new Error('Rhythm Engine failed to initialize');
-    }
-
+  private async executeEffects(effects: RhythmEffect[]): Promise<void> {
     const { restrictions, storage } = getPlatformServices();
-    const effects = this.engine.dispatch(event);
 
     for (const effect of effects) {
       switch (effect.type) {
@@ -89,6 +91,23 @@ export class RhythmCoordinator {
           break;
       }
     }
+  }
+
+  /**
+   * Dispatches an event into the engine and executes resulting effects.
+   */
+  public async dispatch(event: RhythmEvent): Promise<RhythmRuntime> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+    }
+    if (!this.engine || !this.config) {
+      throw new Error('Rhythm Engine failed to initialize');
+    }
+
+    const { storage } = getPlatformServices();
+    const effects = this.engine.dispatch(event);
+
+    await this.executeEffects(effects);
 
     // Persist runtime state
     const now = 'timestamp' in event ? event.timestamp : Date.now();
@@ -111,7 +130,7 @@ export class RhythmCoordinator {
   }
 
   /**
-   * Updates configuration and persists preferences.
+   * Updates configuration, persists preferences, and executes restriction effects immediately.
    */
   public async updateConfig(nextConfig: Partial<RhythmConfiguration>): Promise<void> {
     if (!this.config || !this.engine) {
@@ -125,7 +144,7 @@ export class RhythmCoordinator {
     };
 
     const { storage } = getPlatformServices();
-    const appClassifications = this.config.apps.reduce<Record<string, { classification: string; riskGroupId?: string }>>((acc, app) => {
+    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
@@ -141,8 +160,30 @@ export class RhythmCoordinator {
       onboardingCompleted: true,
     });
 
-    this.engine.updateConfiguration(this.config);
-    await this.reconcile(Date.now());
+    // Execute effects emitted directly from updateConfiguration
+    const effects = this.engine.updateConfiguration(this.config);
+    await this.executeEffects(effects);
+
+    await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
+    this.notifyListeners();
+  }
+
+  /**
+   * Starts bounded reconciliation clock for continuous foreground time progression.
+   */
+  private startReconciliationClock(): void {
+    if (this.reconcileTimer) return;
+
+    this.reconcileTimer = setInterval(() => {
+      this.dispatch({
+        type: 'CLOCK_TICK',
+        timestamp: Date.now(),
+      }).catch(() => {});
+    }, ENGINE_RECONCILE_INTERVAL_MS);
+
+    if (this.reconcileTimer && typeof (this.reconcileTimer as any).unref === 'function') {
+      (this.reconcileTimer as any).unref();
+    }
   }
 
   /**
@@ -162,6 +203,24 @@ export class RhythmCoordinator {
     return this.engine ? this.engine.getRuntime() : null;
   }
 
+  public getConfiguration(): RhythmConfiguration | null {
+    return this.config
+      ? {
+          routineWindows: [...this.config.routineWindows],
+          riskGroups: [...this.config.riskGroups],
+          apps: [...this.config.apps],
+          sessionResetGapMs: this.config.sessionResetGapMs,
+        }
+      : null;
+  }
+
+  public getStatus(): EngineStatus {
+    return {
+      health: this.status.health,
+      issues: [...this.status.issues],
+    };
+  }
+
   public getEngine(): RhythmEngine | null {
     return this.engine;
   }
@@ -175,8 +234,13 @@ export class RhythmCoordinator {
   }
 
   public destroy(): void {
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = undefined;
+    }
     if (this.unsubscribeActivity) {
       this.unsubscribeActivity();
+      this.unsubscribeActivity = undefined;
     }
     this.listeners.clear();
     this.isInitialized = false;

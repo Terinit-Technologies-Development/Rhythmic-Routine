@@ -16,3 +16,12 @@ export interface NativeAppInfo {
   category?: string;
   iconUri?: string;
 }
+
+/**
+ * Opaque reference for iOS FamilyActivitySelection tokens without exposing plaintext bundle IDs.
+ */
+export interface IOSSelectionReference {
+  localSelectionId: string;
+  displayName?: string;
+  tokenCount?: number;
+}

@@ -1,10 +1,17 @@
-import { UsageProvider } from '../UsageProvider';
+import { UsageActivityEvent, UsageProvider } from '../UsageProvider';
 import { DeviceApp, AppUsageSnapshot } from '../../types/domain';
 import { initialApps } from '../../data/mockData';
 
 export class MockUsageProvider implements UsageProvider {
   private apps: DeviceApp[] = [...initialApps];
-  private listeners: ((appId: string) => void)[] = [];
+  private activityListeners: Set<(event: UsageActivityEvent) => void> = new Set();
+  private foregroundListeners: ((appId: string) => void)[] = [];
+
+  constructor(initialAppsList?: DeviceApp[]) {
+    if (initialAppsList && initialAppsList.length > 0) {
+      this.apps = [...initialAppsList];
+    }
+  }
 
   async getInstalledApps(): Promise<DeviceApp[]> {
     return Promise.resolve([...this.apps]);
@@ -22,15 +29,41 @@ export class MockUsageProvider implements UsageProvider {
     );
   }
 
-  onForegroundAppChange(callback: (appId: string) => void): () => void {
-    this.listeners.push(callback);
+  onActivityEvent(callback: (event: UsageActivityEvent) => void): () => void {
+    this.activityListeners.add(callback);
     return () => {
-      this.listeners = this.listeners.filter((l) => l !== callback);
+      this.activityListeners.delete(callback);
+    };
+  }
+
+  onForegroundAppChange(callback: (appId: string) => void): () => void {
+    this.foregroundListeners.push(callback);
+    return () => {
+      this.foregroundListeners = this.foregroundListeners.filter((l) => l !== callback);
     };
   }
 
   simulateAppOpen(appId: string) {
-    this.listeners.forEach((listener) => listener(appId));
+    this.foregroundListeners.forEach((listener) => listener(appId));
+    const event: UsageActivityEvent = {
+      appId,
+      timestamp: Date.now(),
+      state: 'foreground',
+    };
+    for (const listener of this.activityListeners) {
+      listener(event);
+    }
+  }
+
+  simulateAppBackground(appId: string) {
+    const event: UsageActivityEvent = {
+      appId,
+      timestamp: Date.now(),
+      state: 'background',
+    };
+    for (const listener of this.activityListeners) {
+      listener(event);
+    }
   }
 }
 

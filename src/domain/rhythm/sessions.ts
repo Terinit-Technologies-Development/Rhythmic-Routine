@@ -46,19 +46,39 @@ export function createNewRiskSession(
 }
 
 /**
- * Records activity on an existing or resuming session.
+ * Records active foreground usage.
+ * Only intervals where an app in the group was actively in foreground increment accumulatedSeconds.
  */
-export function recordSessionActivity(
+export function recordActiveUsage(
   session: ActiveRiskSession,
   appId: string | undefined,
   timestamp: number
 ): ActiveRiskSession {
-  const elapsedSinceLast = Math.max(0, Math.floor((timestamp - session.lastActivityAt) / 1000));
+  const elapsed = session.activeAppId
+    ? Math.max(0, Math.floor((timestamp - session.lastActivityAt) / 1000))
+    : 0;
+
+  return {
+    ...session,
+    accumulatedSeconds: session.accumulatedSeconds + elapsed,
+    lastActivityAt: timestamp,
+    activeAppId: appId,
+  };
+}
+
+/**
+ * Resumes an existing continuous Risk Group session after an inactive gap (within tolerance).
+ * Updates the activity pointer without counting the inactive gap as screen usage.
+ */
+export function resumeRiskSession(
+  session: ActiveRiskSession,
+  appId: string,
+  timestamp: number
+): ActiveRiskSession {
   return {
     ...session,
     lastActivityAt: timestamp,
     activeAppId: appId,
-    accumulatedSeconds: session.accumulatedSeconds + elapsedSinceLast,
   };
 }
 

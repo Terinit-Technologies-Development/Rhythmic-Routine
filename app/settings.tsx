@@ -17,6 +17,7 @@ import {
   Lock,
   BatteryCharging,
   Key,
+  Info,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
@@ -53,40 +54,50 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Pass 02 Architecture Banner */}
+        {/* Pass 02A Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>
               <Cpu size={22} color={colors.forest} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Pass 02: Native Rhythm Engine</Text>
-              <Text style={styles.cardSub}>Local-First Native Foundation</Text>
+              <Text style={styles.cardTitle}>Pass 02A: Native Rhythm Engine</Text>
+              <Text style={styles.cardSub}>Local-First SQLite & Multi-Cooldown State</Text>
             </View>
           </View>
           <Text style={styles.cardText}>
-            Operates on a pure TypeScript Rhythm Engine, continuous Risk Group session accounting,
-            cross-midnight routine evaluation, local persistence, and platform service composition.
+            Operates on a pure TypeScript Rhythm Engine, multi-group concurrent cooldowns,
+            continuous Risk Group session accounting, SQLite persistence, and truthful platform capability reporting.
           </Text>
         </View>
 
         {/* Device Permissions & Authorization */}
         <View style={styles.card}>
-          <Text style={styles.sectionHeader}>Platform Authorization</Text>
+          <Text style={styles.sectionHeader}>Platform Authorization & Enforcement</Text>
 
           <View style={styles.checkItem}>
             <Key size={18} color={permissionState.usageAccess === 'granted' ? colors.forest : colors.amberDark} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.checkTitle}>Usage Access</Text>
+              <Text style={styles.checkTitle}>Usage Access Observation</Text>
               <Text style={styles.checkText}>Status: {permissionState.usageAccess.toUpperCase()}</Text>
             </View>
           </View>
 
           <View style={styles.checkItem}>
-            <Lock size={18} color={permissionState.restrictionAccess === 'granted' ? colors.forest : colors.textMuted} />
+            <Lock size={18} color={permissionState.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.checkTitle}>Restriction Shielding</Text>
-              <Text style={styles.checkText}>Status: {permissionState.restrictionAccess.toUpperCase()}</Text>
+              <Text style={styles.checkTitle}>Screen Time Authorization</Text>
+              <Text style={styles.checkText}>Status: {permissionState.restrictionAuthorization.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          <View style={styles.checkItem}>
+            <Info size={18} color={permissionState.restrictionCapability === 'enforced' ? colors.forest : colors.amberDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.checkTitle}>Restriction Capability</Text>
+              <Text style={styles.checkText}>
+                Status: {permissionState.restrictionCapability.toUpperCase().replace('-', ' ')}
+              </Text>
             </View>
           </View>
 
@@ -112,12 +123,12 @@ export default function SettingsScreen() {
 
           <View style={styles.checkItem}>
             <BatteryCharging size={18} color={colors.forest} />
-            <Text style={styles.checkText}>Bounded 15s sampling (no battery-draining tight loops)</Text>
+            <Text style={styles.checkText}>Bounded 15s sampling & clock reconciliation (no battery drain)</Text>
           </View>
 
           <View style={styles.checkItem}>
             <ShieldCheck size={18} color={colors.forest} />
-            <Text style={styles.checkText}>100% Local Persistence (Zero backend / Zero cloud auth)</Text>
+            <Text style={styles.checkText}>SQLite Native Persistence (Zero backend / Zero cloud auth)</Text>
           </View>
 
           <View style={styles.checkItem}>

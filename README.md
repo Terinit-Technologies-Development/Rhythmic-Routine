@@ -30,44 +30,47 @@ Instead of locking you out of your device with arbitrary limits, Rhythm structur
 3. **Risk Groups** 🛡️
    * Monitor related apps collectively (e.g. *X, Instagram, TikTok, Reddit, Discord* share continuous session limits: 18m X + 12m Instagram = 30m Social Feeds).
 4. **Touch Grass Recovery** 🌱
-   * Reaching a session threshold triggers a mandatory offline recovery period (e.g. 90 min) with feel-good grounding suggestions.
+   * Reaching a session threshold triggers an offline recovery period (e.g. 90 min) with feel-good grounding suggestions. Supports multiple concurrent group cooldowns.
 5. **Essential-App Invariant Safety** 🔒
    * Core utility apps (*Phone, Maps, Camera, Clock*) are strictly classified as **Essential** and are never restricted under any routine or cooldown.
 
 ---
 
-## 🏗️ Architecture: Pass 02 (Native Rhythm Engine & Local Foundation)
+## 🏗️ Architecture: Pass 02A (Native Rhythm Engine & Local Foundation)
 
 ```text
 UI (React Native / Expo Router)
         ↓
 Zustand Store (Application State Projection)
         ↓
-RhythmCoordinator (Lifecycle & Event Dispatcher)
+RhythmCoordinator (Lifecycle & Event Dispatcher + 15s Clock)
         ↓
 Pure TypeScript Rhythm Engine (State Machine & Reducer)
         ↓
 PlatformServices Layer (Usage, Restrictions, Storage, Permissions)
         ↓
 Platform Adapters:
-  ├── Web / Test Mocks: MockUsageProvider, MockRestrictionProvider, MockStorageProvider
-  ├── Android Native: UsageStatsManager (Bounded 15s query, AppOpsManager permission intent)
-  └── iOS Native: FamilyControls (AuthorizationCenter), ManagedSettingsStore shield foundation
+  ├── Storage: expo-sqlite (kv-store) on Native / WebStorageProvider on Web
+  ├── Usage: Android UsageStatsManager (Bounded 15s query + deduplication cursor)
+  ├── Restrictions: RestrictionProvider with truthful capability reporting
+  └── Permissions: PermissionProvider (usageAccess vs restrictionAuthorization vs restrictionCapability)
 ```
 
 ### 1. Pure TypeScript Rhythm Engine (`src/domain/rhythm/`)
 * **Zero Dependencies:** Completely decoupled from React, Zustand, SQLite, or OS APIs.
-* **Routine Resolution:** Evaluates real clock time, same-day windows, and cross-midnight routines (e.g. 22:00 to 06:30) across active weekdays.
-* **Continuous Group Sessions:** Tracks cumulative usage across member apps in a Risk Group with a 5-minute inactivity gap tolerance.
+* **Routine Resolution:** Evaluates real clock time, same-day windows, and cross-midnight routines across active weekdays.
+* **Continuous Group Sessions & Inactivity Accounting:** Cumulative usage across member apps in a Risk Group with 5-minute inactivity gap tolerance (non-risk foreground time is tolerated without being added to screen time).
+* **Multi-Group Concurrent Cooldowns:** Manages independent cooldowns per Risk Group; expiring one group preserves active cooldowns on other groups.
 * **Restriction Reason Union:** Tracks multi-reason restrictions (`routine` + `cooldown`) preventing premature unlocking when overlapping windows change.
 
 ### 2. Battery Discipline & Observation Model
 * **No permanent tight JavaScript polling loops.**
-* Android uses bounded 15-second interval reconciliation during active monitoring.
+* Android uses bounded 15-second interval querying with timestamp deduplication during active monitoring.
 * iOS maps to native `FamilyControls` and `DeviceActivity` schedules without JavaScript battery drain.
 
 ### 3. Local-First Privacy (Zero Backend)
 * **No Cloud Accounts / No Firebase / No Supabase / No Analytics Trackers.**
+* Persisted locally using `expo-sqlite/kv-store` on native devices and browser storage on web.
 * 100% of routines, app classifications, active cooldown timestamps, and local history remain on the device.
 
 ---
@@ -76,7 +79,9 @@ Platform Adapters:
 
 * **Framework:** [Expo SDK 57](https://expo.dev) + [Expo Router](https://docs.expo.dev/router/introduction/)
 * **UI & Components:** [React Native](https://reactnative.dev), [React Native Web](https://necolas.github.io/react-native-web/), [Lucide React Native](https://lucide.dev)
+* **Local Persistence:** [expo-sqlite](https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/)
 * **Native Module:** Local Expo Module (`modules/rhythm-device/`) with Kotlin (Android) and Swift (iOS)
+* **Config Plugins:** `plugins/withRhythmScreenTime.ts` (FamilyControls entitlement & `PACKAGE_USAGE_STATS`)
 * **Vector Graphics & Artwork:** [React Native SVG](https://github.com/software-mansion/react-native-svg)
 * **State Management:** [Zustand](https://github.com/pmndrs/zustand)
 * **Code Quality & Testing:** TypeScript, ESLint 9 (Expo Flat Config), Node Test Runner (`tsx`)
@@ -107,7 +112,7 @@ npm run start
 
 ### Quality & Testing Commands
 ```bash
-# Run 36 domain, engine, persistence, and coordinator unit tests
+# Run 45 domain, engine, persistence, coordinator, and deduplication unit tests
 npm test
 
 # Run TypeScript typecheck
@@ -126,11 +131,11 @@ npm run build:web
 
 ### Android
 * **Usage Access:** Requires system authorization via `Settings.ACTION_USAGE_ACCESS_SETTINGS` (`PACKAGE_USAGE_STATS`). The Settings screen provides direct navigation to grant permission.
-* **Restriction Enforcement:** Native restriction registry interface configured behind `RestrictionProvider`.
+* **Event Deduplication:** Query cursor tracking prevents double-counting events spanning polling intervals.
 
 ### iOS
 * **Family Controls:** Implemented using `FamilyControls.AuthorizationCenter.shared.requestAuthorization(for: .individual)` and `ManagedSettingsStore`.
-* **Apple Entitlement:** Production device shielding requires Apple's `com.apple.developer.family-controls` entitlement in your provisioning profile.
+* **Apple Entitlement:** Production device shielding requires Apple's `com.apple.developer.family-controls` entitlement in your provisioning profile. Until token binding is linked, capability is truthfully reported as `foundation-only`.
 
 ---
 

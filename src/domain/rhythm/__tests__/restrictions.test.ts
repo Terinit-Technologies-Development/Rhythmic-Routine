@@ -135,7 +135,8 @@ describe('Rhythm Engine — Restriction Union & Invariants', () => {
       [activeWindow],
       cooldown,
       riskGroups,
-      apps
+      apps,
+      2000
     );
 
     const xRest = appRestrictions.find((r) => r.appId === 'x');
@@ -150,12 +151,48 @@ describe('Rhythm Engine — Restriction Union & Invariants', () => {
       [],
       cooldown,
       riskGroups,
-      apps
+      apps,
+      2000
     );
 
     const diff = diffRestrictions(effectiveAppIds, nextEffective);
     // Because cooldown is still active, 'x' and 'instagram' must NOT be cleared!
     assert.equal(diff.toClear.length, 0);
     assert.deepEqual(nextEffective.sort(), ['instagram', 'x']);
+  });
+
+  test('Multiple active cooldowns: unions multiple groups and retains remaining when one expires', () => {
+    const now = 2000;
+    const cooldowns: Record<string, ActiveCooldown> = {
+      social: { groupId: 'social', startedAt: 1000, endsAt: 3000 },
+      entertainment: { groupId: 'entertainment', startedAt: 1000, endsAt: 5000 },
+    };
+
+    // Both cooldowns active
+    const { effectiveAppIds } = computeEffectiveRestrictions(
+      [],
+      cooldowns,
+      riskGroups,
+      apps,
+      now
+    );
+
+    assert.deepEqual(effectiveAppIds.sort(), ['instagram', 'x', 'youtube']);
+
+    // At t = 4000: social has expired, entertainment remains active
+    const laterNow = 4000;
+    const { effectiveAppIds: nextEffective } = computeEffectiveRestrictions(
+      [],
+      cooldowns,
+      riskGroups,
+      apps,
+      laterNow
+    );
+
+    assert.deepEqual(nextEffective, ['youtube']);
+
+    const diff = diffRestrictions(effectiveAppIds, nextEffective);
+    assert.deepEqual(diff.toClear.sort(), ['instagram', 'x']);
+    assert.equal(diff.toApply.length, 0);
   });
 });

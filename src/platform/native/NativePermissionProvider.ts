@@ -5,18 +5,25 @@ export class NativePermissionProvider implements PermissionProvider {
   async getStatus(): Promise<PermissionState> {
     try {
       const nativeStatus = await RhythmDeviceModule.checkPermissions();
+      const usageAccess = nativeStatus.hasUsagePermission ? 'granted' : 'denied';
+
+      let restrictionAuthorization: PermissionState['restrictionAuthorization'] = 'unsupported';
+      if (nativeStatus.familyControlsStatus === 'approved') {
+        restrictionAuthorization = 'granted';
+      } else if (nativeStatus.familyControlsStatus === 'denied') {
+        restrictionAuthorization = 'denied';
+      }
+
       return {
-        usageAccess: nativeStatus.hasUsagePermission ? 'granted' : 'denied',
-        restrictionAccess: nativeStatus.hasRestrictionPermission
-          ? 'granted'
-          : nativeStatus.familyControlsStatus === 'unsupported'
-          ? 'unsupported'
-          : 'denied',
+        usageAccess,
+        restrictionAuthorization,
+        restrictionCapability: 'foundation-only',
       };
     } catch {
       return {
         usageAccess: 'unknown',
-        restrictionAccess: 'unknown',
+        restrictionAuthorization: 'unknown',
+        restrictionCapability: 'foundation-only',
       };
     }
   }

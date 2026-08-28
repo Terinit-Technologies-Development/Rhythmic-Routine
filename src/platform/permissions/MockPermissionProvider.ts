@@ -6,7 +6,8 @@ export class MockPermissionProvider implements PermissionProvider {
   constructor(
     initialState: PermissionState = {
       usageAccess: 'granted',
-      restrictionAccess: 'granted',
+      restrictionAuthorization: 'granted',
+      restrictionCapability: 'enforced',
     }
   ) {
     this.state = { ...initialState };
@@ -21,7 +22,7 @@ export class MockPermissionProvider implements PermissionProvider {
   }
 
   async requestRestrictionAccess(): Promise<void> {
-    this.state.restrictionAccess = 'granted';
+    this.state.restrictionAuthorization = 'granted';
   }
 
   /**

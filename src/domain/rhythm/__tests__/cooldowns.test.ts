@@ -4,10 +4,11 @@ import {
   startCooldown,
   isCooldownActive,
   isCooldownExpired,
-  restoreCooldown,
+  restoreCooldowns,
 } from '../cooldowns';
+import { getActiveCooldowns, getPrimaryCooldown } from '../types';
 
-describe('Rhythm Engine — Cooldown Lifecycle', () => {
+describe('Rhythm Engine — Multi-Group Cooldown Lifecycle', () => {
   test('startCooldown creates absolute endsAt timestamp based on group cooldown minutes', () => {
     const now = 1700000000000;
     const cooldown = startCooldown('social', now, 90); // 90 minutes
@@ -30,19 +31,35 @@ describe('Rhythm Engine — Cooldown Lifecycle', () => {
     assert.equal(isCooldownExpired(cooldown, now + 61 * 60 * 1000), true);
   });
 
-  test('restoreCooldown restores active cooldown and drops expired ones after app restart', () => {
+  test('restoreCooldowns restores active cooldowns and purges expired ones after restart', () => {
     const savedNow = 1700000000000;
-    const persisted = startCooldown('social', savedNow, 60); // Ends in 1 hour
+    const socialCooldown = startCooldown('social', savedNow, 60); // ends in 60m
+    const newsCooldown = startCooldown('news', savedNow, 120);    // ends in 120m
 
-    // App restarts 20 minutes later (still active)
-    const restartTimeActive = savedNow + 20 * 60 * 1000;
-    const restored = restoreCooldown(persisted, restartTimeActive);
-    assert.ok(restored);
-    assert.equal(restored?.endsAt, persisted.endsAt);
+    const persistedMap = {
+      social: socialCooldown,
+      news: newsCooldown,
+    };
 
-    // App restarts 2 hours later (already expired)
-    const restartTimeExpired = savedNow + 120 * 60 * 1000;
-    const expiredRestored = restoreCooldown(persisted, restartTimeExpired);
-    assert.equal(expiredRestored, undefined);
+    // Restart at 80m: social has expired, news is still active
+    const restartTime = savedNow + 80 * 60 * 1000;
+    const restored = restoreCooldowns(persistedMap, restartTime);
+
+    assert.equal(restored.social, undefined);
+    assert.ok(restored.news);
+    assert.equal(restored.news?.endsAt, newsCooldown.endsAt);
+
+    // getActiveCooldowns and getPrimaryCooldown
+    const activeList = getActiveCooldowns(restored, restartTime);
+    assert.equal(activeList.length, 1);
+    assert.equal(activeList[0].groupId, 'news');
+
+    const primary = getPrimaryCooldown({
+      state: 'cooldown',
+      activeCooldowns: restored,
+      activeRoutineWindowIds: [],
+      activeRestrictions: [],
+    }, restartTime);
+    assert.equal(primary?.groupId, 'news');
   });
 });
