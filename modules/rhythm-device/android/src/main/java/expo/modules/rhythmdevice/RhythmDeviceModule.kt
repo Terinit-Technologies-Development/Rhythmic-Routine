@@ -143,8 +143,10 @@ class RhythmDeviceModule : Module() {
       val (existingLeases, _) = if (leasesJson != null) RhythmEnforcementService.parseAndPruneLeases(leasesJson, now) else Pair(emptyList(), false)
 
       val updatedList = existingLeases.filter { it.groupId != groupId }.toMutableList()
-      updatedList.add(NativeAccessLease(groupId, packageNames.toSet(), endsAt.toLong()))
+      val newLease = NativeAccessLease(groupId, packageNames.toSet(), endsAt.toLong())
+      updatedList.add(newLease)
       RhythmEnforcementService.saveLeases(context, updatedList)
+      RhythmEnforcementService.instance?.scheduleLeaseExpiry(newLease)
       return@AsyncFunction true
     }
 
@@ -157,6 +159,7 @@ class RhythmDeviceModule : Module() {
 
       val updatedList = existingLeases.filter { it.groupId != groupId }
       RhythmEnforcementService.saveLeases(context, updatedList)
+      RhythmEnforcementService.instance?.cancelLeaseExpiry(groupId)
       return@AsyncFunction true
     }
   }

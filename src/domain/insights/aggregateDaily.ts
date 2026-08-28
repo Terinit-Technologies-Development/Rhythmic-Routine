@@ -172,34 +172,46 @@ export function aggregateDailySummary(
   }
 
   // 3. Compute observed protected minutes from effective protection intervals
-  // Merges overlapping group protections to avoid double-counting across concurrent groups
+  // Canonical: if explicit 'group-protection-started' / 'group-protection-ended' events exist, use ONLY them!
+  // Legacy fallback: if no explicit protection events are present, derive intervals from routine/cooldown events.
   const protectionStarts: Record<string, number> = {};
   const rawIntervals: TimeInterval[] = [];
 
-  for (const event of relevantEvents) {
-    if (event.type === 'group-protection-started') {
-      protectionStarts[event.groupId] = event.timestamp;
-    } else if (event.type === 'group-protection-ended') {
-      const start = protectionStarts[event.groupId];
-      if (start !== undefined) {
-        rawIntervals.push({ start, end: event.timestamp });
-        delete protectionStarts[event.groupId];
+  const hasExplicitProtectionEvents = relevantEvents.some(
+    (e) => e.type === 'group-protection-started' || e.type === 'group-protection-ended'
+  );
+
+  if (hasExplicitProtectionEvents) {
+    for (const event of relevantEvents) {
+      if (event.type === 'group-protection-started') {
+        protectionStarts[event.groupId] = event.timestamp;
+      } else if (event.type === 'group-protection-ended') {
+        const start = protectionStarts[event.groupId];
+        if (start !== undefined) {
+          rawIntervals.push({ start, end: event.timestamp });
+          delete protectionStarts[event.groupId];
+        }
       }
-    } else if (event.type === 'cooldown-started') {
-      protectionStarts[`cooldown-${event.groupId}`] = event.timestamp;
-    } else if (event.type === 'cooldown-ended') {
-      const start = protectionStarts[`cooldown-${event.groupId}`];
-      if (start !== undefined) {
-        rawIntervals.push({ start, end: event.timestamp });
-        delete protectionStarts[`cooldown-${event.groupId}`];
-      }
-    } else if (event.type === 'routine-started') {
-      protectionStarts[`routine-${event.windowId}`] = event.timestamp;
-    } else if (event.type === 'routine-ended') {
-      const start = protectionStarts[`routine-${event.windowId}`];
-      if (start !== undefined) {
-        rawIntervals.push({ start, end: event.timestamp });
-        delete protectionStarts[`routine-${event.windowId}`];
+    }
+  } else {
+    // Legacy fallback using routine/cooldown events
+    for (const event of relevantEvents) {
+      if (event.type === 'cooldown-started') {
+        protectionStarts[`cooldown-${event.groupId}`] = event.timestamp;
+      } else if (event.type === 'cooldown-ended') {
+        const start = protectionStarts[`cooldown-${event.groupId}`];
+        if (start !== undefined) {
+          rawIntervals.push({ start, end: event.timestamp });
+          delete protectionStarts[`cooldown-${event.groupId}`];
+        }
+      } else if (event.type === 'routine-started') {
+        protectionStarts[`routine-${event.windowId}`] = event.timestamp;
+      } else if (event.type === 'routine-ended') {
+        const start = protectionStarts[`routine-${event.windowId}`];
+        if (start !== undefined) {
+          rawIntervals.push({ start, end: event.timestamp });
+          delete protectionStarts[`routine-${event.windowId}`];
+        }
       }
     }
   }

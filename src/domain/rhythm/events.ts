@@ -328,6 +328,36 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'NATIVE_COOLDOWN_RESTORED': {
+      if (event.endsAt > nowMs) {
+        const existing = nextCooldowns[event.groupId];
+        const configuredMinutes =
+          config.riskGroups.find((g) => g.id === event.groupId)?.cooldownMinutes ?? 60;
+        nextCooldowns[event.groupId] = {
+          groupId: event.groupId,
+          startedAt:
+            existing?.startedAt ??
+            Math.max(nowMs, event.endsAt - configuredMinutes * 60_000),
+          endsAt: Math.max(existing?.endsAt ?? 0, event.endsAt),
+        };
+      }
+      break;
+    }
+
+    case 'NATIVE_ACCESS_LEASE_RESTORED': {
+      if (event.endsAt > nowMs) {
+        const existing = nextAccessLeases[event.groupId];
+        nextAccessLeases[event.groupId] = {
+          id: existing?.id ?? `native-lease-${event.groupId}-${event.endsAt}`,
+          groupId: event.groupId,
+          startedAt: existing?.startedAt ?? nowMs,
+          endsAt: Math.max(existing?.endsAt ?? 0, event.endsAt),
+          reason: existing?.reason ?? 'emergency',
+        };
+      }
+      break;
+    }
+
     case 'ROUTINE_STARTED':
     case 'ROUTINE_ENDED':
       break;
@@ -357,34 +387,34 @@ export function processRhythmEvent(
     }
   }
 
-  // Record observed effective group-protection transitions
-  const computeProtectedGroups = (
+  // Record observed effective group-protection transitions using state-before vs state-after
+  const computeProtectedGroupsFromRuntimeState = (
     windowIds: string[],
     cooldowns: Record<string, ActiveCooldown>,
     leases: Record<string, AccessLease>
   ): Set<string> => {
-    const set = new Set<string>();
+    const result = new Set<string>();
     for (const winId of windowIds) {
       const win = config.routineWindows.find((w) => w.id === winId);
       if (win && win.enabled) {
-        for (const gid of win.protectedGroupIds) set.add(gid);
+        for (const gid of win.protectedGroupIds) result.add(gid);
       }
     }
     for (const cd of Object.values(cooldowns)) {
-      if (cd.endsAt > nowMs) set.add(cd.groupId);
+      result.add(cd.groupId);
     }
     for (const lease of Object.values(leases)) {
-      if (lease.endsAt > nowMs) set.delete(lease.groupId);
+      result.delete(lease.groupId);
     }
-    return set;
+    return result;
   };
 
-  const prevProtected = computeProtectedGroups(
+  const prevProtected = computeProtectedGroupsFromRuntimeState(
     currentRuntime.activeRoutineWindowIds || [],
     currentRuntime.activeCooldowns || {},
     currentRuntime.activeAccessLeases || {}
   );
-  const nextProtected = computeProtectedGroups(
+  const nextProtected = computeProtectedGroupsFromRuntimeState(
     activeRoutineWindowIds,
     nextCooldowns,
     nextAccessLeases

@@ -8,6 +8,13 @@ public struct SharedGroupPolicy: Codable {
     public let selectionRef: String?
     public let sessionThresholdMinutes: Int
     public let cooldownMinutes: Int
+
+    public init(groupId: String, selectionRef: String?, sessionThresholdMinutes: Int, cooldownMinutes: Int) {
+        self.groupId = groupId
+        self.selectionRef = selectionRef
+        self.sessionThresholdMinutes = sessionThresholdMinutes
+        self.cooldownMinutes = cooldownMinutes
+    }
 }
 
 public struct SharedRoutinePolicy: Codable {
@@ -17,9 +24,19 @@ public struct SharedRoutinePolicy: Codable {
     public let activeDays: [Int]
     public let protectedGroupIds: [String]
     public let enabled: Bool
+
+    public init(windowId: String, startTime: String, endTime: String?, activeDays: [Int], protectedGroupIds: [String], enabled: Bool) {
+        self.windowId = windowId
+        self.startTime = startTime
+        self.endTime = endTime
+        self.activeDays = activeDays
+        self.protectedGroupIds = protectedGroupIds
+        self.enabled = enabled
+    }
 }
 
 public struct SharedRhythmState: Codable {
+    public var schemaVersion: Int
     public var groups: [SharedGroupPolicy]
     public var routines: [SharedRoutinePolicy]
     public var activeCooldownEndsAt: [String: Double]
@@ -28,6 +45,7 @@ public struct SharedRhythmState: Codable {
     public var updatedAt: Double
 
     public init(
+        schemaVersion: Int = 1,
         groups: [SharedGroupPolicy] = [],
         routines: [SharedRoutinePolicy] = [],
         activeCooldownEndsAt: [String: Double] = [:],
@@ -35,6 +53,7 @@ public struct SharedRhythmState: Codable {
         activeRoutineReasons: [String: [String]] = [:],
         updatedAt: Double = Date().timeIntervalSince1970 * 1000
     ) {
+        self.schemaVersion = schemaVersion
         self.groups = groups
         self.routines = routines
         self.activeCooldownEndsAt = activeCooldownEndsAt
@@ -42,6 +61,17 @@ public struct SharedRhythmState: Codable {
         self.activeRoutineReasons = activeRoutineReasons
         self.updatedAt = updatedAt
     }
+}
+
+enum ExpiryKind: String {
+    case cooldown
+    case lease
+}
+
+struct ExpiryActivityDescriptor {
+    let kind: ExpiryKind
+    let groupId: String
+    let endsAt: Double
 }
 
 // DeviceActivityMonitorExtension for background rhythm routine and session threshold transitions.
@@ -55,41 +85,105 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         return "selection.\(groupId)"
     }
 
+    private func parseRoutineActivity(_ name: DeviceActivityName) -> (windowId: String, isoDay: Int)? {
+        let parts = name.rawValue.split(separator: "|").map(String.init)
+        guard parts.count == 4, parts[0] == "routine", parts[2] == "day", let isoDay = Int(parts[3]) else {
+            // Legacy fallback if name is routine.<windowId>
+            if name.rawValue.starts(with: "routine.") {
+                let winId = String(name.rawValue.dropFirst("routine.".count))
+                return (windowId: winId, isoDay: 1)
+            }
+            return nil
+        }
+        return (windowId: parts[1], isoDay: isoDay)
+    }
+
+    private func parseExpiryActivity(_ name: DeviceActivityName) -> ExpiryActivityDescriptor? {
+        let parts = name.rawValue.split(separator: "|").map(String.init)
+        guard parts.count == 4, parts[0] == "expiry",
+              let kind = ExpiryKind(rawValue: parts[1]),
+              let endsAt = Double(parts[3]) else {
+            return nil
+        }
+        return ExpiryActivityDescriptor(kind: kind, groupId: parts[2], endsAt: endsAt)
+    }
+
+    private func scheduleExpiryMonitor(kind: String, groupId: String, endsAtMs: Double) {
+        let now = Date()
+        let end = Date(timeIntervalSince1970: endsAtMs / 1000)
+        guard end > now else { return }
+
+        let calendar = Calendar.current
+        let startComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+        let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: end)
+
+        let name = DeviceActivityName("expiry|\(kind)|\(groupId)|\(Int(endsAtMs))")
+        let schedule = DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
+        try? DeviceActivityCenter().startMonitoring(name, during: schedule)
+    }
+
     override func intervalDidStart(for activity: DeviceActivityName) {
         super.intervalDidStart(for: activity)
-        let raw = activity.rawValue
-        let windowId = raw.starts(with: "routine.") ? String(raw.dropFirst("routine.".count)) : raw
 
-        var state = loadSharedState()
-        if let routine = state.routines.first(where: { $0.windowId == windowId }) {
-            for groupId in routine.protectedGroupIds {
-                var current = state.activeRoutineReasons[groupId] ?? []
-                if !current.contains(windowId) {
-                    current.append(windowId)
-                    state.activeRoutineReasons[groupId] = current
+        if let routineInfo = parseRoutineActivity(activity) {
+            let windowId = routineInfo.windowId
+            var state = loadSharedState()
+            if let routine = state.routines.first(where: { $0.windowId == windowId }) {
+                for groupId in routine.protectedGroupIds {
+                    var current = state.activeRoutineReasons[groupId] ?? []
+                    if !current.contains(windowId) {
+                        current.append(windowId)
+                        state.activeRoutineReasons[groupId] = current
+                    }
                 }
+                state.updatedAt = Date().timeIntervalSince1970 * 1000
+                saveSharedState(state)
+                recomputeAndApplyShields(state: state)
             }
-            state.updatedAt = Date().timeIntervalSince1970 * 1000
-            saveSharedState(state)
-            recomputeAndApplyShields(state: state)
         }
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
         super.intervalDidEnd(for: activity)
-        let raw = activity.rawValue
-        let windowId = raw.starts(with: "routine.") ? String(raw.dropFirst("routine.".count)) : raw
 
-        var state = loadSharedState()
-        if let routine = state.routines.first(where: { $0.windowId == windowId }) {
-            for groupId in routine.protectedGroupIds {
-                var current = state.activeRoutineReasons[groupId] ?? []
-                current.removeAll { $0 == windowId }
-                state.activeRoutineReasons[groupId] = current
+        // 1. Check out-of-process expiry activity
+        if let expiry = parseExpiryActivity(activity) {
+            var state = loadSharedState()
+            let nowMs = Date().timeIntervalSince1970 * 1000
+
+            switch expiry.kind {
+            case .cooldown:
+                if let current = state.activeCooldownEndsAt[expiry.groupId],
+                   abs(current - expiry.endsAt) < 1000 {
+                    state.activeCooldownEndsAt.removeValue(forKey: expiry.groupId)
+                }
+            case .lease:
+                if let current = state.activeAccessLeaseEndsAt[expiry.groupId],
+                   abs(current - expiry.endsAt) < 1000 {
+                    state.activeAccessLeaseEndsAt.removeValue(forKey: expiry.groupId)
+                }
             }
-            state.updatedAt = Date().timeIntervalSince1970 * 1000
+
+            state.updatedAt = nowMs
             saveSharedState(state)
             recomputeAndApplyShields(state: state)
+            return
+        }
+
+        // 2. Routine interval did end
+        if let routineInfo = parseRoutineActivity(activity) {
+            let windowId = routineInfo.windowId
+            var state = loadSharedState()
+            if let routine = state.routines.first(where: { $0.windowId == windowId }) {
+                for groupId in routine.protectedGroupIds {
+                    var current = state.activeRoutineReasons[groupId] ?? []
+                    current.removeAll { $0 == windowId }
+                    state.activeRoutineReasons[groupId] = current
+                }
+                state.updatedAt = Date().timeIntervalSince1970 * 1000
+                saveSharedState(state)
+                recomputeAndApplyShields(state: state)
+            }
         }
     }
 
@@ -100,10 +194,12 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
 
         var state = loadSharedState()
         let cooldownMinutes = state.groups.first { $0.groupId == groupId }?.cooldownMinutes ?? 60
-        state.activeCooldownEndsAt[groupId] = nowMs + Double(cooldownMinutes) * 60_000
+        let endsAt = nowMs + Double(cooldownMinutes) * 60_000
+        state.activeCooldownEndsAt[groupId] = endsAt
         state.updatedAt = nowMs
         saveSharedState(state)
 
+        scheduleExpiryMonitor(kind: "cooldown", groupId: groupId, endsAtMs: endsAt)
         recomputeAndApplyShields(state: state)
     }
 

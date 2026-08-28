@@ -3,6 +3,8 @@ package expo.modules.rhythmdevice
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,15 +17,29 @@ data class NativeAccessLease(
 
 class RhythmEnforcementService : AccessibilityService() {
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val leaseCallbacks = mutableMapOf<String, Runnable>()
+    private var lastForegroundPackage: String? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         isRunning = true
-        pruneExpiredLeases(applicationContext)
+        instance = this
+
+        val activeLeases = loadActiveLeases(applicationContext, System.currentTimeMillis())
+        for (lease in activeLeases) {
+            scheduleLeaseExpiry(lease)
+        }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        for (callback in leaseCallbacks.values) {
+            mainHandler.removeCallbacks(callback)
+        }
+        leaseCallbacks.clear()
         isRunning = false
+        instance = null
+        super.onDestroy()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -38,13 +54,52 @@ class RhythmEnforcementService : AccessibilityService() {
             return
         }
 
+        lastForegroundPackage = packageName
+
+        pruneExpiredLeases(applicationContext)
+
         val now = System.currentTimeMillis()
         if (isEffectivelyRestricted(applicationContext, packageName, now)) {
-            val intent = Intent(this, RhythmOverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(RhythmNativePolicyKeys.EXTRA_PACKAGE_NAME, packageName)
+            presentIntervention(packageName)
+        }
+    }
+
+    fun presentIntervention(packageName: String) {
+        val intent = Intent(this, RhythmOverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(RhythmNativePolicyKeys.EXTRA_PACKAGE_NAME, packageName)
+        }
+        startActivity(intent)
+    }
+
+    fun scheduleLeaseExpiry(lease: NativeAccessLease) {
+        cancelLeaseExpiry(lease.groupId)
+
+        val scheduledEndsAt = lease.endsAt
+        val callback = Runnable {
+            pruneExpiredLeases(applicationContext, System.currentTimeMillis())
+
+            // Stale callback protection: ensure lease wasn't replaced/extended
+            val currentLeases = loadActiveLeases(applicationContext, System.currentTimeMillis())
+            val currentLease = currentLeases.find { it.groupId == lease.groupId }
+            if (currentLease == null || currentLease.endsAt <= scheduledEndsAt) {
+                val foreground = lastForegroundPackage
+                if (foreground != null && isEffectivelyRestricted(applicationContext, foreground, System.currentTimeMillis())) {
+                    presentIntervention(foreground)
+                }
             }
-            startActivity(intent)
+
+            leaseCallbacks.remove(lease.groupId)
+        }
+
+        leaseCallbacks[lease.groupId] = callback
+        val delay = maxOf(0L, lease.endsAt - System.currentTimeMillis())
+        mainHandler.postDelayed(callback, delay)
+    }
+
+    fun cancelLeaseExpiry(groupId: String) {
+        leaseCallbacks.remove(groupId)?.let {
+            mainHandler.removeCallbacks(it)
         }
     }
 
@@ -55,6 +110,19 @@ class RhythmEnforcementService : AccessibilityService() {
     companion object {
         var isRunning = false
             private set
+
+        var instance: RhythmEnforcementService? = null
+            private set
+
+        fun loadActiveLeases(context: Context, now: Long = System.currentTimeMillis()): List<NativeAccessLease> {
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            val leasesJson = prefs.getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null) ?: return emptyList()
+            val (activeLeases, hasExpired) = parseAndPruneLeases(leasesJson, now)
+            if (hasExpired) {
+                saveLeases(context, activeLeases)
+            }
+            return activeLeases
+        }
 
         fun isEffectivelyRestricted(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)

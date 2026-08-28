@@ -8,14 +8,15 @@ const FallbackModule = {
     familyControlsStatus: 'unsupported',
     hasSelection: false,
     shieldingOperational: false,
+    monitoringOperational: false,
   }),
   requestUsagePermission: async (): Promise<void> => {},
   requestRestrictionPermission: async (): Promise<void> => {},
   requestFamilyControls: async (): Promise<string> => 'unsupported',
   showFamilyActivityPicker: async (groupId: string): Promise<IOSSelectionReference> => ({
     localSelectionId: `selection.${groupId}`,
-    displayName: groupId,
     tokenCount: 1,
+    kind: 'mixed',
   }),
   hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
   clearGroupSelection: async (_groupId: string): Promise<boolean> => true,
@@ -28,6 +29,7 @@ const FallbackModule = {
   startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => true,
   endAccessLease: async (_groupId: string): Promise<boolean> => true,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
+  getSharedRhythmState: async (): Promise<string | null> => null,
 };
 
 let NativeModule: typeof FallbackModule = FallbackModule;

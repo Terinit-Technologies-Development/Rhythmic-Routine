@@ -151,20 +151,68 @@ export class RhythmCoordinator {
   }
 
   /**
+   * Imports background cooldowns and access leases created by native extensions while JS was suspended.
+   */
+  private async importNativeStateOnResume(now: number): Promise<void> {
+    if (!this.engine || !this.config) {
+      return;
+    }
+
+    const snapshot = await getPlatformServices().nativeRhythm.getSnapshot?.();
+    if (!snapshot) return;
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+
+      const effects = this.engine.dispatch({
+        type: 'NATIVE_COOLDOWN_RESTORED',
+        groupId,
+        endsAt,
+        timestamp: now,
+      });
+
+      await this.executeEffects(effects);
+    }
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+
+      const effects = this.engine.dispatch({
+        type: 'NATIVE_ACCESS_LEASE_RESTORED',
+        groupId,
+        endsAt,
+        timestamp: now,
+      });
+
+      await this.executeEffects(effects);
+    }
+  }
+
+  /**
    * Reconciles current state (clock time, active routines, cooldown expiry).
    */
-  public async reconcile(now: number = Date.now()): Promise<RhythmRuntime> {
+  public async reconcile(
+    now: number = Date.now(),
+    options?: { syncNative?: boolean }
+  ): Promise<RhythmRuntime> {
     if (!this.engine || !this.config) {
       return this.initialize();
     }
     await reconcileRhythm(this.engine, this.config, now);
-    await this.syncNativeState();
+    if (options?.syncNative !== false) {
+      await this.syncNativeState();
+    }
     this.notifyListeners();
     return this.engine.getRuntime();
   }
 
   /**
-   * Reconciles domain and native state on app resume from background.
+   * Complete resume lifecycle:
+   * 1. Refresh permission state
+   * 2. Import native state created while JS was suspended
+   * 3. Reconcile wall clock
+   * 4. Persist runtime
+   * 5. Sync final authoritative state back outward
    */
   public async handleAppResume(): Promise<void> {
     if (!this.engine || !this.config) {
@@ -173,8 +221,23 @@ export class RhythmCoordinator {
     }
 
     const now = Date.now();
-    await this.reconcile(now);
+    const services = getPlatformServices();
+
+    // 1. Refresh permission state
+    await services.permissions.getStatus();
+
+    // 2. Import native background changes before JS reconciliation
+    await this.importNativeStateOnResume(now);
+
+    // 3. Reconcile wall clock (skip internal sync to avoid duplicate native writes)
+    await this.reconcile(now, { syncNative: false });
+
+    // 4. Persist final JS runtime
+    await services.storage.saveRuntime(this.engine.toPersistedRuntime(now));
+
+    // 5. Sync final authoritative state back outward
     await this.syncNativeState();
+
     this.notifyListeners();
   }
 

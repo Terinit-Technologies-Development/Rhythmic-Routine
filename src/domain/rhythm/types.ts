@@ -92,7 +92,9 @@ export type RhythmEvent =
   | { type: 'COOLDOWN_ENDED'; groupId: string; timestamp: number }
   | { type: 'START_ACCESS_LEASE'; groupId: string; durationMinutes?: number; reason?: 'emergency' | 'intentional'; timestamp: number }
   | { type: 'END_ACCESS_LEASE'; groupId: string; timestamp: number }
-  | { type: 'RECONCILE'; timestamp: number };
+  | { type: 'RECONCILE'; timestamp: number }
+  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
 
 export type RhythmEffect =
   | { type: 'APPLY_RESTRICTIONS'; appIds: string[] }

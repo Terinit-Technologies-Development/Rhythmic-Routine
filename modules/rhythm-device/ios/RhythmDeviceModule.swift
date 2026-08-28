@@ -46,6 +46,7 @@ public struct SharedRoutinePolicy: Codable {
 }
 
 public struct SharedRhythmState: Codable {
+    public var schemaVersion: Int
     public var groups: [SharedGroupPolicy]
     public var routines: [SharedRoutinePolicy]
     public var activeCooldownEndsAt: [String: Double]
@@ -54,6 +55,7 @@ public struct SharedRhythmState: Codable {
     public var updatedAt: Double
 
     public init(
+        schemaVersion: Int = 1,
         groups: [SharedGroupPolicy] = [],
         routines: [SharedRoutinePolicy] = [],
         activeCooldownEndsAt: [String: Double] = [:],
@@ -61,6 +63,7 @@ public struct SharedRhythmState: Codable {
         activeRoutineReasons: [String: [String]] = [:],
         updatedAt: Double = Date().timeIntervalSince1970 * 1000
     ) {
+        self.schemaVersion = schemaVersion
         self.groups = groups
         self.routines = routines
         self.activeCooldownEndsAt = activeCooldownEndsAt
@@ -103,9 +106,30 @@ public class RhythmDeviceModule: Module {
   private let appGroupIdentifier = "group.com.terinit.rhythmicroutine"
   private let storeName = "RhythmRoutineStore"
   private let sharedStateKey = "shared_rhythm_state"
+  private let monitoringOperationalKey = "monitoring_operational"
+  private let monitoringLastErrorKey = "monitoring_last_error"
 
   private func selectionKey(groupId: String) -> String {
     return "selection.\(groupId)"
+  }
+
+  private func hasAnyNonEmptySelection() -> Bool {
+    #if canImport(FamilyControls)
+    if #available(iOS 16.0, *) {
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+      for key in defaults.dictionaryRepresentation().keys.filter({ $0.hasPrefix("selection.") }) {
+        guard let data = defaults.data(forKey: key),
+              let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
+          continue
+        }
+        let count = selection.applicationTokens.count + selection.categoryTokens.count + selection.webDomainTokens.count
+        if count > 0 {
+          return true
+        }
+      }
+    }
+    #endif
+    return false
   }
 
   public func definition() -> ModuleDefinition {
@@ -133,24 +157,20 @@ public class RhythmDeviceModule: Module {
           isApproved = false
         }
 
-        var hasAnySelection = false
-        if let defaults = UserDefaults(suiteName: self.appGroupIdentifier) {
-          for key in defaults.dictionaryRepresentation().keys {
-            if key.hasPrefix("selection.") {
-              hasAnySelection = true
-              break
-            }
-          }
-        }
-
-        let shieldingOperational = isApproved && hasAnySelection
+        let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
+        let hasSelection = self.hasAnyNonEmptySelection()
+        let monitoringOperational = defaults?.bool(forKey: self.monitoringOperationalKey) ?? false
+        let lastError = defaults?.string(forKey: self.monitoringLastErrorKey)
+        let shieldingOperational = isApproved && hasSelection && monitoringOperational
 
         return [
           "hasUsagePermission": isApproved,
           "hasRestrictionPermission": shieldingOperational,
           "familyControlsStatus": statusString,
-          "hasSelection": hasAnySelection,
-          "shieldingOperational": shieldingOperational
+          "hasSelection": hasSelection,
+          "shieldingOperational": shieldingOperational,
+          "monitoringOperational": monitoringOperational,
+          "lastMonitoringError": lastError ?? ""
         ]
       }
       #endif
@@ -160,7 +180,9 @@ public class RhythmDeviceModule: Module {
         "hasRestrictionPermission": false,
         "familyControlsStatus": "unsupported",
         "hasSelection": false,
-        "shieldingOperational": false
+        "shieldingOperational": false,
+        "monitoringOperational": false,
+        "lastMonitoringError": ""
       ]
     }
 
@@ -233,12 +255,11 @@ public class RhythmDeviceModule: Module {
                 if let data = try? JSONEncoder().encode(currentSelection) {
                   defaults?.set(data, forKey: key)
                 }
-                let tokenCount = currentSelection.applicationTokens.count + currentSelection.categoryTokens.count
+                let tokenCount = currentSelection.applicationTokens.count + currentSelection.categoryTokens.count + currentSelection.webDomainTokens.count
                 promise.resolve([
-                  "id": key,
-                  "platform": "ios",
-                  "kind": "mixed",
-                  "tokenCount": tokenCount
+                  "localSelectionId": key,
+                  "tokenCount": tokenCount,
+                  "kind": "mixed"
                 ])
               }
             },
@@ -306,6 +327,14 @@ public class RhythmDeviceModule: Module {
 
       return self.recomputeAndApplyShieldsInternal()
     }
+
+    AsyncFunction("getSharedRhythmState") { () -> String? in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier),
+            let data = defaults.data(forKey: self.sharedStateKey) else {
+        return nil
+      }
+      return String(data: data, encoding: .utf8)
+    }
   }
 
   // MARK: - Internal Shield Recomputation & DeviceActivity Monitoring
@@ -364,6 +393,52 @@ public class RhythmDeviceModule: Module {
     return false
   }
 
+  private func appleWeekday(fromISO iso: Int) -> Int {
+    return iso == 7 ? 1 : iso + 1
+  }
+
+  private func routineActivityName(windowId: String, isoDay: Int) -> DeviceActivityName {
+    DeviceActivityName("routine|\(windowId)|day|\(isoDay)")
+  }
+
+  private func makeRoutineSchedule(routine: SharedRoutinePolicy, isoDay: Int) -> DeviceActivitySchedule? {
+    let startParts = routine.startTime.split(separator: ":").compactMap { Int($0) }
+    let endParts = (routine.endTime ?? "08:00").split(separator: ":").compactMap { Int($0) }
+    guard startParts.count == 2, endParts.count == 2 else { return nil }
+
+    let startMins = startParts[0] * 60 + startParts[1]
+    let endMins = endParts[0] * 60 + endParts[1]
+    let crossesMidnight = endMins <= startMins
+    let nextIsoDay = isoDay == 7 ? 1 : isoDay + 1
+
+    let startWeekday = appleWeekday(fromISO: isoDay)
+    let endWeekday = appleWeekday(fromISO: crossesMidnight ? nextIsoDay : isoDay)
+
+    return DeviceActivitySchedule(
+      intervalStart: DateComponents(weekday: startWeekday, hour: startParts[0], minute: startParts[1]),
+      intervalEnd: DateComponents(weekday: endWeekday, hour: endParts[0], minute: endParts[1]),
+      repeats: true
+    )
+  }
+
+  private func scheduleExpiryMonitor(kind: String, groupId: String, endsAtMs: Double) {
+    #if canImport(DeviceActivity)
+    if #available(iOS 16.0, *) {
+      let now = Date()
+      let end = Date(timeIntervalSince1970: endsAtMs / 1000)
+      guard end > now else { return }
+
+      let calendar = Calendar.current
+      let startComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+      let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: end)
+
+      let name = DeviceActivityName("expiry|\(kind)|\(groupId)|\(Int(endsAtMs))")
+      let schedule = DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
+      try? DeviceActivityCenter().startMonitoring(name, during: schedule)
+    }
+    #endif
+  }
+
   private func synchronizeMonitoringInternal(state: SharedRhythmState) {
     #if canImport(DeviceActivity) && canImport(FamilyControls)
     if #available(iOS 16.0, *) {
@@ -371,46 +446,55 @@ public class RhythmDeviceModule: Module {
       center.stopMonitoring()
 
       let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
-
-      // 1. Register routine schedules
-      for routine in state.routines where routine.enabled {
-        let startParts = routine.startTime.split(separator: ":").compactMap { Int($0) }
-        let endParts = (routine.endTime ?? "08:00").split(separator: ":").compactMap { Int($0) }
-        if startParts.count == 2 && endParts.count == 2 {
-          let schedule = DeviceActivitySchedule(
-            intervalStart: DateComponents(hour: startParts[0], minute: startParts[1]),
-            intervalEnd: DateComponents(hour: endParts[0], minute: endParts[1]),
-            repeats: true
-          )
-
-          let activityName = DeviceActivityName("routine.\(routine.windowId)")
-          try? center.startMonitoring(activityName, during: schedule)
+      do {
+        // 1. Register routine schedules respecting activeDays
+        for routine in state.routines where routine.enabled {
+          for isoDay in routine.activeDays {
+            guard let schedule = makeRoutineSchedule(routine: routine, isoDay: isoDay) else { continue }
+            let activityName = routineActivityName(windowId: routine.windowId, isoDay: isoDay)
+            try center.startMonitoring(activityName, during: schedule)
+          }
         }
-      }
 
-      // 2. Register group threshold events
-      for group in state.groups {
-        let key = self.selectionKey(groupId: group.groupId)
-        if let selData = defaults?.data(forKey: key),
-           let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: selData) {
-          let thresholdEvent = DeviceActivityEvent(
-            applications: selection.applicationTokens,
-            categories: selection.categoryTokens,
-            webDomains: selection.webDomainTokens,
-            threshold: DateComponents(minute: group.sessionThresholdMinutes),
-            includesPastActivity: false
-          )
+        // 2. Register group threshold events
+        for group in state.groups {
+          let key = self.selectionKey(groupId: group.groupId)
+          if let selData = defaults?.data(forKey: key),
+             let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: selData) {
+            let thresholdEvent = DeviceActivityEvent(
+              applications: selection.applicationTokens,
+              categories: selection.categoryTokens,
+              webDomains: selection.webDomainTokens,
+              threshold: DateComponents(minute: group.sessionThresholdMinutes),
+              includesPastActivity: false
+            )
 
-          let dailySchedule = DeviceActivitySchedule(
-            intervalStart: DateComponents(hour: 0, minute: 0),
-            intervalEnd: DateComponents(hour: 23, minute: 59),
-            repeats: true
-          )
+            let dailySchedule = DeviceActivitySchedule(
+              intervalStart: DateComponents(hour: 0, minute: 0),
+              intervalEnd: DateComponents(hour: 23, minute: 59),
+              repeats: true
+            )
 
-          let activityName = DeviceActivityName("risk.\(group.groupId).daily")
-          let eventName = DeviceActivityEvent.Name(group.groupId)
-          try? center.startMonitoring(activityName, during: dailySchedule, events: [eventName: thresholdEvent])
+            let activityName = DeviceActivityName("risk.\(group.groupId).daily")
+            let eventName = DeviceActivityEvent.Name(group.groupId)
+            try center.startMonitoring(activityName, during: dailySchedule, events: [eventName: thresholdEvent])
+          }
         }
+
+        // 3. Register active cooldown and lease expiry monitors
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        for (groupId, endsAt) in state.activeCooldownEndsAt where endsAt > nowMs {
+          scheduleExpiryMonitor(kind: "cooldown", groupId: groupId, endsAtMs: endsAt)
+        }
+        for (groupId, endsAt) in state.activeAccessLeaseEndsAt where endsAt > nowMs {
+          scheduleExpiryMonitor(kind: "lease", groupId: groupId, endsAtMs: endsAt)
+        }
+
+        defaults?.set(true, forKey: self.monitoringOperationalKey)
+        defaults?.removeObject(forKey: self.monitoringLastErrorKey)
+      } catch {
+        defaults?.set(false, forKey: self.monitoringOperationalKey)
+        defaults?.set(error.localizedDescription, forKey: self.monitoringLastErrorKey)
       }
     }
     #endif
@@ -433,6 +517,8 @@ public class RhythmDeviceModule: Module {
 
     if let defaults = UserDefaults(suiteName: self.appGroupIdentifier) {
       defaults.removeObject(forKey: self.sharedStateKey)
+      defaults.set(false, forKey: self.monitoringOperationalKey)
+      defaults.removeObject(forKey: self.monitoringLastErrorKey)
     }
   }
 }

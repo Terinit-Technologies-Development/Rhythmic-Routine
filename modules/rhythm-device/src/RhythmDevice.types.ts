@@ -4,6 +4,8 @@ export interface NativePermissionStatus {
   familyControlsStatus: 'unknown' | 'approved' | 'denied' | 'revoked' | 'unsupported';
   hasSelection?: boolean;
   shieldingOperational?: boolean;
+  monitoringOperational?: boolean;
+  lastMonitoringError?: string;
 }
 
 export interface NativeUsageEvent {
@@ -24,6 +26,6 @@ export interface NativeAppInfo {
  */
 export interface IOSSelectionReference {
   localSelectionId: string;
-  displayName?: string;
-  tokenCount?: number;
+  tokenCount: number;
+  kind: 'applications' | 'categories' | 'mixed';
 }

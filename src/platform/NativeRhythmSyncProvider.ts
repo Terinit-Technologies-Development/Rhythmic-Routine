@@ -1,4 +1,5 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
+import { computeUnsuppressedBaseRestrictedAppIds } from '../domain/rhythm/nativePolicy';
 import RhythmDeviceModule from '../../modules/rhythm-device';
 
 export interface IOSNativeGroupPolicy {
@@ -18,6 +19,7 @@ export interface IOSNativeRoutinePolicy {
 }
 
 export interface IOSSharedRhythmSnapshot {
+  schemaVersion: 1;
   groups: IOSNativeGroupPolicy[];
   routines: IOSNativeRoutinePolicy[];
   activeCooldownEndsAt: Record<string, number>;
@@ -102,6 +104,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         }
 
         const snapshot: IOSSharedRhythmSnapshot = {
+          schemaVersion: 1,
           groups,
           routines,
           activeCooldownEndsAt,
@@ -113,7 +116,11 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         this.lastSnapshot = snapshot;
         await RhythmDeviceModule.setSharedRhythmState(JSON.stringify(snapshot));
       } else if (os === 'android') {
-        const baseRestrictedPackageIds = runtime.activeRestrictions.map((r) => r.appId);
+        const baseRestrictedPackageIds = computeUnsuppressedBaseRestrictedAppIds(
+          runtime,
+          config,
+          Date.now()
+        );
         await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
       }
     } catch {
@@ -122,6 +129,21 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   }
 
   async getSnapshot(): Promise<IOSSharedRhythmSnapshot | null> {
+    const os = getPlatformOS();
+    if (os === 'ios') {
+      try {
+        const raw = await RhythmDeviceModule.getSharedRhythmState();
+        if (raw) {
+          const parsed = JSON.parse(raw) as IOSSharedRhythmSnapshot;
+          if (parsed && parsed.schemaVersion === 1) {
+            this.lastSnapshot = parsed;
+            return parsed;
+          }
+        }
+      } catch {
+        // Fall back to memory cache
+      }
+    }
     return this.lastSnapshot || null;
   }
 }

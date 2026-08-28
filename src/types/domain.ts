@@ -44,6 +44,7 @@ export interface RiskGroup {
   currentSessionMinutes: number;
   isBufferingToday?: boolean;
   nativeSelectionRef?: string;     // Reference to native iOS FamilyActivitySelection
+  nativeSelectionCount?: number;   // Number of selections configured in FamilyActivitySelection
 }
 
 export interface RoutineWindow {

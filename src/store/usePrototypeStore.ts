@@ -90,6 +90,7 @@ interface PrototypeState {
   toggleRoutineDay: (day: number) => void;
   toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
   addNewRiskGroup: (name: string, description: string) => string;
+  selectIosRiskGroupApps: (groupId: string) => Promise<void>;
 
   setSearchQuery: (query: string) => void;
   setFilterClassification: (classification: AppClassification | 'all') => void;
@@ -515,6 +516,35 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }).catch(() => {});
 
     return id;
+  },
+
+  selectIosRiskGroupApps: async (groupId: string) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Platform } = require('react-native');
+      if (Platform.OS !== 'ios') return;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDevice = require('../../modules/rhythm-device').default;
+      const result = await RhythmDevice.showFamilyActivityPicker(groupId);
+      if (!result) return;
+
+      const state = get();
+      const updatedRiskGroups = state.riskGroups.map((group) =>
+        group.id === groupId
+          ? {
+              ...group,
+              nativeSelectionRef: result.localSelectionId,
+              nativeSelectionCount: result.tokenCount ?? 0,
+            }
+          : group
+      );
+
+      set({ riskGroups: updatedRiskGroups });
+      await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedRiskGroups });
+      await get().checkPermissions();
+    } catch {
+      // User cancelled or unsupported
+    }
   },
 
   setSearchQuery: (query) => set({ searchQuery: query }),
