@@ -39,13 +39,26 @@ export default function InsightsScreen() {
       ? 'iOS Screen Time'
       : 'Local Rhythm Engine';
 
+  const isWeb = Platform.OS === 'web';
+  const hasRealData = !!weeklySummary?.hasData;
+  const showDemo = isWeb && !hasRealData;
+
+  const displayProtectedMinutes = hasRealData && weeklySummary
+    ? weeklySummary.totalProtectedMinutes
+    : showDemo
+    ? Math.round(insightMetrics.protectedTimeWeeklyHours * 60)
+    : 0;
+
+  const consistencyScore = hasRealData && weeklySummary
+    ? weeklySummary.routineConsistencyScore
+    : showDemo
+    ? 85
+    : 0;
+
   const maxMinutes = Math.max(
     60,
     ...insightMetrics.weeklyTrend.map((t) => t.protectedMinutes + t.riskMinutes)
   );
-
-  const hasRealData = weeklySummary?.hasData ?? false;
-  const consistencyScore = weeklySummary?.routineConsistencyScore ?? 85;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -74,12 +87,16 @@ export default function InsightsScreen() {
             <View>
               <Text style={styles.highlightLabel}>Protected Time This Week</Text>
               <Text style={styles.highlightNumber}>
-                {formatMinutesToHumanReadable(weeklySummary?.totalProtectedMinutes ?? Math.round(insightMetrics.protectedTimeWeeklyHours * 60))}
+                {formatMinutesToHumanReadable(displayProtectedMinutes)}
               </Text>
             </View>
           </View>
           <Text style={styles.highlightSubtext}>
-            Uninterrupted focus and calm reclaimed through intentional morning buffers and recovery cooldowns.
+            {hasRealData
+              ? 'Uninterrupted focus protected through active morning buffers and recovery cooldowns.'
+              : showDemo
+              ? 'Demo preview: Uninterrupted focus and calm reclaimed through intentional buffers.'
+              : 'No observed protected time yet this week. Protect time by keeping your routines active.'}
           </Text>
         </View>
 

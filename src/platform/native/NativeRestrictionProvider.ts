@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import {
+  NativeAccessLeasePolicy,
   RestrictionCapability,
   RestrictionProvider,
   RestrictionResult,
@@ -54,6 +55,22 @@ export class NativeRestrictionProvider implements RestrictionProvider {
     };
   }
 
+  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<void> {
+    try {
+      await RhythmDeviceModule.startAccessLease(lease.groupId, lease.appIds, lease.endsAt);
+    } catch {
+      // Platform restriction boundary
+    }
+  }
+
+  async endAccessLease(groupId: string): Promise<void> {
+    try {
+      await RhythmDeviceModule.endAccessLease(groupId);
+    } catch {
+      // Platform restriction boundary
+    }
+  }
+
   async getActiveRestrictedApps(): Promise<string[]> {
     return Array.from(this.activeRestrictedApps);
   }
@@ -61,23 +78,32 @@ export class NativeRestrictionProvider implements RestrictionProvider {
   async getCapability(): Promise<RestrictionCapability> {
     try {
       const perms = await RhythmDeviceModule.checkPermissions();
-      const isEnforced = perms.hasRestrictionPermission === true;
 
       if (Platform.OS === 'ios') {
+        const hasAuth = perms.familyControlsStatus === 'approved';
+        const hasSelection = perms.hasSelection === true;
+        const isEnforced = hasAuth && hasSelection && perms.hasRestrictionPermission === true;
+
+        let reason = 'iOS Screen Time & ManagedSettings shielding active';
+        if (!hasAuth) {
+          reason = 'iOS Screen Time requires Apple Family Controls authorization and provisioning';
+        } else if (!hasSelection) {
+          reason = 'Family Controls approved; app selection needed';
+        }
+
         return {
           status: isEnforced ? 'enforced' : 'foundation-only',
           mode: 'system-activity-threshold',
           supportsRoutineWindows: true,
           supportsGroupCooldowns: true,
-          supportsContinuousSessionGap: false, // iOS uses privacy-preserving system-managed activity thresholds
+          supportsContinuousSessionGap: false,
           supportsEmergencyOverride: true,
-          reason: isEnforced
-            ? 'iOS Screen Time & ManagedSettings shielding active'
-            : 'iOS Screen Time requires Apple Family Controls authorization and provisioning',
+          reason,
         };
       }
 
       // Android
+      const isEnforced = perms.hasRestrictionPermission === true;
       return {
         status: isEnforced ? 'enforced' : 'foundation-only',
         mode: 'continuous-session',

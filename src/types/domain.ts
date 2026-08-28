@@ -93,6 +93,27 @@ export interface InsightMetrics {
 
 export const EMERGENCY_ACCESS_MINUTES = 5;
 
+export interface AccessLeasePolicy {
+  defaultMinutes: number;
+  minimumMinutes: number;
+  nativeExpiryGuaranteed: boolean;
+}
+
+export function getPlatformAccessLeasePolicy(platform: string = 'default'): AccessLeasePolicy {
+  if (platform === 'ios') {
+    return {
+      defaultMinutes: 15,
+      minimumMinutes: 15,
+      nativeExpiryGuaranteed: true,
+    };
+  }
+  return {
+    defaultMinutes: 5,
+    minimumMinutes: 1,
+    nativeExpiryGuaranteed: true,
+  };
+}
+
 export interface AccessLease {
   id: string;
   groupId: string;

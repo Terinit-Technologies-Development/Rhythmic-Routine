@@ -144,9 +144,19 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
               }
             }
           }
+
+          // Link target dependency from main app to extension
+          const mainTarget = xcodeProject.getFirstTarget();
+          if (mainTarget && mainTarget.uuid) {
+            xcodeProject.addTargetDependency(mainTarget.uuid, [target.uuid]);
+          }
         }
-      } catch {
-        // Safe fallback if target already indexed
+      } catch (error) {
+        throw new Error(
+          `Failed to configure RhythmDeviceActivityMonitor: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
       }
     }
 

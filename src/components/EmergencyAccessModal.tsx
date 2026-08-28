@@ -5,22 +5,30 @@ import {
   StyleSheet,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  Platform,
 } from 'react-native';
 import { HeartHandshake, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
-import { EMERGENCY_ACCESS_MINUTES } from '../types/domain';
+import { getPlatformAccessLeasePolicy } from '../types/domain';
 
 export const EmergencyAccessModal: React.FC = () => {
   const visible = usePrototypeStore((s) => s.emergencyModalVisible);
   const setVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
-  const triggerEmergencyBypass = usePrototypeStore((s) => s.triggerEmergencyBypass);
+  const startAccessLease = usePrototypeStore((s) => s.startAccessLease);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
 
   if (!visible) return null;
 
+  const policy = getPlatformAccessLeasePolicy(Platform.OS);
+  const durationMinutes = policy.defaultMinutes;
   const targetGroup = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
+
+  const handleGrantOverride = async () => {
+    const groupId = targetGroup?.id || 'social';
+    await startAccessLease(groupId, durationMinutes);
+  };
 
   return (
     <View style={styles.overlay}>
@@ -38,7 +46,7 @@ export const EmergencyAccessModal: React.FC = () => {
         <Text style={styles.message}>
           Take a gentle breath. Rhythm is here to protect your attention, not to lock you out.
           {'\n\n'}
-          You will receive <Text style={styles.bold}>{EMERGENCY_ACCESS_MINUTES} minutes</Text> of temporary access to <Text style={styles.bold}>{targetGroup?.name ?? 'your apps'}</Text>.
+          You will receive <Text style={styles.bold}>{durationMinutes} minutes</Text> of temporary access to <Text style={styles.bold}>{targetGroup?.name ?? 'your apps'}</Text>.
           {'\n\n'}
           Your active cooldown will continue running in the background and restrictions will resume automatically when the lease expires.
         </Text>
@@ -54,12 +62,12 @@ export const EmergencyAccessModal: React.FC = () => {
 
           <TouchableOpacity
             style={styles.unlockBtn}
-            onPress={triggerEmergencyBypass}
+            onPress={handleGrantOverride}
             activeOpacity={0.8}
           >
             <View style={styles.unlockRow}>
               <ShieldAlert size={16} color={colors.amberDark} />
-              <Text style={styles.unlockBtnText}>Grant {EMERGENCY_ACCESS_MINUTES}-Min Override</Text>
+              <Text style={styles.unlockBtnText}>Grant {durationMinutes}-Min Override</Text>
             </View>
           </TouchableOpacity>
         </View>

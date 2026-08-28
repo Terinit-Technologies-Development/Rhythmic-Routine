@@ -108,25 +108,56 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction result
     }
 
+    AsyncFunction("setBaseRestrictions") { packageNames: List<String> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).apply()
+      return@AsyncFunction checkAccessibilityPermission(context)
+    }
+
     AsyncFunction("applyShieldRestrictions") { packageNames: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val prefs = context.getSharedPreferences(RhythmEnforcementService.PREFS_NAME, Context.MODE_PRIVATE)
-      val currentSet = prefs.getStringSet(RhythmEnforcementService.KEY_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val currentSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
       currentSet.addAll(packageNames)
-      prefs.edit().putStringSet(RhythmEnforcementService.KEY_RESTRICTED_PACKAGES, currentSet).apply()
+      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, currentSet).apply()
 
-      // Returns true if accessibility intervention service is actively enabled
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
     AsyncFunction("clearShieldRestrictions") { packageNames: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val prefs = context.getSharedPreferences(RhythmEnforcementService.PREFS_NAME, Context.MODE_PRIVATE)
-      val currentSet = prefs.getStringSet(RhythmEnforcementService.KEY_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val currentSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
       currentSet.removeAll(packageNames.toSet())
-      prefs.edit().putStringSet(RhythmEnforcementService.KEY_RESTRICTED_PACKAGES, currentSet).apply()
+      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, currentSet).apply()
 
       return@AsyncFunction checkAccessibilityPermission(context)
+    }
+
+    AsyncFunction("startAccessLease") { groupId: String, packageNames: List<String>, endsAt: Double ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val now = System.currentTimeMillis()
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val leasesJson = prefs.getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null)
+      val (existingLeases, _) = if (leasesJson != null) RhythmEnforcementService.parseAndPruneLeases(leasesJson, now) else Pair(emptyList(), false)
+
+      val updatedList = existingLeases.filter { it.groupId != groupId }.toMutableList()
+      updatedList.add(NativeAccessLease(groupId, packageNames.toSet(), endsAt.toLong()))
+      RhythmEnforcementService.saveLeases(context, updatedList)
+      return@AsyncFunction true
+    }
+
+    AsyncFunction("endAccessLease") { groupId: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val now = System.currentTimeMillis()
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val leasesJson = prefs.getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null)
+      val (existingLeases, _) = if (leasesJson != null) RhythmEnforcementService.parseAndPruneLeases(leasesJson, now) else Pair(emptyList(), false)
+
+      val updatedList = existingLeases.filter { it.groupId != groupId }
+      RhythmEnforcementService.saveLeases(context, updatedList)
+      return@AsyncFunction true
     }
   }
 

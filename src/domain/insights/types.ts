@@ -14,11 +14,12 @@ export interface InsightMetric<T> {
 
 export interface DailyRhythmSummary {
   dateKey: string; // YYYY-MM-DD local wall-clock date
+  scheduledRoutineMinutes: number;
+  observedProtectedMinutes: number;
   riskUsageSecondsByGroup: Record<string, number>;
   sessionCountByGroup: Record<string, number>;
   cooldownCountByGroup: Record<string, number>;
   cooldownMinutesByGroup: Record<string, number>;
-  routineProtectedMinutes: number;
   accessLeaseCount: number;
   longestRiskSessionSeconds: number;
   firstRiskAppUseTime?: string;
@@ -36,6 +37,7 @@ export interface WeeklyRhythmSummary {
   startDateKey: string;
   endDateKey: string;
   totalProtectedMinutes: number;
+  scheduledRoutineMinutes: number;
   totalRiskUsageMinutes: number;
   averageRiskSessionMinutes: number;
   totalCooldownCount: number;

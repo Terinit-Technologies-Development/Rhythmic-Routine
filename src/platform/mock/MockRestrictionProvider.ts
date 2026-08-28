@@ -1,4 +1,5 @@
 import {
+  NativeAccessLeasePolicy,
   RestrictionCapability,
   RestrictionProvider,
   RestrictionResult,
@@ -6,6 +7,7 @@ import {
 
 export class MockRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
+  private activeLeases: Map<string, NativeAccessLeasePolicy> = new Map();
 
   async applyRestrictions(appIds: string[]): Promise<RestrictionResult> {
     for (const id of appIds) {
@@ -41,6 +43,14 @@ export class MockRestrictionProvider implements RestrictionProvider {
       supportsEmergencyOverride: true,
       reason: 'Mock/Web simulation environment',
     };
+  }
+
+  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<void> {
+    this.activeLeases.set(lease.groupId, lease);
+  }
+
+  async endAccessLease(groupId: string): Promise<void> {
+    this.activeLeases.delete(groupId);
   }
 }
 

@@ -2,6 +2,10 @@ import { UsageProvider } from './UsageProvider';
 import { RestrictionProvider } from './RestrictionProvider';
 import { StorageProvider } from './StorageProvider';
 import { PermissionProvider } from './PermissionProvider';
+import {
+  NativeRhythmSyncProvider,
+  NoopNativeRhythmSyncProvider,
+} from './NativeRhythmSyncProvider';
 import { mockUsageProvider } from './mock/MockUsageProvider';
 import { mockRestrictionProvider } from './mock/MockRestrictionProvider';
 import { WebStorageProvider } from './storage/WebStorageProvider';
@@ -12,6 +16,7 @@ export interface PlatformServices {
   restrictions: RestrictionProvider;
   storage: StorageProvider;
   permissions: PermissionProvider;
+  nativeRhythm: NativeRhythmSyncProvider;
 }
 
 let services: PlatformServices = {
@@ -19,6 +24,7 @@ let services: PlatformServices = {
   restrictions: mockRestrictionProvider,
   storage: new WebStorageProvider(),
   permissions: new MockPermissionProvider(),
+  nativeRhythm: new NoopNativeRhythmSyncProvider(),
 };
 
 /**
@@ -28,9 +34,15 @@ export function getPlatformServices(): PlatformServices {
   return services;
 }
 
+export type ConfigurablePlatformServices = Partial<PlatformServices> &
+  Pick<PlatformServices, 'usage' | 'restrictions' | 'storage' | 'permissions'>;
+
 /**
  * Configures platform service adapters (e.g. for native swapping or testing).
  */
-export function configurePlatformServices(next: PlatformServices): void {
-  services = next;
+export function configurePlatformServices(next: ConfigurablePlatformServices): void {
+  services = {
+    ...services,
+    ...next,
+  };
 }

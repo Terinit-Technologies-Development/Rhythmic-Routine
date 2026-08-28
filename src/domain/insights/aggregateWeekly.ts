@@ -24,6 +24,7 @@ export function aggregateWeeklySummary(
   const groupUsageMinutes: Record<string, number> = {};
 
   let totalProtectedMinutes = 0;
+  let scheduledRoutineMinutes = 0;
   let totalRiskUsageSeconds = 0;
   let totalRiskSessions = 0;
   let totalCooldownCount = 0;
@@ -38,10 +39,12 @@ export function aggregateWeeklySummary(
     const summary = summaryMap.get(dateKey);
 
     let dayRiskSeconds = 0;
-    let dayCooldownMins = 0;
-    let dayRoutineMins = summary?.routineProtectedMinutes ?? 0;
+    let dayObservedProtectedMins = 0;
 
     if (summary) {
+      dayObservedProtectedMins = summary.observedProtectedMinutes;
+      scheduledRoutineMinutes += summary.scheduledRoutineMinutes;
+
       // Aggregate risk usage
       for (const [groupId, seconds] of Object.entries(summary.riskUsageSecondsByGroup)) {
         dayRiskSeconds += seconds;
@@ -49,12 +52,9 @@ export function aggregateWeeklySummary(
         groupUsageMinutes[groupId] = (groupUsageMinutes[groupId] || 0) + mins;
       }
 
-      // Aggregate cooldown count and duration
+      // Aggregate cooldown count
       for (const count of Object.values(summary.cooldownCountByGroup)) {
         totalCooldownCount += count;
-      }
-      for (const mins of Object.values(summary.cooldownMinutesByGroup)) {
-        dayCooldownMins += mins;
       }
 
       // Aggregate sessions
@@ -62,23 +62,26 @@ export function aggregateWeeklySummary(
         totalRiskSessions += count;
       }
 
-      if (Object.keys(summary.sessionCountByGroup).length > 0 || Object.keys(summary.cooldownCountByGroup).length > 0) {
+      if (
+        Object.keys(summary.sessionCountByGroup).length > 0 ||
+        Object.keys(summary.cooldownCountByGroup).length > 0 ||
+        summary.observedProtectedMinutes > 0
+      ) {
         hasAnyData = true;
       }
     }
 
-    const dayProtectedMinutes = dayRoutineMins + dayCooldownMins;
-    totalProtectedMinutes += dayProtectedMinutes;
+    totalProtectedMinutes += dayObservedProtectedMins;
     totalRiskUsageSeconds += dayRiskSeconds;
 
-    if (dayProtectedMinutes > 0) {
+    if (dayObservedProtectedMins > 0) {
       daysWithProtectedTime++;
     }
 
     dailyTrend.push({
       day: dayLabel,
       dateKey,
-      protectedMinutes: dayProtectedMinutes,
+      protectedMinutes: dayObservedProtectedMins,
       riskMinutes: Math.round(dayRiskSeconds / 60),
     });
   }
@@ -87,19 +90,19 @@ export function aggregateWeeklySummary(
   const averageRiskSessionMinutes =
     totalRiskSessions > 0 ? Math.round(totalRiskUsageMinutes / totalRiskSessions) : 0;
 
-  // Routine consistency score: % of past 7 days where routines were actively kept
+  // Routine consistency score: % of past 7 days where observed protection occurred
   const routineConsistencyScore = Math.round((daysWithProtectedTime / 7) * 100);
-
   const startDateKey = dailyTrend[0]?.dateKey ?? endDateKey;
 
   return {
     startDateKey,
     endDateKey,
-    totalProtectedMinutes,
+    totalProtectedMinutes: hasAnyData ? totalProtectedMinutes : 0,
+    scheduledRoutineMinutes,
     totalRiskUsageMinutes,
     averageRiskSessionMinutes,
     totalCooldownCount,
-    routineConsistencyScore,
+    routineConsistencyScore: hasAnyData ? routineConsistencyScore : 0,
     groupUsageMinutes,
     dailyTrend,
     hasData: hasAnyData,

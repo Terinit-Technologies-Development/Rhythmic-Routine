@@ -68,6 +68,7 @@ export class RhythmCoordinator {
     // Start bounded domain clock reconciliation for continuous foreground progress
     this.startReconciliationClock();
 
+    await this.syncNativeState();
     this.notifyListeners();
     return this.engine.getRuntime();
   }
@@ -86,10 +87,40 @@ export class RhythmCoordinator {
         case 'CLEAR_RESTRICTIONS':
           await restrictions.clearRestrictions(effect.appIds);
           break;
+        case 'START_ACCESS_LEASE': {
+          const group = this.config?.riskGroups.find((item) => item.id === effect.groupId);
+          if (group && restrictions.startAccessLease) {
+            await restrictions.startAccessLease({
+              groupId: effect.groupId,
+              appIds: group.appIds,
+              startsAt: Date.now(),
+              endsAt: effect.endsAt,
+            });
+          }
+          break;
+        }
+        case 'END_ACCESS_LEASE':
+          await restrictions.endAccessLease?.(effect.groupId);
+          break;
         case 'RECORD_HISTORY':
           await storage.appendHistoryEvent(effect.event);
           break;
       }
+    }
+  }
+
+  /**
+   * Synchronizes authoritative engine state to platform native layer.
+   */
+  private async syncNativeState(): Promise<void> {
+    if (!this.engine || !this.config) return;
+    try {
+      await getPlatformServices().nativeRhythm.sync(
+        this.engine.getRuntime(),
+        this.config
+      );
+    } catch {
+      // Platform sync boundary
     }
   }
 
@@ -113,6 +144,8 @@ export class RhythmCoordinator {
     const now = 'timestamp' in event ? event.timestamp : Date.now();
     await storage.saveRuntime(this.engine.toPersistedRuntime(now));
 
+    await this.syncNativeState();
+
     this.notifyListeners();
     return this.engine.getRuntime();
   }
@@ -125,8 +158,24 @@ export class RhythmCoordinator {
       return this.initialize();
     }
     await reconcileRhythm(this.engine, this.config, now);
+    await this.syncNativeState();
     this.notifyListeners();
     return this.engine.getRuntime();
+  }
+
+  /**
+   * Reconciles domain and native state on app resume from background.
+   */
+  public async handleAppResume(): Promise<void> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+      return;
+    }
+
+    const now = Date.now();
+    await this.reconcile(now);
+    await this.syncNativeState();
+    this.notifyListeners();
   }
 
   /**
@@ -165,6 +214,7 @@ export class RhythmCoordinator {
     await this.executeEffects(effects);
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
+    await this.syncNativeState();
     this.notifyListeners();
   }
 

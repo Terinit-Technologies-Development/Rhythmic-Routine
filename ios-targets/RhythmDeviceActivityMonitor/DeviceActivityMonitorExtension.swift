@@ -3,28 +3,44 @@ import Foundation
 import ManagedSettings
 import FamilyControls
 
-public enum NativeShieldReason: String, Codable, Hashable {
-    case routine
-    case cooldown
-    case overrideSuppression
+public struct SharedGroupPolicy: Codable {
+    public let groupId: String
+    public let selectionRef: String?
+    public let sessionThresholdMinutes: Int
+    public let cooldownMinutes: Int
+}
+
+public struct SharedRoutinePolicy: Codable {
+    public let windowId: String
+    public let startTime: String
+    public let endTime: String?
+    public let activeDays: [Int]
+    public let protectedGroupIds: [String]
+    public let enabled: Bool
 }
 
 public struct SharedRhythmState: Codable {
-    public var activeCooldowns: [String: Double] // groupId -> endsAt (ms)
-    public var activeRoutineReasons: [String: [String]] // groupId -> [windowId]
-    public var activeAccessLeases: [String: Double] // groupId -> endsAt (ms)
-    public var lastUpdatedAt: Double
+    public var groups: [SharedGroupPolicy]
+    public var routines: [SharedRoutinePolicy]
+    public var activeCooldownEndsAt: [String: Double]
+    public var activeAccessLeaseEndsAt: [String: Double]
+    public var activeRoutineReasons: [String: [String]]
+    public var updatedAt: Double
 
     public init(
-        activeCooldowns: [String: Double] = [:],
+        groups: [SharedGroupPolicy] = [],
+        routines: [SharedRoutinePolicy] = [],
+        activeCooldownEndsAt: [String: Double] = [:],
+        activeAccessLeaseEndsAt: [String: Double] = [:],
         activeRoutineReasons: [String: [String]] = [:],
-        activeAccessLeases: [String: Double] = [:],
-        lastUpdatedAt: Double = Date().timeIntervalSince1970 * 1000
+        updatedAt: Double = Date().timeIntervalSince1970 * 1000
     ) {
-        self.activeCooldowns = activeCooldowns
+        self.groups = groups
+        self.routines = routines
+        self.activeCooldownEndsAt = activeCooldownEndsAt
+        self.activeAccessLeaseEndsAt = activeAccessLeaseEndsAt
         self.activeRoutineReasons = activeRoutineReasons
-        self.activeAccessLeases = activeAccessLeases
-        self.lastUpdatedAt = lastUpdatedAt
+        self.updatedAt = updatedAt
     }
 }
 
@@ -35,32 +51,60 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     let appGroupIdentifier = "group.com.terinit.rhythmicroutine"
     let sharedStateKey = "shared_rhythm_state"
 
+    private func selectionKey(groupId: String) -> String {
+        return "selection.\(groupId)"
+    }
+
     override func intervalDidStart(for activity: DeviceActivityName) {
         super.intervalDidStart(for: activity)
-        let windowId = activity.rawValue
-        addRoutineReason(windowId: windowId)
-        recomputeAndApplyShields()
+        let raw = activity.rawValue
+        let windowId = raw.starts(with: "routine.") ? String(raw.dropFirst("routine.".count)) : raw
+
+        var state = loadSharedState()
+        if let routine = state.routines.first(where: { $0.windowId == windowId }) {
+            for groupId in routine.protectedGroupIds {
+                var current = state.activeRoutineReasons[groupId] ?? []
+                if !current.contains(windowId) {
+                    current.append(windowId)
+                    state.activeRoutineReasons[groupId] = current
+                }
+            }
+            state.updatedAt = Date().timeIntervalSince1970 * 1000
+            saveSharedState(state)
+            recomputeAndApplyShields(state: state)
+        }
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
         super.intervalDidEnd(for: activity)
-        let windowId = activity.rawValue
-        removeRoutineReason(windowId: windowId)
-        recomputeAndApplyShields()
+        let raw = activity.rawValue
+        let windowId = raw.starts(with: "routine.") ? String(raw.dropFirst("routine.".count)) : raw
+
+        var state = loadSharedState()
+        if let routine = state.routines.first(where: { $0.windowId == windowId }) {
+            for groupId in routine.protectedGroupIds {
+                var current = state.activeRoutineReasons[groupId] ?? []
+                current.removeAll { $0 == windowId }
+                state.activeRoutineReasons[groupId] = current
+            }
+            state.updatedAt = Date().timeIntervalSince1970 * 1000
+            saveSharedState(state)
+            recomputeAndApplyShields(state: state)
+        }
     }
 
     override func eventDidReachThreshold(for event: DeviceActivityEvent.Name, activity: DeviceActivityName) {
         super.eventDidReachThreshold(for: event, activity: activity)
         let groupId = event.rawValue
         let nowMs = Date().timeIntervalSince1970 * 1000
-        let defaultCooldownMs: Double = 60 * 60 * 1000 // 60 minutes default
 
         var state = loadSharedState()
-        state.activeCooldowns[groupId] = nowMs + defaultCooldownMs
-        state.lastUpdatedAt = nowMs
+        let cooldownMinutes = state.groups.first { $0.groupId == groupId }?.cooldownMinutes ?? 60
+        state.activeCooldownEndsAt[groupId] = nowMs + Double(cooldownMinutes) * 60_000
+        state.updatedAt = nowMs
         saveSharedState(state)
 
-        recomputeAndApplyShields()
+        recomputeAndApplyShields(state: state)
     }
 
     override func intervalWillStartWarning(for activity: DeviceActivityName) {
@@ -77,65 +121,46 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
 
     // MARK: - Native Shield Reason Union
 
-    private func recomputeAndApplyShields() {
-        let state = loadSharedState()
+    private func recomputeAndApplyShields(state: SharedRhythmState) {
         let nowMs = Date().timeIntervalSince1970 * 1000
-        var shouldShieldAny = false
+        var protectedGroups = Set<String>()
 
-        // Check if any group has active cooldown (not expired and not suppressed by active lease)
-        for (groupId, endsAt) in state.activeCooldowns {
+        // 1. Routine reasons
+        for (groupId, windows) in state.activeRoutineReasons {
+            if !windows.isEmpty {
+                protectedGroups.insert(groupId)
+            }
+        }
+
+        // 2. Cooldowns
+        for (groupId, endsAt) in state.activeCooldownEndsAt {
             if endsAt > nowMs {
-                let leaseEndsAt = state.activeAccessLeases[groupId] ?? 0
-                if leaseEndsAt <= nowMs {
-                    shouldShieldAny = true
-                    break
-                }
+                protectedGroups.insert(groupId)
             }
         }
 
-        // Check if any group has active routine reasons (and not suppressed by lease)
-        if !shouldShieldAny {
-            for (groupId, windows) in state.activeRoutineReasons {
-                if !windows.isEmpty {
-                    let leaseEndsAt = state.activeAccessLeases[groupId] ?? 0
-                    if leaseEndsAt <= nowMs {
-                        shouldShieldAny = true
-                        break
-                    }
-                }
+        // 3. Subtract active access leases
+        for (groupId, endsAt) in state.activeAccessLeaseEndsAt {
+            if endsAt > nowMs {
+                protectedGroups.remove(groupId)
             }
         }
 
-        // Apply or clear shields based on effective union
         let defaults = UserDefaults(suiteName: appGroupIdentifier)
-        if shouldShieldAny {
-            if let savedData = defaults?.data(forKey: "selection.all"),
-               let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: savedData) {
-                store.shield.applications = selection.applicationTokens
-                store.shield.applicationCategories = .specific(selection.categoryTokens)
+        var appTokens = Set<ApplicationToken>()
+        var categoryTokens = Set<ActivityCategoryToken>()
+
+        for groupId in protectedGroups {
+            let key = selectionKey(groupId: groupId)
+            if let selData = defaults?.data(forKey: key),
+               let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: selData) {
+                appTokens.formUnion(selection.applicationTokens)
+                categoryTokens.formUnion(selection.categoryTokens)
             }
-        } else {
-            store.shield.applications = nil
-            store.shield.applicationCategories = nil
         }
-    }
 
-    private func addRoutineReason(windowId: String) {
-        var state = loadSharedState()
-        var current = state.activeRoutineReasons["all"] ?? []
-        if !current.contains(windowId) {
-            current.append(windowId)
-            state.activeRoutineReasons["all"] = current
-            saveSharedState(state)
-        }
-    }
-
-    private func removeRoutineReason(windowId: String) {
-        var state = loadSharedState()
-        var current = state.activeRoutineReasons["all"] ?? []
-        current.removeAll { $0 == windowId }
-        state.activeRoutineReasons["all"] = current
-        saveSharedState(state)
+        store.shield.applications = appTokens.isEmpty ? nil : appTokens
+        store.shield.applicationCategories = categoryTokens.isEmpty ? nil : .specific(categoryTokens)
     }
 
     private func loadSharedState() -> SharedRhythmState {

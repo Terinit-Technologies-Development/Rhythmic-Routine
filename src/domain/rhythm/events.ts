@@ -337,6 +337,77 @@ export function processRhythmEvent(
   const activeRoutineWindowIds = getActiveRoutineWindowIds(nowDate, config.routineWindows);
   const activeRoutineWindows = config.routineWindows.filter((w) => isInsideWindow(nowDate, w));
 
+  // Record observed routine transitions
+  const prevWindowIds = new Set(currentRuntime.activeRoutineWindowIds || []);
+  const nextWindowIds = new Set(activeRoutineWindowIds);
+  for (const winId of nextWindowIds) {
+    if (!prevWindowIds.has(winId)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'routine-started', windowId: winId, timestamp: nowMs },
+      });
+    }
+  }
+  for (const winId of prevWindowIds) {
+    if (!nextWindowIds.has(winId)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'routine-ended', windowId: winId, timestamp: nowMs },
+      });
+    }
+  }
+
+  // Record observed effective group-protection transitions
+  const computeProtectedGroups = (
+    windowIds: string[],
+    cooldowns: Record<string, ActiveCooldown>,
+    leases: Record<string, AccessLease>
+  ): Set<string> => {
+    const set = new Set<string>();
+    for (const winId of windowIds) {
+      const win = config.routineWindows.find((w) => w.id === winId);
+      if (win && win.enabled) {
+        for (const gid of win.protectedGroupIds) set.add(gid);
+      }
+    }
+    for (const cd of Object.values(cooldowns)) {
+      if (cd.endsAt > nowMs) set.add(cd.groupId);
+    }
+    for (const lease of Object.values(leases)) {
+      if (lease.endsAt > nowMs) set.delete(lease.groupId);
+    }
+    return set;
+  };
+
+  const prevProtected = computeProtectedGroups(
+    currentRuntime.activeRoutineWindowIds || [],
+    currentRuntime.activeCooldowns || {},
+    currentRuntime.activeAccessLeases || {}
+  );
+  const nextProtected = computeProtectedGroups(
+    activeRoutineWindowIds,
+    nextCooldowns,
+    nextAccessLeases
+  );
+
+  for (const gid of nextProtected) {
+    if (!prevProtected.has(gid)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'group-protection-started', groupId: gid, timestamp: nowMs },
+      });
+    }
+  }
+
+  for (const gid of prevProtected) {
+    if (!nextProtected.has(gid)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'group-protection-ended', groupId: gid, timestamp: nowMs },
+      });
+    }
+  }
+
   // 5. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(

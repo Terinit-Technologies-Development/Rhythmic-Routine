@@ -78,6 +78,8 @@ export type RhythmHistoryEvent =
   | { type: 'access-lease-ended'; groupId: string; timestamp: number }
   | { type: 'routine-started'; windowId: string; timestamp: number }
   | { type: 'routine-ended'; windowId: string; timestamp: number }
+  | { type: 'group-protection-started'; groupId: string; timestamp: number }
+  | { type: 'group-protection-ended'; groupId: string; timestamp: number }
   | { type: 'emergency-bypass'; timestamp: number };
 
 export type RhythmEvent =

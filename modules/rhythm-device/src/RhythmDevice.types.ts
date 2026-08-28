@@ -2,6 +2,8 @@ export interface NativePermissionStatus {
   hasUsagePermission: boolean;
   hasRestrictionPermission: boolean;
   familyControlsStatus: 'unknown' | 'approved' | 'denied' | 'revoked' | 'unsupported';
+  hasSelection?: boolean;
+  shieldingOperational?: boolean;
 }
 
 export interface NativeUsageEvent {

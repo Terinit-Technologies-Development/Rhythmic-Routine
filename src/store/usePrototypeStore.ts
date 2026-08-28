@@ -182,25 +182,52 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       const todaySummary = await repo.getDailySummary(todayKey);
       const weeklySummary = await repo.getWeeklySummary(todayKey);
 
-      set({
-        todaySummary: todaySummary || undefined,
-        weeklySummary,
-        insightMetrics: weeklySummary.hasData
-          ? {
-              protectedTimeTodayMinutes: (todaySummary?.routineProtectedMinutes || 0) + (Object.values(todaySummary?.cooldownMinutesByGroup || {}).reduce((a, b) => a + b, 0)),
-              protectedTimeWeeklyHours: Math.round((weeklySummary.totalProtectedMinutes / 60) * 10) / 10,
-              averageRiskSessionMinutes: weeklySummary.averageRiskSessionMinutes,
-              cooldownTriggersCount: weeklySummary.totalCooldownCount,
-              firstRiskAppUseTime: todaySummary?.firstRiskAppUseTime || '08:00',
-              finalRiskAppUseTime: todaySummary?.finalRiskAppUseTime || '21:30',
-              weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
-                day: t.day,
-                protectedMinutes: t.protectedMinutes,
-                riskMinutes: t.riskMinutes,
-              })),
-            }
-          : get().insightMetrics,
-      });
+      const isWeb = typeof window !== 'undefined';
+      const showDemoInsights = isWeb && !weeklySummary.hasData;
+
+      if (weeklySummary.hasData) {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: {
+            protectedTimeTodayMinutes: todaySummary?.observedProtectedMinutes || 0,
+            protectedTimeWeeklyHours: Math.round((weeklySummary.totalProtectedMinutes / 60) * 10) / 10,
+            averageRiskSessionMinutes: weeklySummary.averageRiskSessionMinutes,
+            cooldownTriggersCount: weeklySummary.totalCooldownCount,
+            firstRiskAppUseTime: todaySummary?.firstRiskAppUseTime || '—',
+            finalRiskAppUseTime: todaySummary?.finalRiskAppUseTime || '—',
+            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
+              day: t.day,
+              protectedMinutes: t.protectedMinutes,
+              riskMinutes: t.riskMinutes,
+            })),
+          },
+        });
+      } else if (showDemoInsights) {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: get().insightMetrics,
+        });
+      } else {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: {
+            protectedTimeTodayMinutes: 0,
+            protectedTimeWeeklyHours: 0,
+            averageRiskSessionMinutes: 0,
+            cooldownTriggersCount: 0,
+            firstRiskAppUseTime: '—',
+            finalRiskAppUseTime: '—',
+            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
+              day: t.day,
+              protectedMinutes: 0,
+              riskMinutes: 0,
+            })),
+          },
+        });
+      }
     } catch {
       // Keep existing metrics on error
     }

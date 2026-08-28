@@ -1,4 +1,4 @@
-import { NativeAppInfo, NativePermissionStatus, NativeUsageEvent } from './RhythmDevice.types';
+import { IOSSelectionReference, NativeAppInfo, NativePermissionStatus, NativeUsageEvent } from './RhythmDevice.types';
 
 // Mock/fallback when native binary is not linked (web / simulator without native build)
 const FallbackModule = {
@@ -6,15 +6,27 @@ const FallbackModule = {
     hasUsagePermission: true,
     hasRestrictionPermission: true,
     familyControlsStatus: 'unsupported',
+    hasSelection: false,
+    shieldingOperational: false,
   }),
   requestUsagePermission: async (): Promise<void> => {},
   requestRestrictionPermission: async (): Promise<void> => {},
   requestFamilyControls: async (): Promise<string> => 'unsupported',
+  showFamilyActivityPicker: async (groupId: string): Promise<IOSSelectionReference> => ({
+    localSelectionId: `selection.${groupId}`,
+    displayName: groupId,
+    tokenCount: 1,
+  }),
+  hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
+  clearGroupSelection: async (_groupId: string): Promise<boolean> => true,
   revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
+  setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
+  startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => true,
+  endAccessLease: async (_groupId: string): Promise<boolean> => true,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
 };
 

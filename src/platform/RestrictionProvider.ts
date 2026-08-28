@@ -23,6 +23,13 @@ export interface RestrictionResult {
   reason?: string;
 }
 
+export interface NativeAccessLeasePolicy {
+  groupId: string;
+  appIds: string[];
+  startsAt: number;
+  endsAt: number;
+}
+
 export interface RestrictionProvider {
   /**
    * Applies shielding restrictions to the given app IDs.
@@ -43,4 +50,14 @@ export interface RestrictionProvider {
    * Reports the actual platform capability state truthfully.
    */
   getCapability(): Promise<RestrictionCapability>;
+
+  /**
+   * Registers a native access lease with the underlying platform.
+   */
+  startAccessLease?(lease: NativeAccessLeasePolicy): Promise<void>;
+
+  /**
+   * Ends an active access lease on the underlying platform.
+   */
+  endAccessLease?(groupId: string): Promise<void>;
 }
