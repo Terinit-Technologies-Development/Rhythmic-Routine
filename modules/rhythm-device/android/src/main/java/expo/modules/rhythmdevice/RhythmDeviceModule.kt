@@ -115,23 +115,15 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
-    AsyncFunction("applyShieldRestrictions") { packageNames: List<String> ->
+    AsyncFunction("applyShieldRestrictions") { _: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      val currentSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
-      currentSet.addAll(packageNames)
-      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, currentSet).apply()
-
+      // Base restrictions are written exclusively through setBaseRestrictions(...)
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
-    AsyncFunction("clearShieldRestrictions") { packageNames: List<String> ->
+    AsyncFunction("clearShieldRestrictions") { _: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      val currentSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet())?.toMutableSet() ?: mutableSetOf()
-      currentSet.removeAll(packageNames.toSet())
-      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, currentSet).apply()
-
+      // Base restrictions are written exclusively through setBaseRestrictions(...)
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 

@@ -29,3 +29,19 @@ export interface IOSSelectionReference {
   tokenCount: number;
   kind: 'applications' | 'categories' | 'mixed';
 }
+
+export interface MonitoringSyncResult {
+  success: boolean;
+  persistentActivityCount: number;
+  totalActivityCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface MonitoringDiagnostics {
+  activityCount: number;
+  activityNames: string[];
+  monitoringOperational: boolean;
+  configSignature: string;
+  lastError: string;
+}

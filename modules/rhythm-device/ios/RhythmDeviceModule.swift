@@ -108,6 +108,14 @@ public class RhythmDeviceModule: Module {
   private let sharedStateKey = "shared_rhythm_state"
   private let monitoringOperationalKey = "monitoring_operational"
   private let monitoringLastErrorKey = "monitoring_last_error"
+  private let monitoringConfigSignatureKey = "monitoring_config_signature"
+
+  private let maximumActivityCount = 20
+  private let reservedExpirySlots = 1
+  private let reservedSafetySlots = 1
+  private var maximumPersistentActivities: Int {
+    maximumActivityCount - reservedExpirySlots - reservedSafetySlots // 18
+  }
 
   private func selectionKey(groupId: String) -> String {
     return "selection.\(groupId)"
@@ -130,6 +138,18 @@ public class RhythmDeviceModule: Module {
     }
     #endif
     return false
+  }
+
+  private func isRhythmRoutineActivity(_ name: DeviceActivityName) -> Bool {
+    return name.rawValue.hasPrefix("routine|")
+  }
+
+  private func isRhythmRiskActivity(_ name: DeviceActivityName) -> Bool {
+    return name.rawValue == "risk.daily"
+  }
+
+  private func isRhythmExpiryActivity(_ name: DeviceActivityName) -> Bool {
+    return name.rawValue.hasPrefix("expiry|")
   }
 
   public func definition() -> ModuleDefinition {
@@ -322,7 +342,7 @@ public class RhythmDeviceModule: Module {
       defaults.set(data, forKey: self.sharedStateKey)
 
       if let state = try? JSONDecoder().decode(SharedRhythmState.self, from: data) {
-        self.synchronizeMonitoringInternal(state: state)
+        self.ensureNearestExpiryMonitor(state: state)
       }
 
       return self.recomputeAndApplyShieldsInternal()
@@ -334,6 +354,142 @@ public class RhythmDeviceModule: Module {
         return nil
       }
       return String(data: data, encoding: .utf8)
+    }
+
+    AsyncFunction("synchronizeMonitoringConfiguration") { (stateJson: String, configurationSignature: String) -> [String: Any] in
+      #if canImport(DeviceActivity) && canImport(FamilyControls)
+      if #available(iOS 16.0, *) {
+        guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else {
+          return [
+            "success": false,
+            "persistentActivityCount": 0,
+            "totalActivityCount": 0,
+            "errorCode": "app_group_unavailable",
+            "errorMessage": "App Group UserDefaults unavailable"
+          ]
+        }
+
+        let center = DeviceActivityCenter()
+        let persistedSignature = defaults.string(forKey: self.monitoringConfigSignatureKey)
+
+        // Idempotency: If configuration signature is unchanged and monitoring is operational, no-op!
+        if persistedSignature == configurationSignature && defaults.bool(forKey: self.monitoringOperationalKey) {
+          let persistentCount = center.activities.filter { self.isRhythmRoutineActivity($0) || self.isRhythmRiskActivity($0) }.count
+          return [
+            "success": true,
+            "persistentActivityCount": persistentCount,
+            "totalActivityCount": center.activities.count
+          ]
+        }
+
+        guard let data = stateJson.data(using: .utf8),
+              let state = try? JSONDecoder().decode(SharedRhythmState.self, from: data) else {
+          return [
+            "success": false,
+            "persistentActivityCount": 0,
+            "totalActivityCount": 0,
+            "errorCode": "invalid_payload",
+            "errorMessage": "Failed to decode stateJson"
+          ]
+        }
+
+        let plan = self.buildMonitoringPlan(state: state, defaults: defaults)
+        let persistentCount = plan.routines.count + (plan.riskEvents.isEmpty ? 0 : 1)
+
+        // Preflight budget check: max 18 persistent activities
+        if persistentCount > self.maximumPersistentActivities {
+          defaults.set(false, forKey: self.monitoringOperationalKey)
+          let errorMsg = "Requested \(persistentCount) persistent activities, maximum is \(self.maximumPersistentActivities)"
+          defaults.set("activity_budget_exceeded: \(errorMsg)", forKey: self.monitoringLastErrorKey)
+          return [
+            "success": false,
+            "persistentActivityCount": persistentCount,
+            "totalActivityCount": center.activities.count,
+            "errorCode": "activity_budget_exceeded",
+            "errorMessage": errorMsg
+          ]
+        }
+
+        do {
+          // Stop ONLY persistent routine and risk activities; preserve expiry activities!
+          let persistentToReplace = center.activities.filter {
+            self.isRhythmRoutineActivity($0) || self.isRhythmRiskActivity($0)
+          }
+          if !persistentToReplace.isEmpty {
+            center.stopMonitoring(persistentToReplace)
+          }
+
+          // Register routine activities
+          for planned in plan.routines {
+            try center.startMonitoring(planned.name, during: planned.schedule)
+          }
+
+          // Register single risk.daily activity if any group has non-empty tokens
+          if !plan.riskEvents.isEmpty {
+            let dailySchedule = DeviceActivitySchedule(
+              intervalStart: DateComponents(hour: 0, minute: 0),
+              intervalEnd: DateComponents(hour: 23, minute: 59),
+              repeats: true
+            )
+            try center.startMonitoring(DeviceActivityName("risk.daily"), during: dailySchedule, events: plan.riskEvents)
+          }
+
+          // Ensure nearest expiry monitor
+          self.ensureNearestExpiryMonitor(state: state)
+
+          defaults.set(true, forKey: self.monitoringOperationalKey)
+          defaults.removeObject(forKey: self.monitoringLastErrorKey)
+          defaults.set(configurationSignature, forKey: self.monitoringConfigSignatureKey)
+
+          return [
+            "success": true,
+            "persistentActivityCount": persistentCount,
+            "totalActivityCount": center.activities.count
+          ]
+        } catch {
+          self.recordMonitoringFailure(error, context: "synchronizeMonitoringConfiguration")
+          return [
+            "success": false,
+            "persistentActivityCount": persistentCount,
+            "totalActivityCount": center.activities.count,
+            "errorCode": "native_registration_failed",
+            "errorMessage": error.localizedDescription
+          ]
+        }
+      }
+      #endif
+
+      return [
+        "success": false,
+        "persistentActivityCount": 0,
+        "totalActivityCount": 0,
+        "errorCode": "unsupported",
+        "errorMessage": "DeviceActivity requires iOS 16.0+"
+      ]
+    }
+
+    AsyncFunction("getMonitoringDiagnostics") { () -> [String: Any] in
+      #if canImport(DeviceActivity)
+      if #available(iOS 16.0, *) {
+        let center = DeviceActivityCenter()
+        let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
+        return [
+          "activityCount": center.activities.count,
+          "activityNames": center.activities.map { $0.rawValue },
+          "monitoringOperational": defaults?.bool(forKey: self.monitoringOperationalKey) ?? false,
+          "configSignature": defaults?.string(forKey: self.monitoringConfigSignatureKey) ?? "",
+          "lastError": defaults?.string(forKey: self.monitoringLastErrorKey) ?? ""
+        ]
+      }
+      #endif
+
+      return [
+        "activityCount": 0,
+        "activityNames": [],
+        "monitoringOperational": false,
+        "configSignature": "",
+        "lastError": ""
+      ]
     }
   }
 
@@ -421,89 +577,131 @@ public class RhythmDeviceModule: Module {
     )
   }
 
-  private func scheduleExpiryMonitor(kind: String, groupId: String, endsAtMs: Double) {
-    #if canImport(DeviceActivity)
-    if #available(iOS 16.0, *) {
-      let now = Date()
-      let end = Date(timeIntervalSince1970: endsAtMs / 1000)
-      guard end > now else { return }
-
-      let calendar = Calendar.current
-      let startComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
-      let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: end)
-
-      let name = DeviceActivityName("expiry|\(kind)|\(groupId)|\(Int(endsAtMs))")
-      let schedule = DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
-      try? DeviceActivityCenter().startMonitoring(name, during: schedule)
-    }
-    #endif
+  struct PlannedRoutineActivity {
+    let name: DeviceActivityName
+    let schedule: DeviceActivitySchedule
   }
 
-  private func synchronizeMonitoringInternal(state: SharedRhythmState) {
-    #if canImport(DeviceActivity) && canImport(FamilyControls)
+  private func buildMonitoringPlan(state: SharedRhythmState, defaults: UserDefaults) -> (routines: [PlannedRoutineActivity], riskEvents: [DeviceActivityEvent.Name: DeviceActivityEvent]) {
+    var plannedRoutines: [PlannedRoutineActivity] = []
+
+    // 1. Routine compression: skip empty protected groups (e.g. Open Day)
+    for routine in state.routines where routine.enabled && !routine.protectedGroupIds.isEmpty {
+      let startParts = routine.startTime.split(separator: ":").compactMap { Int($0) }
+      let endParts = (routine.endTime ?? "08:00").split(separator: ":").compactMap { Int($0) }
+      guard startParts.count == 2, endParts.count == 2 else { continue }
+
+      let isEveryDay = Set(routine.activeDays) == Set(1...7)
+
+      if isEveryDay {
+        // Compress 7-day routine into 1 repeating daily monitor
+        let schedule = DeviceActivitySchedule(
+          intervalStart: DateComponents(hour: startParts[0], minute: startParts[1]),
+          intervalEnd: DateComponents(hour: endParts[0], minute: endParts[1]),
+          repeats: true
+        )
+        let name = DeviceActivityName("routine|\(routine.windowId)|daily")
+        plannedRoutines.append(PlannedRoutineActivity(name: name, schedule: schedule))
+      } else {
+        // Partial-week routines: 1 monitor per weekday
+        for isoDay in routine.activeDays {
+          guard let schedule = makeRoutineSchedule(routine: routine, isoDay: isoDay) else { continue }
+          let name = routineActivityName(windowId: routine.windowId, isoDay: isoDay)
+          plannedRoutines.append(PlannedRoutineActivity(name: name, schedule: schedule))
+        }
+      }
+    }
+
+    // 2. Build consolidated risk events for single risk.daily activity
+    var riskEvents: [DeviceActivityEvent.Name: DeviceActivityEvent] = [:]
+    #if canImport(FamilyControls)
+    if #available(iOS 16.0, *) {
+      for group in state.groups {
+        let key = self.selectionKey(groupId: group.groupId)
+        guard let data = defaults.data(forKey: key),
+              let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
+          continue
+        }
+        let tokenCount = selection.applicationTokens.count + selection.categoryTokens.count + selection.webDomainTokens.count
+        guard tokenCount > 0 else { continue }
+
+        riskEvents[DeviceActivityEvent.Name(group.groupId)] = DeviceActivityEvent(
+          applications: selection.applicationTokens,
+          categories: selection.categoryTokens,
+          webDomains: selection.webDomainTokens,
+          threshold: DateComponents(minute: group.sessionThresholdMinutes),
+          includesPastActivity: false
+        )
+      }
+    }
+    #endif
+
+    return (plannedRoutines, riskEvents)
+  }
+
+  private func nextExpiry(state: SharedRhythmState, nowMs: Double) -> Double? {
+    let cooldowns = state.activeCooldownEndsAt.values.filter { $0 > nowMs }
+    let leases = state.activeAccessLeaseEndsAt.values.filter { $0 > nowMs }
+    return (Array(cooldowns) + Array(leases)).min()
+  }
+
+  private func makeExpiryWakeSchedule(semanticEndsAtMs: Double, now: Date) -> DeviceActivitySchedule {
+    let semanticEnd = Date(timeIntervalSince1970: semanticEndsAtMs / 1000)
+    let minimumWakeEnd = now.addingTimeInterval(15 * 60 + 2) // At least 15m + 2s for DeviceActivity constraints
+    let wakeEnd = max(semanticEnd, minimumWakeEnd)
+
+    let calendar = Calendar.current
+    let startComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+    let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: wakeEnd)
+
+    return DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
+  }
+
+  private func ensureNearestExpiryMonitor(state: SharedRhythmState) {
+    #if canImport(DeviceActivity)
     if #available(iOS 16.0, *) {
       let center = DeviceActivityCenter()
-      center.stopMonitoring()
+      let now = Date()
+      let nowMs = now.timeIntervalSince1970 * 1000
 
-      let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
+      let expiryActivities = center.activities.filter { isRhythmExpiryActivity($0) }
+
+      guard let semanticEndsAt = nextExpiry(state: state, nowMs: nowMs) else {
+        if !expiryActivities.isEmpty {
+          center.stopMonitoring(expiryActivities)
+        }
+        return
+      }
+
+      let expectedName = DeviceActivityName("expiry|next|\(Int(semanticEndsAt))")
+      if expiryActivities.contains(expectedName) {
+        // Nearest wake-up monitor already registered; no churn
+        return
+      }
+
+      let schedule = makeExpiryWakeSchedule(semanticEndsAtMs: semanticEndsAt, now: now)
+      if !expiryActivities.isEmpty {
+        center.stopMonitoring(expiryActivities)
+      }
       do {
-        // 1. Register routine schedules respecting activeDays
-        for routine in state.routines where routine.enabled {
-          for isoDay in routine.activeDays {
-            guard let schedule = makeRoutineSchedule(routine: routine, isoDay: isoDay) else { continue }
-            let activityName = routineActivityName(windowId: routine.windowId, isoDay: isoDay)
-            try center.startMonitoring(activityName, during: schedule)
-          }
-        }
-
-        // 2. Register group threshold events
-        for group in state.groups {
-          let key = self.selectionKey(groupId: group.groupId)
-          if let selData = defaults?.data(forKey: key),
-             let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: selData) {
-            let thresholdEvent = DeviceActivityEvent(
-              applications: selection.applicationTokens,
-              categories: selection.categoryTokens,
-              webDomains: selection.webDomainTokens,
-              threshold: DateComponents(minute: group.sessionThresholdMinutes),
-              includesPastActivity: false
-            )
-
-            let dailySchedule = DeviceActivitySchedule(
-              intervalStart: DateComponents(hour: 0, minute: 0),
-              intervalEnd: DateComponents(hour: 23, minute: 59),
-              repeats: true
-            )
-
-            let activityName = DeviceActivityName("risk.\(group.groupId).daily")
-            let eventName = DeviceActivityEvent.Name(group.groupId)
-            try center.startMonitoring(activityName, during: dailySchedule, events: [eventName: thresholdEvent])
-          }
-        }
-
-        // 3. Register active cooldown and lease expiry monitors
-        let nowMs = Date().timeIntervalSince1970 * 1000
-        for (groupId, endsAt) in state.activeCooldownEndsAt where endsAt > nowMs {
-          scheduleExpiryMonitor(kind: "cooldown", groupId: groupId, endsAtMs: endsAt)
-        }
-        for (groupId, endsAt) in state.activeAccessLeaseEndsAt where endsAt > nowMs {
-          scheduleExpiryMonitor(kind: "lease", groupId: groupId, endsAtMs: endsAt)
-        }
-
-        defaults?.set(true, forKey: self.monitoringOperationalKey)
-        defaults?.removeObject(forKey: self.monitoringLastErrorKey)
+        try center.startMonitoring(expectedName, during: schedule)
       } catch {
-        defaults?.set(false, forKey: self.monitoringOperationalKey)
-        defaults?.set(error.localizedDescription, forKey: self.monitoringLastErrorKey)
+        recordMonitoringFailure(error, context: "ensureNearestExpiryMonitor")
       }
     }
     #endif
   }
 
+  private func recordMonitoringFailure(_ error: Error, context: String) {
+    guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return }
+    defaults.set(false, forKey: self.monitoringOperationalKey)
+    defaults.set("\(context): \(error.localizedDescription)", forKey: self.monitoringLastErrorKey)
+  }
+
   private func cleanupAfterAuthorizationLoss() {
     #if canImport(DeviceActivity)
     if #available(iOS 16.0, *) {
-      DeviceActivityCenter().stopMonitoring()
+      DeviceActivityCenter().stopMonitoring() // Full stop ONLY on explicit authorization revocation
     }
     #endif
 
@@ -519,6 +717,7 @@ public class RhythmDeviceModule: Module {
       defaults.removeObject(forKey: self.sharedStateKey)
       defaults.set(false, forKey: self.monitoringOperationalKey)
       defaults.removeObject(forKey: self.monitoringLastErrorKey)
+      defaults.removeObject(forKey: self.monitoringConfigSignatureKey)
     }
   }
 }

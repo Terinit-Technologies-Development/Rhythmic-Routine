@@ -63,17 +63,6 @@ public struct SharedRhythmState: Codable {
     }
 }
 
-enum ExpiryKind: String {
-    case cooldown
-    case lease
-}
-
-struct ExpiryActivityDescriptor {
-    let kind: ExpiryKind
-    let groupId: String
-    let endsAt: Double
-}
-
 // DeviceActivityMonitorExtension for background rhythm routine and session threshold transitions.
 // Executes out-of-process when DeviceActivity schedules expire or interval thresholds are reached.
 class DeviceActivityMonitorExtension: DeviceActivityMonitor {
@@ -85,48 +74,74 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         return "selection.\(groupId)"
     }
 
-    private func parseRoutineActivity(_ name: DeviceActivityName) -> (windowId: String, isoDay: Int)? {
+    private func parseRoutineActivity(_ name: DeviceActivityName) -> String? {
         let parts = name.rawValue.split(separator: "|").map(String.init)
-        guard parts.count == 4, parts[0] == "routine", parts[2] == "day", let isoDay = Int(parts[3]) else {
-            // Legacy fallback if name is routine.<windowId>
-            if name.rawValue.starts(with: "routine.") {
-                let winId = String(name.rawValue.dropFirst("routine.".count))
-                return (windowId: winId, isoDay: 1)
-            }
-            return nil
+        if parts.count >= 3 && parts[0] == "routine" {
+            return parts[1]
         }
-        return (windowId: parts[1], isoDay: isoDay)
+        if name.rawValue.starts(with: "routine.") {
+            return String(name.rawValue.dropFirst("routine.".count))
+        }
+        return nil
     }
 
-    private func parseExpiryActivity(_ name: DeviceActivityName) -> ExpiryActivityDescriptor? {
-        let parts = name.rawValue.split(separator: "|").map(String.init)
-        guard parts.count == 4, parts[0] == "expiry",
-              let kind = ExpiryKind(rawValue: parts[1]),
-              let endsAt = Double(parts[3]) else {
-            return nil
-        }
-        return ExpiryActivityDescriptor(kind: kind, groupId: parts[2], endsAt: endsAt)
+    private func isRhythmExpiryActivity(_ name: DeviceActivityName) -> Bool {
+        return name.rawValue.hasPrefix("expiry|")
     }
 
-    private func scheduleExpiryMonitor(kind: String, groupId: String, endsAtMs: Double) {
-        let now = Date()
-        let end = Date(timeIntervalSince1970: endsAtMs / 1000)
-        guard end > now else { return }
+    private func nextExpiry(state: SharedRhythmState, nowMs: Double) -> Double? {
+        let cooldowns = state.activeCooldownEndsAt.values.filter { $0 > nowMs }
+        let leases = state.activeAccessLeaseEndsAt.values.filter { $0 > nowMs }
+        return (Array(cooldowns) + Array(leases)).min()
+    }
+
+    private func makeExpiryWakeSchedule(semanticEndsAtMs: Double, now: Date) -> DeviceActivitySchedule {
+        let semanticEnd = Date(timeIntervalSince1970: semanticEndsAtMs / 1000)
+        let minimumWakeEnd = now.addingTimeInterval(15 * 60 + 2) // At least 15m + 2s for DeviceActivity constraints
+        let wakeEnd = max(semanticEnd, minimumWakeEnd)
 
         let calendar = Calendar.current
         let startComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
-        let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: end)
+        let endComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: wakeEnd)
 
-        let name = DeviceActivityName("expiry|\(kind)|\(groupId)|\(Int(endsAtMs))")
-        let schedule = DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
-        try? DeviceActivityCenter().startMonitoring(name, during: schedule)
+        return DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
+    }
+
+    private func ensureNearestExpiryMonitor(state: SharedRhythmState) {
+        let center = DeviceActivityCenter()
+        let now = Date()
+        let nowMs = now.timeIntervalSince1970 * 1000
+
+        let expiryActivities = center.activities.filter { isRhythmExpiryActivity($0) }
+
+        guard let semanticEndsAt = nextExpiry(state: state, nowMs: nowMs) else {
+            if !expiryActivities.isEmpty {
+                center.stopMonitoring(expiryActivities)
+            }
+            return
+        }
+
+        let expectedName = DeviceActivityName("expiry|next|\(Int(semanticEndsAt))")
+        if expiryActivities.contains(expectedName) {
+            // Existing nearest wake-up schedule is already accurate; no churn
+            return
+        }
+
+        let schedule = makeExpiryWakeSchedule(semanticEndsAtMs: semanticEndsAt, now: now)
+        if !expiryActivities.isEmpty {
+            center.stopMonitoring(expiryActivities)
+        }
+        do {
+            try center.startMonitoring(expectedName, during: schedule)
+        } catch {
+            // Extension cannot throw outward; state remains saved in UserDefaults
+        }
     }
 
     override func intervalDidStart(for activity: DeviceActivityName) {
         super.intervalDidStart(for: activity)
 
-        if let routineInfo = parseRoutineActivity(activity) {
-            let windowId = routineInfo.windowId
+        if let windowId = parseRoutineActivity(activity) {
             var state = loadSharedState()
             if let routine = state.routines.first(where: { $0.windowId == windowId }) {
                 for groupId in routine.protectedGroupIds {
@@ -146,33 +161,24 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     override func intervalDidEnd(for activity: DeviceActivityName) {
         super.intervalDidEnd(for: activity)
 
-        // 1. Check out-of-process expiry activity
-        if let expiry = parseExpiryActivity(activity) {
+        // 1. Single nearest-expiry activity callback
+        if isRhythmExpiryActivity(activity) {
             var state = loadSharedState()
             let nowMs = Date().timeIntervalSince1970 * 1000
 
-            switch expiry.kind {
-            case .cooldown:
-                if let current = state.activeCooldownEndsAt[expiry.groupId],
-                   abs(current - expiry.endsAt) < 1000 {
-                    state.activeCooldownEndsAt.removeValue(forKey: expiry.groupId)
-                }
-            case .lease:
-                if let current = state.activeAccessLeaseEndsAt[expiry.groupId],
-                   abs(current - expiry.endsAt) < 1000 {
-                    state.activeAccessLeaseEndsAt.removeValue(forKey: expiry.groupId)
-                }
-            }
-
+            // Prune ALL expired entries
+            state.activeCooldownEndsAt = state.activeCooldownEndsAt.filter { $0.value > nowMs }
+            state.activeAccessLeaseEndsAt = state.activeAccessLeaseEndsAt.filter { $0.value > nowMs }
             state.updatedAt = nowMs
             saveSharedState(state)
+
             recomputeAndApplyShields(state: state)
+            ensureNearestExpiryMonitor(state: state)
             return
         }
 
         // 2. Routine interval did end
-        if let routineInfo = parseRoutineActivity(activity) {
-            let windowId = routineInfo.windowId
+        if let windowId = parseRoutineActivity(activity) {
             var state = loadSharedState()
             if let routine = state.routines.first(where: { $0.windowId == windowId }) {
                 for groupId in routine.protectedGroupIds {
@@ -199,8 +205,8 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         state.updatedAt = nowMs
         saveSharedState(state)
 
-        scheduleExpiryMonitor(kind: "cooldown", groupId: groupId, endsAtMs: endsAt)
         recomputeAndApplyShields(state: state)
+        ensureNearestExpiryMonitor(state: state)
     }
 
     override func intervalWillStartWarning(for activity: DeviceActivityName) {

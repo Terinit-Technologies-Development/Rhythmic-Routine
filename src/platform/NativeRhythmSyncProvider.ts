@@ -53,8 +53,29 @@ function getPlatformOS(): string {
   }
 }
 
+export function computeMonitoringConfigSignature(config: RhythmConfiguration): string {
+  const payload = {
+    riskGroups: config.riskGroups.map((group) => ({
+      id: group.id,
+      nativeSelectionRef: group.nativeSelectionRef,
+      sessionThresholdMinutes: group.sessionThresholdMinutes,
+      cooldownMinutes: group.cooldownMinutes,
+    })),
+    routines: config.routineWindows.map((routine) => ({
+      id: routine.id,
+      startTime: routine.startTime,
+      endTime: routine.endTime,
+      activeDays: [...routine.activeDays].sort(),
+      protectedGroupIds: [...routine.protectedGroupIds].sort(),
+      enabled: routine.enabled,
+    })),
+  };
+  return JSON.stringify(payload);
+}
+
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
   private lastSnapshot?: IOSSharedRhythmSnapshot;
+  private lastConfigSignature?: string;
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
     try {
@@ -114,7 +135,25 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         };
 
         this.lastSnapshot = snapshot;
-        await RhythmDeviceModule.setSharedRhythmState(JSON.stringify(snapshot));
+        const snapshotJson = JSON.stringify(snapshot);
+
+        // 1. Safe runtime state sync: updates App Group and nearest expiry without rebuilding persistent monitors
+        await RhythmDeviceModule.setSharedRhythmState(snapshotJson);
+
+        // 2. Reconfigure persistent DeviceActivity monitors ONLY when configuration signature changes
+        const signature = computeMonitoringConfigSignature(config);
+        if (this.lastConfigSignature !== signature) {
+          if (RhythmDeviceModule.synchronizeMonitoringConfiguration) {
+            const result = await RhythmDeviceModule.synchronizeMonitoringConfiguration(
+              snapshotJson,
+              signature
+            );
+            if (result && !result.success) {
+              // Monitoring sync failure recorded in App Group
+            }
+          }
+          this.lastConfigSignature = signature;
+        }
       } else if (os === 'android') {
         const baseRestrictedPackageIds = computeUnsuppressedBaseRestrictedAppIds(
           runtime,

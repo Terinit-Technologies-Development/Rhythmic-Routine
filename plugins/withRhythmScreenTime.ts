@@ -159,6 +159,24 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
                 phase.name = '"Embed App Extensions"';
                 phase.dstSubfolderSpec = 13;
                 phase.dstPath = '""';
+                pbxCopyFiles[key + '_comment'] = 'Embed App Extensions';
+
+                if (phase.files && Array.isArray(phase.files)) {
+                  for (const f of phase.files) {
+                    if (f.comment && f.comment.includes('RhythmDeviceActivityMonitor.appex')) {
+                      f.comment = 'RhythmDeviceActivityMonitor.appex in Embed App Extensions';
+                    }
+                  }
+                }
+              }
+            }
+
+            // Update main target build phases comment if it referenced Copy Files
+            if (mainTarget.buildPhases && Array.isArray(mainTarget.buildPhases)) {
+              for (const bp of mainTarget.buildPhases) {
+                if (bp.comment === 'Copy Files') {
+                  bp.comment = 'Embed App Extensions';
+                }
               }
             }
           }
@@ -169,6 +187,26 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
             error instanceof Error ? error.message : String(error)
           }`
         );
+      }
+    } else {
+      // If target already exists, ensure Embed App Extensions phase is canonical
+      const pbxCopyFiles = xcodeProject.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
+      for (const key of Object.keys(pbxCopyFiles)) {
+        if (key.endsWith('_comment')) continue;
+        const phase = pbxCopyFiles[key];
+        if (phase && (phase.name === '"Copy Files"' || phase.name === '"Embed App Extensions"')) {
+          phase.name = '"Embed App Extensions"';
+          phase.dstSubfolderSpec = 13;
+          phase.dstPath = '""';
+          pbxCopyFiles[key + '_comment'] = 'Embed App Extensions';
+          if (phase.files && Array.isArray(phase.files)) {
+            for (const f of phase.files) {
+              if (f.comment && f.comment.includes('RhythmDeviceActivityMonitor.appex')) {
+                f.comment = 'RhythmDeviceActivityMonitor.appex in Embed App Extensions';
+              }
+            }
+          }
+        }
       }
     }
 

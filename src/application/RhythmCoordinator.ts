@@ -39,11 +39,21 @@ export class RhythmCoordinator {
       return this.engine.getRuntime();
     }
 
-    const { engine, config, status } = await bootstrapRhythm();
+    const { engine, config, status } = await bootstrapRhythm({
+      deferRestrictionEffects: true,
+    });
     this.engine = engine;
     this.config = config;
     this.status = status;
     this.isInitialized = true;
+
+    const now = Date.now();
+
+    // CRITICAL: Native import occurs before first outward native state write.
+    await this.reconcilePlatformActivation(now, {
+      importNativeState: true,
+      finalSync: true,
+    });
 
     // Subscribe to platform usage activity events
     const { usage } = getPlatformServices();
@@ -68,7 +78,6 @@ export class RhythmCoordinator {
     // Start bounded domain clock reconciliation for continuous foreground progress
     this.startReconciliationClock();
 
-    await this.syncNativeState();
     this.notifyListeners();
     return this.engine.getRuntime();
   }
@@ -207,12 +216,57 @@ export class RhythmCoordinator {
   }
 
   /**
+   * Unified platform activation algorithm for cold-start initialization and resume.
+   * 1. Refreshes platform permissions.
+   * 2. Imports native background state (cooldowns, leases) before any outward write.
+   * 3. Reconciles pure TypeScript engine against current clock.
+   * 4. Persists updated runtime state to local SQLite/KV storage.
+   * 5. Syncs final authoritative state to native platform layers.
+   */
+  private async reconcilePlatformActivation(
+    now: number,
+    options: {
+      importNativeState: boolean;
+      finalSync: boolean;
+    }
+  ): Promise<void> {
+    if (!this.engine || !this.config) {
+      return;
+    }
+
+    const services = getPlatformServices();
+
+    await services.permissions.getStatus();
+
+    if (options.importNativeState) {
+      await this.importNativeStateOnResume(now);
+    }
+
+    await this.reconcile(now, {
+      syncNative: false,
+    });
+
+    const desiredIds = this.engine.getEffectiveRestrictedAppIds();
+    if (desiredIds.length > 0) {
+      try {
+        await services.restrictions.applyRestrictions(desiredIds);
+      } catch {
+        // Platform restriction application failure
+      }
+    }
+
+    await services.storage.saveRuntime(
+      this.engine.toPersistedRuntime(now)
+    );
+
+    if (options.finalSync) {
+      await this.syncNativeState();
+    }
+  }
+
+  /**
    * Complete resume lifecycle:
-   * 1. Refresh permission state
-   * 2. Import native state created while JS was suspended
-   * 3. Reconcile wall clock
-   * 4. Persist runtime
-   * 5. Sync final authoritative state back outward
+   * Reconciles native background state into engine and synchronizes outward.
    */
   public async handleAppResume(): Promise<void> {
     if (!this.engine || !this.config) {
@@ -220,23 +274,10 @@ export class RhythmCoordinator {
       return;
     }
 
-    const now = Date.now();
-    const services = getPlatformServices();
-
-    // 1. Refresh permission state
-    await services.permissions.getStatus();
-
-    // 2. Import native background changes before JS reconciliation
-    await this.importNativeStateOnResume(now);
-
-    // 3. Reconcile wall clock (skip internal sync to avoid duplicate native writes)
-    await this.reconcile(now, { syncNative: false });
-
-    // 4. Persist final JS runtime
-    await services.storage.saveRuntime(this.engine.toPersistedRuntime(now));
-
-    // 5. Sync final authoritative state back outward
-    await this.syncNativeState();
+    await this.reconcilePlatformActivation(Date.now(), {
+      importNativeState: true,
+      finalSync: true,
+    });
 
     this.notifyListeners();
   }

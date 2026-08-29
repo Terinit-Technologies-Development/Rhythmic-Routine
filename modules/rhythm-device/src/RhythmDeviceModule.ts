@@ -1,4 +1,11 @@
-import { IOSSelectionReference, NativeAppInfo, NativePermissionStatus, NativeUsageEvent } from './RhythmDevice.types';
+import {
+  IOSSelectionReference,
+  MonitoringDiagnostics,
+  MonitoringSyncResult,
+  NativeAppInfo,
+  NativePermissionStatus,
+  NativeUsageEvent,
+} from './RhythmDevice.types';
 
 // Mock/fallback when native binary is not linked (web / simulator without native build)
 const FallbackModule = {
@@ -30,6 +37,21 @@ const FallbackModule = {
   endAccessLease: async (_groupId: string): Promise<boolean> => true,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
   getSharedRhythmState: async (): Promise<string | null> => null,
+  synchronizeMonitoringConfiguration: async (
+    _stateJson: string,
+    _signature: string
+  ): Promise<MonitoringSyncResult> => ({
+    success: true,
+    persistentActivityCount: 3,
+    totalActivityCount: 3,
+  }),
+  getMonitoringDiagnostics: async (): Promise<MonitoringDiagnostics> => ({
+    activityCount: 3,
+    activityNames: ['routine|morning-buffer|daily', 'routine|evening-wind-down|daily', 'risk.daily'],
+    monitoringOperational: true,
+    configSignature: 'fallback',
+    lastError: '',
+  }),
 };
 
 let NativeModule: typeof FallbackModule = FallbackModule;
