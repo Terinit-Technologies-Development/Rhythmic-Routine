@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet, Platform, AppState } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -14,6 +14,8 @@ import { NativeUsageProvider } from '../src/platform/native/NativeUsageProvider'
 import { NativeRestrictionProvider } from '../src/platform/native/NativeRestrictionProvider';
 import { NativePermissionProvider } from '../src/platform/native/NativePermissionProvider';
 import { NativeStorageProvider } from '../src/platform/storage/NativeStorageProvider';
+import { PlatformNativeRhythmSyncProvider } from '../src/platform/NativeRhythmSyncProvider';
+import { RhythmCoordinator } from '../src/application/RhythmCoordinator';
 
 // Configure platform-specific services if running on native device
 if (Platform.OS === 'android' || Platform.OS === 'ios') {
@@ -22,6 +24,7 @@ if (Platform.OS === 'android' || Platform.OS === 'ios') {
     restrictions: new NativeRestrictionProvider(),
     storage: new NativeStorageProvider(),
     permissions: new NativePermissionProvider(),
+    nativeRhythm: new PlatformNativeRhythmSyncProvider(),
   });
 }
 
@@ -31,6 +34,18 @@ export default function RootLayout() {
   React.useEffect(() => {
     initializeApps();
   }, [initializeApps]);
+
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        RhythmCoordinator.getInstance()
+          .handleAppResume()
+          .catch(() => {});
+      }
+    });
+
+    return () => subscription.remove();
+  }, []);
 
   return (
     <SafeAreaProvider>
@@ -58,7 +73,7 @@ export default function RootLayout() {
           {/* Global Modals */}
           <TimeSelectorModal />
           <AppEditModal />
-          {Platform.OS === 'web' && <EmergencyAccessModal />}
+          <EmergencyAccessModal />
         </View>
       </View>
     </SafeAreaProvider>

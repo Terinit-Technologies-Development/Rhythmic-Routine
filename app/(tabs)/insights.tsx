@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -12,15 +13,52 @@ import {
   Sunrise,
   Sunset,
   Flame,
+  Sparkles,
+  Layers,
 } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
+import { formatMinutesToHumanReadable, getInsightSource } from '../../src/domain/insights/metrics';
 
 export default function InsightsScreen() {
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);
+  const weeklySummary = usePrototypeStore((s) => s.weeklySummary);
+  const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const refreshInsights = usePrototypeStore((s) => s.refreshInsights);
 
-  const maxMinutes = Math.max(...insightMetrics.weeklyTrend.map((t) => t.protectedMinutes + t.riskMinutes));
+  React.useEffect(() => {
+    refreshInsights();
+  }, [refreshInsights]);
+
+  const source = getInsightSource(Platform.OS);
+  const sourceLabel =
+    source === 'android-observed'
+      ? 'Android UsageStats'
+      : source === 'ios-device-activity'
+      ? 'iOS Screen Time'
+      : 'Local Rhythm Engine';
+
+  const isWeb = Platform.OS === 'web';
+  const hasRealData = !!weeklySummary?.hasData;
+  const showDemo = isWeb && !hasRealData;
+
+  const displayProtectedMinutes = hasRealData && weeklySummary
+    ? weeklySummary.totalProtectedMinutes
+    : showDemo
+    ? Math.round(insightMetrics.protectedTimeWeeklyHours * 60)
+    : 0;
+
+  const consistencyScore = hasRealData && weeklySummary
+    ? weeklySummary.routineConsistencyScore
+    : showDemo
+    ? 85
+    : 0;
+
+  const maxMinutes = Math.max(
+    60,
+    ...insightMetrics.weeklyTrend.map((t) => t.protectedMinutes + t.riskMinutes)
+  );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -34,6 +72,12 @@ export default function InsightsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Source Badge */}
+        <View style={styles.sourceBadgeContainer}>
+          <View style={styles.sourceDot} />
+          <Text style={styles.sourceText}>Telemetry Source: {sourceLabel}</Text>
+        </View>
+
         {/* Highlight Banner */}
         <View style={styles.highlightCard}>
           <View style={styles.highlightHeader}>
@@ -41,13 +85,18 @@ export default function InsightsScreen() {
               <ShieldCheck size={24} color={colors.forest} />
             </View>
             <View>
-              <Text style={styles.highlightLabel}>Protected Attention</Text>
-              <Text style={styles.highlightNumber}>11.5 hrs</Text>
+              <Text style={styles.highlightLabel}>Protected Time This Week</Text>
+              <Text style={styles.highlightNumber}>
+                {formatMinutesToHumanReadable(displayProtectedMinutes)}
+              </Text>
             </View>
           </View>
           <Text style={styles.highlightSubtext}>
-            You reclaimed 11.5 hours of uninterrupted focus and presence this week through morning
-            buffers and recovery cooldowns.
+            {hasRealData
+              ? 'Uninterrupted focus protected through active morning buffers and recovery cooldowns.'
+              : showDemo
+              ? 'Demo preview: Uninterrupted focus and calm reclaimed through intentional buffers.'
+              : 'No observed protected time yet this week. Protect time by keeping your routines active.'}
           </Text>
         </View>
 
@@ -59,8 +108,8 @@ export default function InsightsScreen() {
               <Flame size={18} color={colors.coralDark} />
             </View>
             <Text style={styles.metricVal}>{insightMetrics.averageRiskSessionMinutes} min</Text>
-            <Text style={styles.metricLabel}>Average Risk Session</Text>
-            <Text style={styles.metricSub}>Well under 30m limit</Text>
+            <Text style={styles.metricLabel}>Avg Risk Session</Text>
+            <Text style={styles.metricSub}>Well under limits</Text>
           </View>
 
           {/* Card 2: Cooldown Triggers */}
@@ -69,18 +118,18 @@ export default function InsightsScreen() {
               <Award size={18} color={colors.skyDark} />
             </View>
             <Text style={styles.metricVal}>{insightMetrics.cooldownTriggersCount}</Text>
-            <Text style={styles.metricLabel}>Cooldown Triggers</Text>
-            <Text style={styles.metricSub}>Breathers taken today</Text>
+            <Text style={styles.metricLabel}>Recovery Breaks</Text>
+            <Text style={styles.metricSub}>Completed this week</Text>
           </View>
 
-          {/* Card 3: First Risk App Use */}
+          {/* Card 3: Routine Consistency */}
           <View style={styles.metricCard}>
             <View style={[styles.smallIconCircle, { backgroundColor: colors.amberLight }]}>
               <Sunrise size={18} color={colors.amberDark} />
             </View>
-            <Text style={styles.metricVal}>{insightMetrics.firstRiskAppUseTime}</Text>
-            <Text style={styles.metricLabel}>First Risk App Use</Text>
-            <Text style={styles.metricSub}>Buffer held until 08:00</Text>
+            <Text style={styles.metricVal}>{consistencyScore}%</Text>
+            <Text style={styles.metricLabel}>Routine Consistency</Text>
+            <Text style={styles.metricSub}>Days buffers kept</Text>
           </View>
 
           {/* Card 4: Final Risk App Use */}
@@ -89,7 +138,7 @@ export default function InsightsScreen() {
               <Sunset size={18} color={colors.lavenderDark} />
             </View>
             <Text style={styles.metricVal}>{insightMetrics.finalRiskAppUseTime}</Text>
-            <Text style={styles.metricLabel}>Final Risk App Use</Text>
+            <Text style={styles.metricLabel}>Evening Threshold</Text>
             <Text style={styles.metricSub}>Wind-Down respected</Text>
           </View>
         </View>
@@ -124,7 +173,7 @@ export default function InsightsScreen() {
                       style={[
                         styles.barSegment,
                         {
-                          height: riskHeight,
+                          height: Math.max(0, riskHeight),
                           backgroundColor: colors.coral,
                           borderTopLeftRadius: 4,
                           borderTopRightRadius: 4,
@@ -135,7 +184,7 @@ export default function InsightsScreen() {
                       style={[
                         styles.barSegment,
                         {
-                          height: protHeight,
+                          height: Math.max(4, protHeight),
                           backgroundColor: colors.forest,
                           borderBottomLeftRadius: 4,
                           borderBottomRightRadius: 4,
@@ -150,15 +199,52 @@ export default function InsightsScreen() {
           </View>
         </View>
 
-        {/* Mindful Takeaway Card */}
-        <View style={styles.reflectionCard}>
-          <Text style={styles.reflectionTitle}>Weekly Rhythm Takeaway 🌿</Text>
-          <Text style={styles.reflectionBody}>
-            Your morning buffer consistency reached 92% this week. By postponing doomscrolling until
-            after breakfast, you unlocked an average of 45 extra morning minutes for exercise and
-            coffee.
-          </Text>
-        </View>
+        {/* Risk Groups Breakdown */}
+        {riskGroups.length > 0 && (
+          <View style={styles.groupBreakdownCard}>
+            <View style={styles.groupHeader}>
+              <Layers size={18} color={colors.forest} />
+              <Text style={styles.groupBreakdownTitle}>Risk Group Activity</Text>
+            </View>
+            {riskGroups.map((group) => {
+              const mins = weeklySummary?.groupUsageMinutes[group.id] ?? group.currentSessionMinutes;
+              return (
+                <View key={group.id} style={styles.groupRow}>
+                  <View style={styles.groupInfo}>
+                    <Text style={styles.groupName}>{group.name}</Text>
+                    <Text style={styles.groupSub}>
+                      {group.appIds.length} app{group.appIds.length === 1 ? '' : 's'} · {group.sessionThresholdMinutes}m limit
+                    </Text>
+                  </View>
+                  <Text style={styles.groupUsageVal}>{formatMinutesToHumanReadable(mins)}</Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Mindful Takeaway / Empty State */}
+        {!hasRealData ? (
+          <View style={styles.reflectionCard}>
+            <View style={styles.takeawayHeader}>
+              <Sparkles size={16} color={colors.forest} />
+              <Text style={styles.reflectionTitle}>Your rhythm is just getting started 🌱</Text>
+            </View>
+            <Text style={styles.reflectionBody}>
+              Use Rhythm as you normally do throughout your week. As you experience morning focus buffers and recovery cooldowns, your real patterns will automatically appear here.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.reflectionCard}>
+            <View style={styles.takeawayHeader}>
+              <Sparkles size={16} color={colors.forest} />
+              <Text style={styles.reflectionTitle}>Weekly Rhythm Takeaway 🌿</Text>
+            </View>
+            <Text style={styles.reflectionBody}>
+              Your routine consistency reached {consistencyScore}% this week. By postponing doomscrolling and taking mindful breaks, you reclaimed hours of uninterrupted presence.
+            </Text>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -173,13 +259,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 36,
   },
+  sourceBadgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: radii.full,
+    backgroundColor: '#EAE5DB',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  sourceDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.forest,
+  },
+  sourceText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.forestDark,
+  },
   highlightCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: radii.xxl,
     padding: 20,
     borderWidth: 1,
     borderColor: '#EFEAE0',
-    marginTop: 8,
+    marginTop: 4,
     marginBottom: 16,
     ...shadows.card,
   },
@@ -317,6 +426,51 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontWeight: '600',
   },
+  groupBreakdownCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: radii.xxl,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#EFEAE0',
+    marginBottom: 16,
+    ...shadows.card,
+  },
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  groupBreakdownTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  groupRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3EFE6',
+  },
+  groupInfo: {
+    gap: 2,
+  },
+  groupName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  groupSub: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  groupUsageVal: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.forest,
+  },
   reflectionCard: {
     backgroundColor: '#FAF5EA',
     borderRadius: radii.xl,
@@ -324,11 +478,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#EFE2CC',
   },
+  takeawayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
   reflectionTitle: {
     fontSize: 14,
     fontWeight: '700',
     color: colors.forestDark,
-    marginBottom: 6,
   },
   reflectionBody: {
     fontSize: 13,

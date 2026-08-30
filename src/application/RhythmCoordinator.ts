@@ -39,11 +39,21 @@ export class RhythmCoordinator {
       return this.engine.getRuntime();
     }
 
-    const { engine, config, status } = await bootstrapRhythm();
+    const { engine, config, status } = await bootstrapRhythm({
+      deferRestrictionEffects: true,
+    });
     this.engine = engine;
     this.config = config;
     this.status = status;
     this.isInitialized = true;
+
+    const now = Date.now();
+
+    // CRITICAL: Native import occurs before first outward native state write.
+    await this.reconcilePlatformActivation(now, {
+      importNativeState: true,
+      finalSync: true,
+    });
 
     // Subscribe to platform usage activity events
     const { usage } = getPlatformServices();
@@ -86,10 +96,40 @@ export class RhythmCoordinator {
         case 'CLEAR_RESTRICTIONS':
           await restrictions.clearRestrictions(effect.appIds);
           break;
+        case 'START_ACCESS_LEASE': {
+          const group = this.config?.riskGroups.find((item) => item.id === effect.groupId);
+          if (group && restrictions.startAccessLease) {
+            await restrictions.startAccessLease({
+              groupId: effect.groupId,
+              appIds: group.appIds,
+              startsAt: Date.now(),
+              endsAt: effect.endsAt,
+            });
+          }
+          break;
+        }
+        case 'END_ACCESS_LEASE':
+          await restrictions.endAccessLease?.(effect.groupId);
+          break;
         case 'RECORD_HISTORY':
           await storage.appendHistoryEvent(effect.event);
           break;
       }
+    }
+  }
+
+  /**
+   * Synchronizes authoritative engine state to platform native layer.
+   */
+  private async syncNativeState(): Promise<void> {
+    if (!this.engine || !this.config) return;
+    try {
+      await getPlatformServices().nativeRhythm.sync(
+        this.engine.getRuntime(),
+        this.config
+      );
+    } catch {
+      // Platform sync boundary
     }
   }
 
@@ -113,20 +153,133 @@ export class RhythmCoordinator {
     const now = 'timestamp' in event ? event.timestamp : Date.now();
     await storage.saveRuntime(this.engine.toPersistedRuntime(now));
 
+    await this.syncNativeState();
+
     this.notifyListeners();
     return this.engine.getRuntime();
   }
 
   /**
+   * Imports background cooldowns and access leases created by native extensions while JS was suspended.
+   */
+  private async importNativeStateOnResume(now: number): Promise<void> {
+    if (!this.engine || !this.config) {
+      return;
+    }
+
+    const snapshot = await getPlatformServices().nativeRhythm.getSnapshot?.();
+    if (!snapshot) return;
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+
+      const effects = this.engine.dispatch({
+        type: 'NATIVE_COOLDOWN_RESTORED',
+        groupId,
+        endsAt,
+        timestamp: now,
+      });
+
+      await this.executeEffects(effects);
+    }
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+
+      const effects = this.engine.dispatch({
+        type: 'NATIVE_ACCESS_LEASE_RESTORED',
+        groupId,
+        endsAt,
+        timestamp: now,
+      });
+
+      await this.executeEffects(effects);
+    }
+  }
+
+  /**
    * Reconciles current state (clock time, active routines, cooldown expiry).
    */
-  public async reconcile(now: number = Date.now()): Promise<RhythmRuntime> {
+  public async reconcile(
+    now: number = Date.now(),
+    options?: { syncNative?: boolean }
+  ): Promise<RhythmRuntime> {
     if (!this.engine || !this.config) {
       return this.initialize();
     }
     await reconcileRhythm(this.engine, this.config, now);
+    if (options?.syncNative !== false) {
+      await this.syncNativeState();
+    }
     this.notifyListeners();
     return this.engine.getRuntime();
+  }
+
+  /**
+   * Unified platform activation algorithm for cold-start initialization and resume.
+   * 1. Refreshes platform permissions.
+   * 2. Imports native background state (cooldowns, leases) before any outward write.
+   * 3. Reconciles pure TypeScript engine against current clock.
+   * 4. Persists updated runtime state to local SQLite/KV storage.
+   * 5. Syncs final authoritative state to native platform layers.
+   */
+  private async reconcilePlatformActivation(
+    now: number,
+    options: {
+      importNativeState: boolean;
+      finalSync: boolean;
+    }
+  ): Promise<void> {
+    if (!this.engine || !this.config) {
+      return;
+    }
+
+    const services = getPlatformServices();
+
+    await services.permissions.getStatus();
+
+    if (options.importNativeState) {
+      await this.importNativeStateOnResume(now);
+    }
+
+    await this.reconcile(now, {
+      syncNative: false,
+    });
+
+    const desiredIds = this.engine.getEffectiveRestrictedAppIds();
+    if (desiredIds.length > 0) {
+      try {
+        await services.restrictions.applyRestrictions(desiredIds);
+      } catch {
+        // Platform restriction application failure
+      }
+    }
+
+    await services.storage.saveRuntime(
+      this.engine.toPersistedRuntime(now)
+    );
+
+    if (options.finalSync) {
+      await this.syncNativeState();
+    }
+  }
+
+  /**
+   * Complete resume lifecycle:
+   * Reconciles native background state into engine and synchronizes outward.
+   */
+  public async handleAppResume(): Promise<void> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+      return;
+    }
+
+    await this.reconcilePlatformActivation(Date.now(), {
+      importNativeState: true,
+      finalSync: true,
+    });
+
+    this.notifyListeners();
   }
 
   /**
@@ -165,6 +318,7 @@ export class RhythmCoordinator {
     await this.executeEffects(effects);
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
+    await this.syncNativeState();
     this.notifyListeners();
   }
 

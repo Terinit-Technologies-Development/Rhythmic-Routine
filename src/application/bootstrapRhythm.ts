@@ -11,12 +11,16 @@ export interface BootstrapResult {
   status: EngineStatus;
 }
 
+export interface BootstrapOptions {
+  deferRestrictionEffects?: boolean;
+}
+
 /**
  * Single bootstrap service executed during app startup.
  * Loads persisted preferences, runtime, reconciles active routines/cooldowns,
- * enforces cold-start restrictions, and returns the authoritative configuration and engine.
+ * and returns the authoritative configuration and engine.
  */
-export async function bootstrapRhythm(): Promise<BootstrapResult> {
+export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<BootstrapResult> {
   const { storage, usage, permissions, restrictions } = getPlatformServices();
   const issues: string[] = [];
 
@@ -83,14 +87,15 @@ export async function bootstrapRhythm(): Promise<BootstrapResult> {
   const now = Date.now();
   const engine = new RhythmEngine(config, persistedRuntime, now);
 
-  // Cold-start restriction reapplication:
-  // Explicitly ensure all desired restrictions are applied to the platform provider
-  const desiredIds = engine.getEffectiveRestrictedAppIds();
-  if (desiredIds.length > 0) {
-    try {
-      await restrictions.applyRestrictions(desiredIds);
-    } catch {
-      issues.push('Failed to apply cold-start desired restrictions to platform provider');
+  // Cold-start restriction reapplication only if not deferred to coordinator
+  if (!options.deferRestrictionEffects) {
+    const desiredIds = engine.getEffectiveRestrictedAppIds();
+    if (desiredIds.length > 0) {
+      try {
+        await restrictions.applyRestrictions(desiredIds);
+      } catch {
+        issues.push('Failed to apply cold-start desired restrictions to platform provider');
+      }
     }
   }
 

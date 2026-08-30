@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Switch,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,6 +40,7 @@ export default function RiskGroupDetailScreen() {
   const toggleGroupProtection = usePrototypeStore((s) => s.toggleGroupProtection);
   const apps = usePrototypeStore((s) => s.apps);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
+  const selectIosRiskGroupApps = usePrototypeStore((s) => s.selectIosRiskGroupApps);
 
   const group = riskGroups.find((g) => g.id === id) || riskGroups[0];
 
@@ -184,32 +186,57 @@ export default function RiskGroupDetailScreen() {
           </View>
         </View>
 
-        {/* Section 1: Member Apps */}
+        {/* Section 1: Member Apps / Screen Time selection */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View>
-              <Text style={styles.cardTitle}>Member apps</Text>
-              <Text style={styles.cardSubtitle}>Apps in this group are monitored together.</Text>
+              <Text style={styles.cardTitle}>Protected apps</Text>
+              <Text style={styles.cardSubtitle}>
+                {Platform.OS === 'ios'
+                  ? 'Screen Time shields applications and categories in this group.'
+                  : 'Apps in this group are monitored together.'}
+              </Text>
             </View>
-            <TouchableOpacity
-              style={styles.editBtn}
-              onPress={() => router.push('/(tabs)/apps')}
-            >
-              <Text style={styles.editBtnText}>Edit</Text>
-            </TouchableOpacity>
+            {Platform.OS !== 'ios' && (
+              <TouchableOpacity
+                style={styles.editBtn}
+                onPress={() => router.push('/(tabs)/apps')}
+              >
+                <Text style={styles.editBtnText}>Edit</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
-          <View style={styles.memberAppsList}>
-            {memberApps.map((app) => (
-              <View key={app.id} style={styles.memberAppRow}>
-                <View style={styles.appLeft}>
-                  {renderAppIcon(app.id)}
-                  <Text style={styles.appRowName}>{app.name}</Text>
+          {Platform.OS === 'ios' ? (
+            <View style={styles.iosSelectionContainer}>
+              <TouchableOpacity
+                style={styles.iosPickerButton}
+                onPress={() => selectIosRiskGroupApps(group.id)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.iosPickerButtonText}>Select / Edit with Screen Time</Text>
+              </TouchableOpacity>
+              <Text style={styles.iosSelectionSummary}>
+                {group.nativeSelectionCount !== undefined && group.nativeSelectionCount > 0
+                  ? `${group.nativeSelectionCount} selection${group.nativeSelectionCount === 1 ? '' : 's'} configured`
+                  : group.nativeSelectionRef
+                  ? 'Configured in Screen Time'
+                  : 'No apps or categories selected yet'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.memberAppsList}>
+              {memberApps.map((app) => (
+                <View key={app.id} style={styles.memberAppRow}>
+                  <View style={styles.appLeft}>
+                    {renderAppIcon(app.id)}
+                    <Text style={styles.appRowName}>{app.name}</Text>
+                  </View>
+                  <Check size={18} color={colors.forest} strokeWidth={2.5} />
                 </View>
-                <Check size={18} color={colors.forest} strokeWidth={2.5} />
-              </View>
-            ))}
-          </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Section 2: Session Threshold */}
@@ -672,5 +699,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textSecondary,
     marginTop: 2,
+  },
+  iosSelectionContainer: {
+    marginTop: 12,
+    gap: 8,
+  },
+  iosPickerButton: {
+    backgroundColor: colors.forest,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: radii.md,
+    alignItems: 'center',
+  },
+  iosPickerButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  iosSelectionSummary: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    textAlign: 'center',
   },
 });

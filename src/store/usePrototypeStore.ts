@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   AppClassification,
   DeviceApp,
+  EMERGENCY_ACCESS_MINUTES,
   InsightMetrics,
   OfflineActivity,
   RhythmState,
@@ -20,6 +21,12 @@ import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
 import { getPrimaryCooldown } from '../domain/rhythm/types';
+import {
+  DailyRhythmSummary,
+  LocalInsightsRepository,
+  WeeklyRhythmSummary,
+  getLocalDateKey,
+} from '../domain/insights';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -44,6 +51,8 @@ interface PrototypeState {
   routineWindows: RoutineWindow[];
   offlineActivities: OfflineActivity[];
   insightMetrics: InsightMetrics;
+  weeklySummary?: WeeklyRhythmSummary;
+  todaySummary?: DailyRhythmSummary;
   hasCompletedOnboarding: boolean;
   permissionState: PermissionState;
 
@@ -59,6 +68,7 @@ interface PrototypeState {
 
   // Core Actions
   initializeApps: () => Promise<void>;
+  refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
   setRhythmState: (state: RhythmState) => Promise<void>;
@@ -66,6 +76,9 @@ interface PrototypeState {
   simulateRiskSession: (groupId?: string) => void;
   resolveExpiredTimer: () => Promise<void>;
   resetDemo: () => Promise<void>;
+
+  startAccessLease: (groupId: string, durationMinutes?: number) => Promise<void>;
+  triggerEmergencyBypass: () => Promise<void>;
 
   updateAppClassification: (
     appId: string,
@@ -77,6 +90,7 @@ interface PrototypeState {
   toggleRoutineDay: (day: number) => void;
   toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
   addNewRiskGroup: (name: string, description: string) => string;
+  selectIosRiskGroupApps: (groupId: string) => Promise<void>;
 
   setSearchQuery: (query: string) => void;
   setFilterClassification: (classification: AppClassification | 'all') => void;
@@ -91,7 +105,6 @@ interface PrototypeState {
   closeAppEdit: () => void;
 
   completeOnboarding: () => void;
-  triggerEmergencyBypass: () => Promise<void>;
 }
 
 // Initial demo timer: 01:18:24 remaining until morning unlock
@@ -106,6 +119,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   routineWindows: [...initialRoutineWindows],
   offlineActivities: [...defaultOfflineActivities],
   insightMetrics: { ...initialInsightMetrics },
+  weeklySummary: undefined,
+  todaySummary: undefined,
   hasCompletedOnboarding: true,
   permissionState: {
     usageAccess: 'unknown',
@@ -150,8 +165,72 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         activeRiskGroupId: primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
         permissionState: permStatus,
       });
+
+      // Load real local insights
+      await get().refreshInsights();
     } catch {
       // Fallback
+    }
+  },
+
+  refreshInsights: async () => {
+    try {
+      const { storage } = getPlatformServices();
+      const windows = get().routineWindows;
+      const repo = new LocalInsightsRepository(storage, windows);
+
+      const todayKey = getLocalDateKey();
+      const todaySummary = await repo.getDailySummary(todayKey);
+      const weeklySummary = await repo.getWeeklySummary(todayKey);
+
+      const isWeb = typeof window !== 'undefined';
+      const showDemoInsights = isWeb && !weeklySummary.hasData;
+
+      if (weeklySummary.hasData) {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: {
+            protectedTimeTodayMinutes: todaySummary?.observedProtectedMinutes || 0,
+            protectedTimeWeeklyHours: Math.round((weeklySummary.totalProtectedMinutes / 60) * 10) / 10,
+            averageRiskSessionMinutes: weeklySummary.averageRiskSessionMinutes,
+            cooldownTriggersCount: weeklySummary.totalCooldownCount,
+            firstRiskAppUseTime: todaySummary?.firstRiskAppUseTime || '—',
+            finalRiskAppUseTime: todaySummary?.finalRiskAppUseTime || '—',
+            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
+              day: t.day,
+              protectedMinutes: t.protectedMinutes,
+              riskMinutes: t.riskMinutes,
+            })),
+          },
+        });
+      } else if (showDemoInsights) {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: get().insightMetrics,
+        });
+      } else {
+        set({
+          todaySummary: todaySummary || undefined,
+          weeklySummary,
+          insightMetrics: {
+            protectedTimeTodayMinutes: 0,
+            protectedTimeWeeklyHours: 0,
+            averageRiskSessionMinutes: 0,
+            cooldownTriggersCount: 0,
+            firstRiskAppUseTime: '—',
+            finalRiskAppUseTime: '—',
+            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
+              day: t.day,
+              protectedMinutes: 0,
+              riskMinutes: 0,
+            })),
+          },
+        });
+      }
+    } catch {
+      // Keep existing metrics on error
     }
   },
 
@@ -249,6 +328,29 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
   },
 
+  startAccessLease: async (groupId: string, durationMinutes = EMERGENCY_ACCESS_MINUTES) => {
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = await coordinator.dispatch({
+      type: 'START_ACCESS_LEASE',
+      groupId,
+      durationMinutes,
+      reason: 'emergency',
+      timestamp: Date.now(),
+    });
+
+    set({
+      rhythmState: runtime.state,
+      emergencyModalVisible: false,
+    });
+
+    await get().refreshInsights();
+  },
+
+  triggerEmergencyBypass: async () => {
+    const activeGroupId = get().activeRiskGroupId || 'social';
+    await get().startAccessLease(activeGroupId, EMERGENCY_ACCESS_MINUTES);
+  },
+
   resetDemo: async () => {
     const coordinator = RhythmCoordinator.getInstance();
     const { storage } = getPlatformServices();
@@ -270,6 +372,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
       insightMetrics: { ...initialInsightMetrics },
+      weeklySummary: undefined,
+      todaySummary: undefined,
       searchQuery: '',
       filterClassification: 'all',
       demoSwitcherVisible: false,
@@ -414,6 +518,36 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     return id;
   },
 
+  selectIosRiskGroupApps: async (groupId: string) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Platform } = require('react-native');
+      if (Platform.OS !== 'ios') return;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDevice = require('../../modules/rhythm-device').default;
+      const result = await RhythmDevice.showFamilyActivityPicker(groupId);
+      if (!result) return;
+
+      const state = get();
+      const updatedRiskGroups = state.riskGroups.map((group) =>
+        group.id === groupId
+          ? {
+              ...group,
+              nativeSelectionRef: result.localSelectionId,
+              nativeSelectionCount: result.tokenCount ?? 0,
+              nativeSelectionRevision: result.revision ?? ((group.nativeSelectionRevision ?? 0) + 1),
+            }
+          : group
+      );
+
+      set({ riskGroups: updatedRiskGroups });
+      await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedRiskGroups });
+      await get().checkPermissions();
+    } catch {
+      // User cancelled or unsupported
+    }
+  },
+
   setSearchQuery: (query) => set({ searchQuery: query }),
   setFilterClassification: (filterClassification) => set({ filterClassification }),
   setDemoSwitcherVisible: (demoSwitcherVisible) => set({ demoSwitcherVisible }),
@@ -437,19 +571,5 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   completeOnboarding: () => {
     get().setRhythmState('morning-buffer');
     set({ hasCompletedOnboarding: true });
-  },
-
-  triggerEmergencyBypass: async () => {
-    const { storage } = getPlatformServices();
-    await storage.appendHistoryEvent({
-      type: 'emergency-bypass',
-      timestamp: Date.now(),
-    });
-
-    set({
-      rhythmState: 'available',
-      activeTimerEndsAt: undefined,
-      emergencyModalVisible: false,
-    });
   },
 }));

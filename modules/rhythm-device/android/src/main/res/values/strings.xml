@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Rhythmic-Routine observes foreground application launches solely to present the mindful Touch Grass intervention during active routine buffers and recovery cooldowns. It does not inspect screen text or collect personal data.</string>
+</resources>

@@ -1,9 +1,33 @@
 export type RestrictionApplyStatus = 'applied' | 'unsupported' | 'failed';
 
+export type EnforcementMode =
+  | 'continuous-session'
+  | 'system-activity-threshold'
+  | 'routine-only'
+  | 'foundation-only'
+  | 'unsupported';
+
+export interface RestrictionCapability {
+  status: 'enforced' | 'foundation-only' | 'unsupported';
+  mode: EnforcementMode;
+  supportsRoutineWindows: boolean;
+  supportsGroupCooldowns: boolean;
+  supportsContinuousSessionGap: boolean;
+  supportsEmergencyOverride: boolean;
+  reason?: string;
+}
+
 export interface RestrictionResult {
   status: RestrictionApplyStatus;
   appIds: string[];
   reason?: string;
+}
+
+export interface NativeAccessLeasePolicy {
+  groupId: string;
+  appIds: string[];
+  startsAt: number;
+  endsAt: number;
 }
 
 export interface RestrictionProvider {
@@ -25,5 +49,15 @@ export interface RestrictionProvider {
   /**
    * Reports the actual platform capability state truthfully.
    */
-  getCapability(): Promise<'enforced' | 'foundation-only' | 'unsupported'>;
+  getCapability(): Promise<RestrictionCapability>;
+
+  /**
+   * Registers a native access lease with the underlying platform.
+   */
+  startAccessLease?(lease: NativeAccessLeasePolicy): Promise<void>;
+
+  /**
+   * Ends an active access lease on the underlying platform.
+   */
+  endAccessLease?(groupId: string): Promise<void>;
 }

@@ -4,7 +4,7 @@
 
 **Rhythmic-Routine** is an open-source digital wellbeing application designed around **natural digital rhythm** rather than punitive daily screen-time quotas.
 
-Instead of locking you out of your device with arbitrary limits, Rhythm structures your day into intentional focus buffers, provides continuous-session recovery periods, and groups related scroll-heavy apps to protect your attention.
+Instead of locking you out of your device with arbitrary limits, Rhythm structures your day into intentional focus buffers, provides continuous-session recovery periods, groups related scroll-heavy apps to protect your attention, and offers calm emergency overrides.
 
 ---
 
@@ -31,12 +31,16 @@ Instead of locking you out of your device with arbitrary limits, Rhythm structur
    * Monitor related apps collectively (e.g. *X, Instagram, TikTok, Reddit, Discord* share continuous session limits: 18m X + 12m Instagram = 30m Social Feeds).
 4. **Touch Grass Recovery** 🌱
    * Reaching a session threshold triggers an offline recovery period (e.g. 90 min) with feel-good grounding suggestions. Supports multiple concurrent group cooldowns.
-5. **Essential-App Invariant Safety** 🔒
+5. **Calm 5-Minute Access Overrides** 🤝
+   * Need urgent access? Grant a 5-minute temporary override lease. Restrictions on other groups and ongoing cooldowns continue running uninterrupted.
+6. **Essential-App Invariant Safety** 🔒
    * Core utility apps (*Phone, Maps, Camera, Clock*) are strictly classified as **Essential** and are never restricted under any routine or cooldown.
+7. **Local Insights & History** 📊
+   * Real on-device telemetry and weekly consistency rollups with zero cloud tracking.
 
 ---
 
-## 🏗️ Architecture: Pass 02A (Native Rhythm Engine & Local Foundation)
+## 🏗️ Architecture & Control Flow
 
 ```text
 UI (React Native / Expo Router)
@@ -45,33 +49,29 @@ Zustand Store (Application State Projection)
         ↓
 RhythmCoordinator (Lifecycle & Event Dispatcher + 15s Engine Clock)
         ↓
-Pure TypeScript Rhythm Engine (State Machine & Reducer)
+Pure TypeScript Rhythm Engine (State Machine, Reducer, Inactivity Tolerance, Access Leases)
         ↓
 PlatformServices Layer (Usage, Restrictions, Storage, Permissions)
         ↓
 Platform Adapters:
   ├── Storage: expo-sqlite (kv-store) on Native / WebStorageProvider on Web
-  ├── Usage: Android UsageStatsManager (Bounded 15s query + deduplication cursor)
-  ├── Restrictions: RestrictionProvider with truthful capability reporting
-  └── Permissions: PermissionProvider (usageAccess vs restrictionAuthorization vs restrictionCapability)
+  ├── Usage: Android UsageStatsManager / iOS DeviceActivity
+  ├── Restrictions: Android RhythmEnforcementService & Overlay / iOS Screen Time ManagedSettingsStore
+  ├── Insights: LocalInsightsRepository with bounded 14-day raw / 90-day summary retention
+  └── Permissions: Truthful capability reporting ('enforced' vs 'foundation-only')
 ```
 
 ### 1. Pure TypeScript Rhythm Engine (`src/domain/rhythm/`)
 * **Zero Dependencies:** Completely decoupled from React, Zustand, SQLite, or OS APIs.
 * **Routine Resolution:** Evaluates real clock time, same-day windows, and cross-midnight routines across active weekdays.
-* **Continuous Group Sessions & Inactivity Accounting:** Cumulative usage across member apps in a Risk Group with 5-minute inactivity gap tolerance (non-risk foreground time is tolerated without being added to screen time).
+* **Continuous Group Sessions & Inactivity Accounting:** Cumulative usage across member apps in a Risk Group with 5-minute inactivity gap tolerance.
 * **Multi-Group Concurrent Cooldowns:** Manages independent cooldowns per Risk Group; expiring one group preserves active cooldowns on other groups.
-* **Restriction Reason Union:** Tracks multi-reason restrictions (`routine` + `cooldown`) preventing premature unlocking when overlapping windows change.
+* **Access Leases & Reason Union:** Tracks multi-reason restrictions (`routine` + `cooldown`) minus active temporary `AccessLease` suppressions.
 
-### 2. Battery Discipline & Observation Model
-* **No permanent tight JavaScript polling loops:** Root 1-second domain intervals removed; UI animations calculate remaining time directly against absolute timestamps (`endsAt - Date.now()`).
-* Android uses bounded 15-second interval querying with timestamp deduplication during active monitoring.
-* iOS authorization and entitlements configured through config plugin.
-
-### 3. Local-First Privacy (Zero Backend)
+### 2. Local-First Privacy (Zero Backend)
 * **No Cloud Accounts / No Firebase / No Supabase / No Analytics Trackers.**
 * Persisted locally using `expo-sqlite/kv-store` on native devices and browser storage on web.
-* 100% of routines, app classifications, active cooldown timestamps, and local history remain on the device.
+* 100% of routines, app classifications, active cooldown timestamps, and local history remain on the physical device.
 
 ---
 
@@ -80,19 +80,14 @@ Platform Adapters:
 * **Framework:** [Expo SDK 57](https://expo.dev) + [Expo Router](https://docs.expo.dev/router/introduction/)
 * **UI & Components:** [React Native](https://reactnative.dev), [React Native Web](https://necolas.github.io/react-native-web/), [Lucide React Native](https://lucide.dev)
 * **Local Persistence:** [expo-sqlite](https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/) (`expo-sqlite/kv-store`)
-* **Native Module:** Local Expo Module (`modules/rhythm-device/`) with Kotlin (Android) and Swift (iOS)
-* **Config Plugins:** `plugins/withRhythmScreenTime.ts` (FamilyControls entitlement & `PACKAGE_USAGE_STATS` manifest entry)
-* **Vector Graphics & Artwork:** [React Native SVG](https://github.com/software-mansion/react-native-svg)
+* **Native Modules:** Local Expo Module (`modules/rhythm-device/`) with Kotlin (Android) and Swift (iOS)
+* **Config Plugins:** `plugins/withRhythmScreenTime.ts` (FamilyControls entitlement, App Groups, Xcode extension target synthesis)
 * **State Management:** [Zustand](https://github.com/pmndrs/zustand)
 * **Code Quality & Testing:** TypeScript, ESLint 9 (Expo Flat Config), Node Test Runner (`tsx`)
 
 ---
 
 ## 📦 Getting Started
-
-### Prerequisites
-* Node.js `20.x` or higher
-* npm or yarn
 
 ### Installation
 ```bash
@@ -112,7 +107,7 @@ npm run start
 
 ### Quality & Testing Commands
 ```bash
-# Run 45 domain, engine, persistence, coordinator, and deduplication unit tests
+# Run 53 domain, engine, access lease, insights, persistence, and deduplication unit tests
 npm test
 
 # Run TypeScript typecheck
@@ -127,16 +122,16 @@ npm run build:web
 
 ---
 
-## 📱 Platform Specifics & Entitlement Notes
+## 📄 Documentation
 
-### Android
-* **Usage Access:** Requires system authorization via `Settings.ACTION_USAGE_ACCESS_SETTINGS` (`PACKAGE_USAGE_STATS`). The Settings screen provides direct navigation to grant permission.
-* **Event Deduplication:** Query cursor tracking prevents double-counting events spanning polling intervals.
-* **Restriction Capability:** Truthfully reported as `foundation-only` (`status: unsupported`) until physical app blocking/overlay integration is linked in next phase.
-
-### iOS
-* **Family Controls:** Config plugin `plugins/withRhythmScreenTime.ts` configures `com.apple.developer.family-controls` entitlement in Entitlements.plist.
-* **Screen Time Foundation:** `ios-targets/RhythmDeviceActivityMonitor/` provides the scaffold for DeviceActivity monitor extensions. Shielding capability is truthfully reported as `foundation-only` until `FamilyActivityPicker` token selection binding is wired.
+* [Architecture Guide](ARCHITECTURE.md)
+* [Platform Setup & Build Instructions](PLATFORM_SETUP.md)
+* [Privacy Architecture](PRIVACY.md)
+* [Android Enforcement Architecture (ADR-003)](docs/architecture/ADR-003-android-enforcement.md)
+* [iOS Screen Time Integration](docs/ios-screen-time.md)
+* [Rhythm Engine Specification](docs/rhythm-engine.md)
+* [Local Data Model & Storage](docs/local-data-model.md)
+* [Contributing Guidelines](CONTRIBUTING.md)
 
 ---
 

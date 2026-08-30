@@ -1,10 +1,14 @@
 import {
+  AccessLease,
   AppClassification,
   DeviceApp,
+  EMERGENCY_ACCESS_MINUTES,
   RhythmState,
   RiskGroup,
   RoutineWindow,
 } from '../../types/domain';
+
+export { AccessLease, EMERGENCY_ACCESS_MINUTES };
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -36,6 +40,7 @@ export interface RhythmRuntime {
   state: RhythmState;
   activeSession?: ActiveRiskSession;
   activeCooldowns: Record<string, ActiveCooldown>; // Multi-group cooldown support
+  activeAccessLeases: Record<string, AccessLease>; // Multi-group temporary override leases
   activeRoutineWindowIds: string[];
   activeRestrictions: AppRestriction[]; // Desired restrictions
 }
@@ -43,6 +48,7 @@ export interface RhythmRuntime {
 export interface PersistedRuntime {
   state: RhythmState;
   activeCooldowns: Record<string, ActiveCooldown>;
+  activeAccessLeases?: Record<string, AccessLease>;
   activeSession?: ActiveRiskSession;
   activeRoutineWindowIds: string[];
   lastReconciledAt: number;
@@ -68,8 +74,12 @@ export type RhythmHistoryEvent =
   | { type: 'risk-session-ended'; groupId: string; durationSeconds: number; timestamp: number }
   | { type: 'cooldown-started'; groupId: string; timestamp: number }
   | { type: 'cooldown-ended'; groupId: string; timestamp: number }
+  | { type: 'access-lease-started'; groupId: string; reason: 'emergency' | 'intentional'; timestamp: number }
+  | { type: 'access-lease-ended'; groupId: string; timestamp: number }
   | { type: 'routine-started'; windowId: string; timestamp: number }
   | { type: 'routine-ended'; windowId: string; timestamp: number }
+  | { type: 'group-protection-started'; groupId: string; timestamp: number }
+  | { type: 'group-protection-ended'; groupId: string; timestamp: number }
   | { type: 'emergency-bypass'; timestamp: number };
 
 export type RhythmEvent =
@@ -80,13 +90,19 @@ export type RhythmEvent =
   | { type: 'ROUTINE_ENDED'; windowId: string; timestamp: number }
   | { type: 'COOLDOWN_STARTED'; groupId: string; endsAt: number; timestamp: number }
   | { type: 'COOLDOWN_ENDED'; groupId: string; timestamp: number }
-  | { type: 'RECONCILE'; timestamp: number };
+  | { type: 'START_ACCESS_LEASE'; groupId: string; durationMinutes?: number; reason?: 'emergency' | 'intentional'; timestamp: number }
+  | { type: 'END_ACCESS_LEASE'; groupId: string; timestamp: number }
+  | { type: 'RECONCILE'; timestamp: number }
+  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
 
 export type RhythmEffect =
   | { type: 'APPLY_RESTRICTIONS'; appIds: string[] }
   | { type: 'CLEAR_RESTRICTIONS'; appIds: string[] }
   | { type: 'START_COOLDOWN'; groupId: string; endsAt: number }
   | { type: 'END_COOLDOWN'; groupId: string }
+  | { type: 'START_ACCESS_LEASE'; groupId: string; endsAt: number }
+  | { type: 'END_ACCESS_LEASE'; groupId: string }
   | { type: 'RECORD_HISTORY'; event: RhythmHistoryEvent };
 
 export type EngineHealth = 'ready' | 'degraded' | 'unavailable';
@@ -107,6 +123,16 @@ export function getActiveCooldowns(
 }
 
 /**
+ * Returns all active (unexpired) access leases for a given timestamp.
+ */
+export function getActiveAccessLeases(
+  leases: Record<string, AccessLease> = {},
+  now: number = Date.now()
+): AccessLease[] {
+  return Object.values(leases).filter((lease) => lease.endsAt > now);
+}
+
+/**
  * Returns the primary (most recently started active) cooldown for UI display.
  */
 export function getPrimaryCooldown(
@@ -119,7 +145,7 @@ export function getPrimaryCooldown(
 }
 
 /**
- * Normalizes legacy single-cooldown persisted objects to multi-cooldown map.
+ * Normalizes legacy persisted objects to multi-cooldown and multi-lease map.
  */
 export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -132,9 +158,15 @@ export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
     activeCooldowns[raw.activeCooldown.groupId] = raw.activeCooldown;
   }
 
+  let activeAccessLeases: Record<string, AccessLease> = {};
+  if (raw.activeAccessLeases && typeof raw.activeAccessLeases === 'object') {
+    activeAccessLeases = { ...raw.activeAccessLeases };
+  }
+
   const res: PersistedRuntime = {
     state: raw.state || 'available',
     activeCooldowns,
+    activeAccessLeases,
     activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? raw.activeRoutineWindowIds : [],
     lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : Date.now(),
   };

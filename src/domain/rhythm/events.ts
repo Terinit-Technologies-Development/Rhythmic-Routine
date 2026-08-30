@@ -1,5 +1,7 @@
 import {
+  AccessLease,
   ActiveCooldown,
+  EMERGENCY_ACCESS_MINUTES,
   RhythmConfiguration,
   RhythmEffect,
   RhythmEvent,
@@ -42,6 +44,7 @@ export function processRhythmEvent(
 
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
+  const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
   const effects: RhythmEffect[] = [];
 
   // 1. Check expired cooldowns individually (multi-group support)
@@ -63,7 +66,26 @@ export function processRhythmEvent(
     }
   }
 
-  // 2. Process specific event
+  // 2. Check expired access leases (multi-group support)
+  for (const [groupId, lease] of Object.entries(nextAccessLeases)) {
+    if (lease.endsAt <= nowMs) {
+      delete nextAccessLeases[groupId];
+      effects.push({
+        type: 'END_ACCESS_LEASE',
+        groupId,
+      });
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: {
+          type: 'access-lease-ended',
+          groupId,
+          timestamp: nowMs,
+        },
+      });
+    }
+  }
+
+  // 3. Process specific event
   switch (event.type) {
     case 'CLOCK_TICK':
     case 'RECONCILE': {
@@ -258,23 +280,173 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'START_ACCESS_LEASE': {
+      const durationMinutes = event.durationMinutes ?? EMERGENCY_ACCESS_MINUTES;
+      const endsAt = nowMs + durationMinutes * 60 * 1000;
+      const lease: AccessLease = {
+        id: `lease-${event.groupId}-${nowMs}`,
+        groupId: event.groupId,
+        startedAt: nowMs,
+        endsAt,
+        reason: event.reason ?? 'emergency',
+      };
+      nextAccessLeases[event.groupId] = lease;
+
+      effects.push({
+        type: 'START_ACCESS_LEASE',
+        groupId: event.groupId,
+        endsAt,
+      });
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: {
+          type: 'access-lease-started',
+          groupId: event.groupId,
+          reason: lease.reason,
+          timestamp: nowMs,
+        },
+      });
+      break;
+    }
+
+    case 'END_ACCESS_LEASE': {
+      if (nextAccessLeases[event.groupId]) {
+        delete nextAccessLeases[event.groupId];
+        effects.push({
+          type: 'END_ACCESS_LEASE',
+          groupId: event.groupId,
+        });
+        effects.push({
+          type: 'RECORD_HISTORY',
+          event: {
+            type: 'access-lease-ended',
+            groupId: event.groupId,
+            timestamp: event.timestamp,
+          },
+        });
+      }
+      break;
+    }
+
+    case 'NATIVE_COOLDOWN_RESTORED': {
+      if (event.endsAt > nowMs) {
+        const existing = nextCooldowns[event.groupId];
+        const configuredMinutes =
+          config.riskGroups.find((g) => g.id === event.groupId)?.cooldownMinutes ?? 60;
+        nextCooldowns[event.groupId] = {
+          groupId: event.groupId,
+          startedAt:
+            existing?.startedAt ??
+            Math.max(nowMs, event.endsAt - configuredMinutes * 60_000),
+          endsAt: Math.max(existing?.endsAt ?? 0, event.endsAt),
+        };
+      }
+      break;
+    }
+
+    case 'NATIVE_ACCESS_LEASE_RESTORED': {
+      if (event.endsAt > nowMs) {
+        const existing = nextAccessLeases[event.groupId];
+        nextAccessLeases[event.groupId] = {
+          id: existing?.id ?? `native-lease-${event.groupId}-${event.endsAt}`,
+          groupId: event.groupId,
+          startedAt: existing?.startedAt ?? nowMs,
+          endsAt: Math.max(existing?.endsAt ?? 0, event.endsAt),
+          reason: existing?.reason ?? 'emergency',
+        };
+      }
+      break;
+    }
+
     case 'ROUTINE_STARTED':
     case 'ROUTINE_ENDED':
       break;
   }
 
-  // 3. Resolve active routine windows
+  // 4. Resolve active routine windows
   const activeRoutineWindowIds = getActiveRoutineWindowIds(nowDate, config.routineWindows);
   const activeRoutineWindows = config.routineWindows.filter((w) => isInsideWindow(nowDate, w));
 
-  // 4. Compute desired effective restrictions and diff against previous
+  // Record observed routine transitions
+  const prevWindowIds = new Set(currentRuntime.activeRoutineWindowIds || []);
+  const nextWindowIds = new Set(activeRoutineWindowIds);
+  for (const winId of nextWindowIds) {
+    if (!prevWindowIds.has(winId)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'routine-started', windowId: winId, timestamp: nowMs },
+      });
+    }
+  }
+  for (const winId of prevWindowIds) {
+    if (!nextWindowIds.has(winId)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'routine-ended', windowId: winId, timestamp: nowMs },
+      });
+    }
+  }
+
+  // Record observed effective group-protection transitions using state-before vs state-after
+  const computeProtectedGroupsFromRuntimeState = (
+    windowIds: string[],
+    cooldowns: Record<string, ActiveCooldown>,
+    leases: Record<string, AccessLease>
+  ): Set<string> => {
+    const result = new Set<string>();
+    for (const winId of windowIds) {
+      const win = config.routineWindows.find((w) => w.id === winId);
+      if (win && win.enabled) {
+        for (const gid of win.protectedGroupIds) result.add(gid);
+      }
+    }
+    for (const cd of Object.values(cooldowns)) {
+      result.add(cd.groupId);
+    }
+    for (const lease of Object.values(leases)) {
+      result.delete(lease.groupId);
+    }
+    return result;
+  };
+
+  const prevProtected = computeProtectedGroupsFromRuntimeState(
+    currentRuntime.activeRoutineWindowIds || [],
+    currentRuntime.activeCooldowns || {},
+    currentRuntime.activeAccessLeases || {}
+  );
+  const nextProtected = computeProtectedGroupsFromRuntimeState(
+    activeRoutineWindowIds,
+    nextCooldowns,
+    nextAccessLeases
+  );
+
+  for (const gid of nextProtected) {
+    if (!prevProtected.has(gid)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'group-protection-started', groupId: gid, timestamp: nowMs },
+      });
+    }
+  }
+
+  for (const gid of prevProtected) {
+    if (!nextProtected.has(gid)) {
+      effects.push({
+        type: 'RECORD_HISTORY',
+        event: { type: 'group-protection-ended', groupId: gid, timestamp: nowMs },
+      });
+    }
+  }
+
+  // 5. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(
     activeRoutineWindows,
     nextCooldowns,
     config.riskGroups,
     config.apps,
-    nowMs
+    nowMs,
+    nextAccessLeases
   );
 
   const { toApply, toClear } = diffRestrictions(
@@ -296,7 +468,7 @@ export function processRhythmEvent(
     });
   }
 
-  // 5. Resolve high-level state
+  // 6. Resolve high-level state
   const nextState = resolveRhythmState(
     nowDate,
     config.routineWindows,
@@ -308,6 +480,7 @@ export function processRhythmEvent(
     state: nextState,
     activeSession: nextSession,
     activeCooldowns: nextCooldowns,
+    activeAccessLeases: nextAccessLeases,
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
   };

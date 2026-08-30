@@ -2,6 +2,12 @@ export interface NativePermissionStatus {
   hasUsagePermission: boolean;
   hasRestrictionPermission: boolean;
   familyControlsStatus: 'unknown' | 'approved' | 'denied' | 'revoked' | 'unsupported';
+  hasSelection?: boolean;
+  shieldingOperational?: boolean;
+  monitoringOperational?: boolean;
+  persistentMonitoringOperational?: boolean;
+  expiryMonitoringOperational?: boolean;
+  lastMonitoringError?: string;
 }
 
 export interface NativeUsageEvent {
@@ -22,6 +28,25 @@ export interface NativeAppInfo {
  */
 export interface IOSSelectionReference {
   localSelectionId: string;
-  displayName?: string;
-  tokenCount?: number;
+  tokenCount: number;
+  revision?: number;
+  kind: 'applications' | 'categories' | 'mixed';
+}
+
+export interface MonitoringSyncResult {
+  success: boolean;
+  persistentActivityCount: number;
+  totalActivityCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface MonitoringDiagnostics {
+  activityCount: number;
+  activityNames: string[];
+  monitoringOperational: boolean;
+  persistentMonitoringOperational: boolean;
+  expiryMonitoringOperational: boolean;
+  configSignature: string;
+  lastError: string;
 }

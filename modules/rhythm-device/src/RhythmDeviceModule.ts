@@ -1,4 +1,11 @@
-import { NativeAppInfo, NativePermissionStatus, NativeUsageEvent } from './RhythmDevice.types';
+import {
+  IOSSelectionReference,
+  MonitoringDiagnostics,
+  MonitoringSyncResult,
+  NativeAppInfo,
+  NativePermissionStatus,
+  NativeUsageEvent,
+} from './RhythmDevice.types';
 
 // Mock/fallback when native binary is not linked (web / simulator without native build)
 const FallbackModule = {
@@ -6,13 +13,53 @@ const FallbackModule = {
     hasUsagePermission: true,
     hasRestrictionPermission: true,
     familyControlsStatus: 'unsupported',
+    hasSelection: false,
+    shieldingOperational: false,
+    monitoringOperational: false,
+    persistentMonitoringOperational: false,
+    expiryMonitoringOperational: false,
   }),
   requestUsagePermission: async (): Promise<void> => {},
+  requestRestrictionPermission: async (): Promise<void> => {},
   requestFamilyControls: async (): Promise<string> => 'unsupported',
+  showFamilyActivityPicker: async (groupId: string): Promise<IOSSelectionReference> => ({
+    localSelectionId: `selection.${groupId}`,
+    tokenCount: 1,
+    revision: 1,
+    kind: 'mixed',
+  }),
+  hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
+  clearGroupSelection: async (_groupId: string): Promise<{ success: boolean; revision: number }> => ({
+    success: true,
+    revision: 1,
+  }),
+  revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
+  setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
+  startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => true,
+  endAccessLease: async (_groupId: string): Promise<boolean> => true,
+  setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
+  getSharedRhythmState: async (): Promise<string | null> => null,
+  synchronizeMonitoringConfiguration: async (
+    _stateJson: string,
+    _signature: string
+  ): Promise<MonitoringSyncResult> => ({
+    success: true,
+    persistentActivityCount: 3,
+    totalActivityCount: 3,
+  }),
+  getMonitoringDiagnostics: async (): Promise<MonitoringDiagnostics> => ({
+    activityCount: 3,
+    activityNames: ['routine|morning-buffer|daily', 'routine|evening-wind-down|daily', 'risk.daily'],
+    monitoringOperational: true,
+    persistentMonitoringOperational: true,
+    expiryMonitoringOperational: true,
+    configSignature: 'fallback',
+    lastError: '',
+  }),
 };
 
 let NativeModule: typeof FallbackModule = FallbackModule;
@@ -22,7 +69,10 @@ try {
   const { requireNativeModule } = require('expo-modules-core');
   const mod = requireNativeModule('RhythmDevice');
   if (mod) {
-    NativeModule = mod;
+    NativeModule = {
+      ...FallbackModule,
+      ...mod,
+    };
   }
 } catch {
   // Use fallback

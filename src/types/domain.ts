@@ -11,6 +11,13 @@ export type RhythmState =
   | 'cooldown'
   | 'evening-wind-down';
 
+export interface NativeSelectionReference {
+  id: string;
+  platform: 'ios';
+  kind: 'applications' | 'categories' | 'mixed';
+  itemCount?: number;
+}
+
 export interface DeviceApp {
   id: string;
   name: string;
@@ -36,6 +43,9 @@ export interface RiskGroup {
   cooldownMinutes: number;         // e.g. 90
   currentSessionMinutes: number;
   isBufferingToday?: boolean;
+  nativeSelectionRef?: string;     // Reference to native iOS FamilyActivitySelection
+  nativeSelectionCount?: number;   // Number of selections configured in FamilyActivitySelection
+  nativeSelectionRevision?: number; // Monotonically increasing revision of the selection content
 }
 
 export interface RoutineWindow {
@@ -81,4 +91,35 @@ export interface InsightMetrics {
   firstRiskAppUseTime: string;
   finalRiskAppUseTime: string;
   weeklyTrend: DailyTrendPoint[];
+}
+
+export const EMERGENCY_ACCESS_MINUTES = 5;
+
+export interface AccessLeasePolicy {
+  defaultMinutes: number;
+  minimumMinutes: number;
+  nativeExpiryGuaranteed: boolean;
+}
+
+export function getPlatformAccessLeasePolicy(platform: string = 'default'): AccessLeasePolicy {
+  if (platform === 'ios') {
+    return {
+      defaultMinutes: 15,
+      minimumMinutes: 15,
+      nativeExpiryGuaranteed: true,
+    };
+  }
+  return {
+    defaultMinutes: 5,
+    minimumMinutes: 1,
+    nativeExpiryGuaranteed: true,
+  };
+}
+
+export interface AccessLease {
+  id: string;
+  groupId: string;
+  startedAt: number;
+  endsAt: number;
+  reason: 'emergency' | 'intentional';
 }
