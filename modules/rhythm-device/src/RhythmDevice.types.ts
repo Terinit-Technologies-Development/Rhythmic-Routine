@@ -5,6 +5,8 @@ export interface NativePermissionStatus {
   hasSelection?: boolean;
   shieldingOperational?: boolean;
   monitoringOperational?: boolean;
+  persistentMonitoringOperational?: boolean;
+  expiryMonitoringOperational?: boolean;
   lastMonitoringError?: string;
 }
 
@@ -27,6 +29,7 @@ export interface NativeAppInfo {
 export interface IOSSelectionReference {
   localSelectionId: string;
   tokenCount: number;
+  revision?: number;
   kind: 'applications' | 'categories' | 'mixed';
 }
 
@@ -42,6 +45,8 @@ export interface MonitoringDiagnostics {
   activityCount: number;
   activityNames: string[];
   monitoringOperational: boolean;
+  persistentMonitoringOperational: boolean;
+  expiryMonitoringOperational: boolean;
   configSignature: string;
   lastError: string;
 }

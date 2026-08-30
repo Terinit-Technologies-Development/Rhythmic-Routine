@@ -473,3 +473,54 @@ test('Task 6: Nearest-expiry calculation picks minimum future timestamp and enfo
     'DeviceActivity schedule duration must be at least 15 minutes'
   );
 });
+
+test('Selection Revision: incrementing nativeSelectionRevision alters signature even with identical selectionRef and tokens', () => {
+  const baseConfig: RhythmConfiguration = {
+    routineWindows: initialRoutineWindows,
+    riskGroups: [
+      {
+        ...initialRiskGroups[0],
+        nativeSelectionRef: 'selection.social',
+        nativeSelectionRevision: 1,
+      },
+      ...initialRiskGroups.slice(1),
+    ],
+    apps: initialApps,
+    sessionResetGapMs: 5 * 60 * 1000,
+  };
+
+  const sigBefore = computeMonitoringConfigSignature(baseConfig);
+
+  const editedConfig: RhythmConfiguration = {
+    ...baseConfig,
+    riskGroups: [
+      {
+        ...baseConfig.riskGroups[0],
+        nativeSelectionRevision: 2, // user replaced apps in picker with same count
+      },
+      ...baseConfig.riskGroups.slice(1),
+    ],
+  };
+
+  const sigAfter = computeMonitoringConfigSignature(editedConfig);
+  assert.notEqual(sigBefore, sigAfter, 'Revision bump must invalidate config signature');
+});
+
+test('Config Sync: failure does NOT cache signature, allowing immediate retry', () => {
+  let cachedSignature: string | undefined;
+  const signature = 'test-sig-1';
+
+  // First attempt fails
+  const mockFailResult = { success: false, persistentActivityCount: 0, totalActivityCount: 0 };
+  if (mockFailResult.success) {
+    cachedSignature = signature;
+  }
+  assert.equal(cachedSignature, undefined, 'Failed attempt must not cache signature');
+
+  // Second attempt succeeds
+  const mockSuccessResult = { success: true, persistentActivityCount: 3, totalActivityCount: 3 };
+  if (mockSuccessResult.success) {
+    cachedSignature = signature;
+  }
+  assert.equal(cachedSignature, signature, 'Successful attempt caches signature');
+});

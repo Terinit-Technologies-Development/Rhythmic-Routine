@@ -145,11 +145,10 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
             }
           }
 
-          // Link target dependency from main app to extension
+          // Note: xcodeProject.addTarget() with type 'app_extension' automatically establishes
+          // the PBXTargetDependency from the main target to the extension target.
           const mainTarget = xcodeProject.getFirstTarget();
           if (mainTarget && mainTarget.uuid) {
-            xcodeProject.addTargetDependency(mainTarget.uuid, [target.uuid]);
-
             // Ensure "Embed App Extensions" copy phase is explicitly named and dstSubfolderSpec is 13 (PlugIns)
             const pbxCopyFiles = xcodeProject.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
             for (const key of Object.keys(pbxCopyFiles)) {

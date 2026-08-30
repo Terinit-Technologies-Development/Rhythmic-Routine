@@ -535,6 +535,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
               ...group,
               nativeSelectionRef: result.localSelectionId,
               nativeSelectionCount: result.tokenCount ?? 0,
+              nativeSelectionRevision: result.revision ?? ((group.nativeSelectionRevision ?? 0) + 1),
             }
           : group
       );

@@ -58,6 +58,7 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
     riskGroups: config.riskGroups.map((group) => ({
       id: group.id,
       nativeSelectionRef: group.nativeSelectionRef,
+      nativeSelectionRevision: group.nativeSelectionRevision,
       sessionThresholdMinutes: group.sessionThresholdMinutes,
       cooldownMinutes: group.cooldownMinutes,
     })),
@@ -148,11 +149,10 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               snapshotJson,
               signature
             );
-            if (result && !result.success) {
-              // Monitoring sync failure recorded in App Group
+            if (result && result.success) {
+              this.lastConfigSignature = signature;
             }
           }
-          this.lastConfigSignature = signature;
         }
       } else if (os === 'android') {
         const baseRestrictedPackageIds = computeUnsuppressedBaseRestrictedAppIds(

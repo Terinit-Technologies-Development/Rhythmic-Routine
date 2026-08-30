@@ -107,6 +107,8 @@ public class RhythmDeviceModule: Module {
   private let storeName = "RhythmRoutineStore"
   private let sharedStateKey = "shared_rhythm_state"
   private let monitoringOperationalKey = "monitoring_operational"
+  private let persistentMonitoringOperationalKey = "persistent_monitoring_operational"
+  private let expiryMonitoringOperationalKey = "expiry_monitoring_operational"
   private let monitoringLastErrorKey = "monitoring_last_error"
   private let monitoringConfigSignatureKey = "monitoring_config_signature"
 
@@ -119,6 +121,10 @@ public class RhythmDeviceModule: Module {
 
   private func selectionKey(groupId: String) -> String {
     return "selection.\(groupId)"
+  }
+
+  private func selectionRevisionKey(groupId: String) -> String {
+    return "selection_revision.\(groupId)"
   }
 
   private func hasAnyNonEmptySelection() -> Bool {
@@ -152,6 +158,22 @@ public class RhythmDeviceModule: Module {
     return name.rawValue.hasPrefix("expiry|")
   }
 
+  private func updateOverallMonitoringHealth(defaults: UserDefaults?) {
+    guard let defaults = defaults else { return }
+    let persistentOp = defaults.bool(forKey: self.persistentMonitoringOperationalKey)
+    let expiryOp = defaults.bool(forKey: self.expiryMonitoringOperationalKey)
+
+    let nowMs = Date().timeIntervalSince1970 * 1000
+    var hasActiveExpiry = false
+    if let data = defaults.data(forKey: self.sharedStateKey),
+       let state = try? JSONDecoder().decode(SharedRhythmState.self, from: data) {
+      hasActiveExpiry = self.nextExpiry(state: state, nowMs: nowMs) != nil
+    }
+
+    let overall = persistentOp && (!hasActiveExpiry || expiryOp)
+    defaults.set(overall, forKey: self.monitoringOperationalKey)
+  }
+
   public func definition() -> ModuleDefinition {
     Name("RhythmDevice")
 
@@ -179,6 +201,8 @@ public class RhythmDeviceModule: Module {
 
         let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
         let hasSelection = self.hasAnyNonEmptySelection()
+        let persistentOperational = defaults?.bool(forKey: self.persistentMonitoringOperationalKey) ?? false
+        let expiryOperational = defaults?.bool(forKey: self.expiryMonitoringOperationalKey) ?? false
         let monitoringOperational = defaults?.bool(forKey: self.monitoringOperationalKey) ?? false
         let lastError = defaults?.string(forKey: self.monitoringLastErrorKey)
         let shieldingOperational = isApproved && hasSelection && monitoringOperational
@@ -190,6 +214,8 @@ public class RhythmDeviceModule: Module {
           "hasSelection": hasSelection,
           "shieldingOperational": shieldingOperational,
           "monitoringOperational": monitoringOperational,
+          "persistentMonitoringOperational": persistentOperational,
+          "expiryMonitoringOperational": expiryOperational,
           "lastMonitoringError": lastError ?? ""
         ]
       }
@@ -202,6 +228,8 @@ public class RhythmDeviceModule: Module {
         "hasSelection": false,
         "shieldingOperational": false,
         "monitoringOperational": false,
+        "persistentMonitoringOperational": false,
+        "expiryMonitoringOperational": false,
         "lastMonitoringError": ""
       ]
     }
@@ -275,10 +303,17 @@ public class RhythmDeviceModule: Module {
                 if let data = try? JSONEncoder().encode(currentSelection) {
                   defaults?.set(data, forKey: key)
                 }
+
+                // Increment selection revision monotonically so monitoring configuration signature detects selection updates
+                let revKey = self.selectionRevisionKey(groupId: groupId)
+                let nextRevision = (defaults?.integer(forKey: revKey) ?? 0) + 1
+                defaults?.set(nextRevision, forKey: revKey)
+
                 let tokenCount = currentSelection.applicationTokens.count + currentSelection.categoryTokens.count + currentSelection.webDomainTokens.count
                 promise.resolve([
                   "localSelectionId": key,
                   "tokenCount": tokenCount,
+                  "revision": nextRevision,
                   "kind": "mixed"
                 ])
               }
@@ -309,6 +344,10 @@ public class RhythmDeviceModule: Module {
     AsyncFunction("clearGroupSelection") { (groupId: String) -> Bool in
       guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
       defaults.removeObject(forKey: self.selectionKey(groupId: groupId))
+      let revKey = self.selectionRevisionKey(groupId: groupId)
+      let nextRevision = defaults.integer(forKey: revKey) + 1
+      defaults.set(nextRevision, forKey: revKey)
+
       self.recomputeAndApplyShieldsInternal()
       return true
     }
@@ -342,7 +381,12 @@ public class RhythmDeviceModule: Module {
       defaults.set(data, forKey: self.sharedStateKey)
 
       if let state = try? JSONDecoder().decode(SharedRhythmState.self, from: data) {
-        self.ensureNearestExpiryMonitor(state: state)
+        do {
+          try self.ensureNearestExpiryMonitor(state: state)
+        } catch {
+          // Failure recorded in expiry_monitoring_operational
+        }
+        self.updateOverallMonitoringHealth(defaults: defaults)
       }
 
       return self.recomputeAndApplyShieldsInternal()
@@ -398,6 +442,7 @@ public class RhythmDeviceModule: Module {
 
         // Preflight budget check: max 18 persistent activities
         if persistentCount > self.maximumPersistentActivities {
+          defaults.set(false, forKey: self.persistentMonitoringOperationalKey)
           defaults.set(false, forKey: self.monitoringOperationalKey)
           let errorMsg = "Requested \(persistentCount) persistent activities, maximum is \(self.maximumPersistentActivities)"
           defaults.set("activity_budget_exceeded: \(errorMsg)", forKey: self.monitoringLastErrorKey)
@@ -434,10 +479,12 @@ public class RhythmDeviceModule: Module {
             try center.startMonitoring(DeviceActivityName("risk.daily"), during: dailySchedule, events: plan.riskEvents)
           }
 
-          // Ensure nearest expiry monitor
-          self.ensureNearestExpiryMonitor(state: state)
+          defaults.set(true, forKey: self.persistentMonitoringOperationalKey)
 
-          defaults.set(true, forKey: self.monitoringOperationalKey)
+          // Ensure nearest expiry monitor (propagates throws on failure)
+          try self.ensureNearestExpiryMonitor(state: state)
+
+          self.updateOverallMonitoringHealth(defaults: defaults)
           defaults.removeObject(forKey: self.monitoringLastErrorKey)
           defaults.set(configurationSignature, forKey: self.monitoringConfigSignatureKey)
 
@@ -448,6 +495,7 @@ public class RhythmDeviceModule: Module {
           ]
         } catch {
           self.recordMonitoringFailure(error, context: "synchronizeMonitoringConfiguration")
+          self.updateOverallMonitoringHealth(defaults: defaults)
           return [
             "success": false,
             "persistentActivityCount": persistentCount,
@@ -473,10 +521,16 @@ public class RhythmDeviceModule: Module {
       if #available(iOS 16.0, *) {
         let center = DeviceActivityCenter()
         let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
+        let persistentOp = defaults?.bool(forKey: self.persistentMonitoringOperationalKey) ?? false
+        let expiryOp = defaults?.bool(forKey: self.expiryMonitoringOperationalKey) ?? false
+        let monitoringOp = defaults?.bool(forKey: self.monitoringOperationalKey) ?? false
+
         return [
           "activityCount": center.activities.count,
           "activityNames": center.activities.map { $0.rawValue },
-          "monitoringOperational": defaults?.bool(forKey: self.monitoringOperationalKey) ?? false,
+          "monitoringOperational": monitoringOp,
+          "persistentMonitoringOperational": persistentOp,
+          "expiryMonitoringOperational": expiryOp,
           "configSignature": defaults?.string(forKey: self.monitoringConfigSignatureKey) ?? "",
           "lastError": defaults?.string(forKey: self.monitoringLastErrorKey) ?? ""
         ]
@@ -487,6 +541,8 @@ public class RhythmDeviceModule: Module {
         "activityCount": 0,
         "activityNames": [],
         "monitoringOperational": false,
+        "persistentMonitoringOperational": false,
+        "expiryMonitoringOperational": false,
         "configSignature": "",
         "lastError": ""
       ]
@@ -657,12 +713,13 @@ public class RhythmDeviceModule: Module {
     return DeviceActivitySchedule(intervalStart: startComponents, intervalEnd: endComponents, repeats: false)
   }
 
-  private func ensureNearestExpiryMonitor(state: SharedRhythmState) {
+  private func ensureNearestExpiryMonitor(state: SharedRhythmState) throws {
     #if canImport(DeviceActivity)
     if #available(iOS 16.0, *) {
       let center = DeviceActivityCenter()
       let now = Date()
       let nowMs = now.timeIntervalSince1970 * 1000
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return }
 
       let expiryActivities = center.activities.filter { isRhythmExpiryActivity($0) }
 
@@ -670,12 +727,14 @@ public class RhythmDeviceModule: Module {
         if !expiryActivities.isEmpty {
           center.stopMonitoring(expiryActivities)
         }
+        defaults.set(true, forKey: self.expiryMonitoringOperationalKey)
         return
       }
 
       let expectedName = DeviceActivityName("expiry|next|\(Int(semanticEndsAt))")
       if expiryActivities.contains(expectedName) {
         // Nearest wake-up monitor already registered; no churn
+        defaults.set(true, forKey: self.expiryMonitoringOperationalKey)
         return
       }
 
@@ -685,8 +744,11 @@ public class RhythmDeviceModule: Module {
       }
       do {
         try center.startMonitoring(expectedName, during: schedule)
+        defaults.set(true, forKey: self.expiryMonitoringOperationalKey)
       } catch {
+        defaults.set(false, forKey: self.expiryMonitoringOperationalKey)
         recordMonitoringFailure(error, context: "ensureNearestExpiryMonitor")
+        throw error
       }
     }
     #endif
@@ -716,6 +778,8 @@ public class RhythmDeviceModule: Module {
     if let defaults = UserDefaults(suiteName: self.appGroupIdentifier) {
       defaults.removeObject(forKey: self.sharedStateKey)
       defaults.set(false, forKey: self.monitoringOperationalKey)
+      defaults.set(false, forKey: self.persistentMonitoringOperationalKey)
+      defaults.set(false, forKey: self.expiryMonitoringOperationalKey)
       defaults.removeObject(forKey: self.monitoringLastErrorKey)
       defaults.removeObject(forKey: self.monitoringConfigSignatureKey)
     }

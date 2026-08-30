@@ -62,8 +62,8 @@ function verifySynthesizedProject() {
     'com.terinit.rhythmicroutine.activitymonitor'
   );
 
-  const mainTarget = proj.getFirstTarget();
-  proj.addTargetDependency(mainTarget.uuid, [target.uuid]);
+  // Note: proj.addTarget() with type 'app_extension' automatically links target dependency from main to extension.
+  // We explicitly do NOT call proj.addTargetDependency to avoid duplicate PBXTargetDependency entries.
 
   // Update Copy Files to Embed App Extensions and dstSubfolderSpec = 13
   const pbxCopyFiles = proj.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
@@ -89,6 +89,25 @@ function verifySynthesizedProject() {
   const pbxproj1 = proj.writeSync();
   verifyPbxprojContent(pbxproj1, 'initial project synthesis (Pass 1)');
 
+  // Strict structural assertions on Pass 1
+  const targetDeps1 = Object.keys(proj.hash.project.objects.PBXTargetDependency || {}).filter((k) => !k.endsWith('_comment'));
+  if (targetDeps1.length !== 1) {
+    throw new Error(`Expected exactly 1 PBXTargetDependency, found ${targetDeps1.length}`);
+  }
+  console.log(`  ✓ Verified: exactly 1 PBXTargetDependency exists`);
+
+  const appexBuildFiles1 = Object.keys(proj.hash.project.objects.PBXBuildFile || {})
+    .filter((k) => !k.endsWith('_comment'))
+    .filter((k) => {
+      const bf = proj.hash.project.objects.PBXBuildFile[k];
+      return (bf.fileRef_comment && bf.fileRef_comment.includes('RhythmDeviceActivityMonitor.appex')) ||
+             (proj.hash.project.objects.PBXBuildFile[k + '_comment'] && proj.hash.project.objects.PBXBuildFile[k + '_comment'].includes('RhythmDeviceActivityMonitor.appex'));
+    });
+  if (appexBuildFiles1.length !== 1) {
+    throw new Error(`Expected exactly 1 .appex PBXBuildFile, found ${appexBuildFiles1.length}`);
+  }
+  console.log(`  ✓ Verified: exactly 1 RhythmDeviceActivityMonitor.appex build file exists`);
+
   // 2. Second prebuild idempotency test
   // Existing target check prevents duplicate target creation
   const existingTarget = proj.pbxTargetByName('RhythmDeviceActivityMonitor');
@@ -107,6 +126,13 @@ function verifySynthesizedProject() {
 
   const pbxproj2 = proj.writeSync();
   verifyPbxprojContent(pbxproj2, 'idempotent project re-synthesis (Pass 2)');
+
+  // Strict structural assertions on Pass 2
+  const targetDeps2 = Object.keys(proj.hash.project.objects.PBXTargetDependency || {}).filter((k) => !k.endsWith('_comment'));
+  if (targetDeps2.length !== 1) {
+    throw new Error(`Expected exactly 1 PBXTargetDependency after Pass 2, found ${targetDeps2.length}`);
+  }
+  console.log(`  ✓ Verified idempotency: exactly 1 PBXTargetDependency remains after re-synthesis`);
 
   // Confirm no duplicate targets or phases
   const nativeTargets = Object.keys(proj.hash.project.objects.PBXNativeTarget).filter((k) => !k.endsWith('_comment'));

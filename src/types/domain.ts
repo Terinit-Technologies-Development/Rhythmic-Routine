@@ -45,6 +45,7 @@ export interface RiskGroup {
   isBufferingToday?: boolean;
   nativeSelectionRef?: string;     // Reference to native iOS FamilyActivitySelection
   nativeSelectionCount?: number;   // Number of selections configured in FamilyActivitySelection
+  nativeSelectionRevision?: number; // Monotonically increasing revision of the selection content
 }
 
 export interface RoutineWindow {

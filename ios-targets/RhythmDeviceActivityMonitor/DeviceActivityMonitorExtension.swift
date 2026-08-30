@@ -111,6 +111,7 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         let center = DeviceActivityCenter()
         let now = Date()
         let nowMs = now.timeIntervalSince1970 * 1000
+        let defaults = UserDefaults(suiteName: appGroupIdentifier)
 
         let expiryActivities = center.activities.filter { isRhythmExpiryActivity($0) }
 
@@ -118,12 +119,14 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
             if !expiryActivities.isEmpty {
                 center.stopMonitoring(expiryActivities)
             }
+            defaults?.set(true, forKey: "expiry_monitoring_operational")
             return
         }
 
         let expectedName = DeviceActivityName("expiry|next|\(Int(semanticEndsAt))")
         if expiryActivities.contains(expectedName) {
             // Existing nearest wake-up schedule is already accurate; no churn
+            defaults?.set(true, forKey: "expiry_monitoring_operational")
             return
         }
 
@@ -133,8 +136,11 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         }
         do {
             try center.startMonitoring(expectedName, during: schedule)
+            defaults?.set(true, forKey: "expiry_monitoring_operational")
         } catch {
-            // Extension cannot throw outward; state remains saved in UserDefaults
+            defaults?.set(false, forKey: "expiry_monitoring_operational")
+            defaults?.set(false, forKey: "monitoring_operational")
+            defaults?.set("Extension ensureNearestExpiryMonitor: \(error.localizedDescription)", forKey: "monitoring_last_error")
         }
     }
 
