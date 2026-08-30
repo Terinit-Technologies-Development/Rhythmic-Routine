@@ -6,6 +6,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   slug: 'Rhythmic-Routine',
   scheme: 'rhythmic-routine',
   version: '1.0.0',
+  runtimeVersion: {
+    policy: 'appVersion',
+  },
   orientation: 'portrait',
   icon: './assets/icon.png',
   userInterfaceStyle: 'light',

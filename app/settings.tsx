@@ -296,7 +296,7 @@ export default function SettingsScreen() {
               activeOpacity={0.7}
               onPress={() => setShowDisclosureModal(false)}
             >
-              <Text style={styles.cancelConsentText}>Not Now</Text>
+              <Text style={styles.cancelConsentText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
