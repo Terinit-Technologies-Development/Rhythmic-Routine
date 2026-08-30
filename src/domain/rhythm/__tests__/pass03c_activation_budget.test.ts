@@ -524,3 +524,26 @@ test('Config Sync: failure does NOT cache signature, allowing immediate retry', 
   }
   assert.equal(cachedSignature, signature, 'Successful attempt caches signature');
 });
+
+test('Health Derivation: persistent failure marks overall false even with no active expiry', () => {
+  // Test health calculation logic: overall = persistentOp && (!hasActiveExpiry || expiryOp)
+  const deriveHealth = (persistentOp: boolean, expiryOp: boolean, hasActiveExpiry: boolean) =>
+    persistentOp && (!hasActiveExpiry || expiryOp);
+
+  // Scenario 1: Persistent registration fails with no active expiry
+  // Old persistentOp true MUST NOT survive replacement
+  const persistentFailedNoExpiry = deriveHealth(false, true, false);
+  assert.equal(persistentFailedNoExpiry, false, 'Persistent failure MUST make overall false');
+
+  // Scenario 2: Persistent succeeds but nearest expiry fails when expiry IS needed
+  const expiryFailedWithActiveExpiry = deriveHealth(true, false, true);
+  assert.equal(expiryFailedWithActiveExpiry, false, 'Expiry failure when active MUST make overall false');
+
+  // Scenario 3: Persistent succeeds, expiry not needed
+  const healthyNoExpiry = deriveHealth(true, false, false);
+  assert.equal(healthyNoExpiry, true, 'Healthy persistent with no active expiry is overall healthy');
+
+  // Scenario 4: Both succeed with active expiry
+  const allHealthy = deriveHealth(true, true, true);
+  assert.equal(allHealthy, true, 'Both healthy with active expiry is overall healthy');
+});

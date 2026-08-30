@@ -29,7 +29,10 @@ const FallbackModule = {
     kind: 'mixed',
   }),
   hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
-  clearGroupSelection: async (_groupId: string): Promise<boolean> => true,
+  clearGroupSelection: async (_groupId: string): Promise<{ success: boolean; revision: number }> => ({
+    success: true,
+    revision: 1,
+  }),
   revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],

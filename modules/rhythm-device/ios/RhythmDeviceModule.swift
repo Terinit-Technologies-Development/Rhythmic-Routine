@@ -341,15 +341,17 @@ public class RhythmDeviceModule: Module {
       return defaults.data(forKey: self.selectionKey(groupId: groupId)) != nil
     }
 
-    AsyncFunction("clearGroupSelection") { (groupId: String) -> Bool in
-      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+    AsyncFunction("clearGroupSelection") { (groupId: String) -> [String: Any] in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else {
+        return ["success": false, "revision": 0]
+      }
       defaults.removeObject(forKey: self.selectionKey(groupId: groupId))
       let revKey = self.selectionRevisionKey(groupId: groupId)
       let nextRevision = defaults.integer(forKey: revKey) + 1
       defaults.set(nextRevision, forKey: revKey)
 
       self.recomputeAndApplyShieldsInternal()
-      return true
+      return ["success": true, "revision": nextRevision]
     }
 
     AsyncFunction("revokeAuthorization") { () -> Void in
@@ -455,6 +457,10 @@ public class RhythmDeviceModule: Module {
           ]
         }
 
+        // Persistent topology is being replaced; old healthy state must not survive if an error occurs
+        defaults.set(false, forKey: self.persistentMonitoringOperationalKey)
+
+        // Phase 1: Persistent registration error boundary
         do {
           // Stop ONLY persistent routine and risk activities; preserve expiry activities!
           let persistentToReplace = center.activities.filter {
@@ -480,30 +486,45 @@ public class RhythmDeviceModule: Module {
           }
 
           defaults.set(true, forKey: self.persistentMonitoringOperationalKey)
-
-          // Ensure nearest expiry monitor (propagates throws on failure)
-          try self.ensureNearestExpiryMonitor(state: state)
-
-          self.updateOverallMonitoringHealth(defaults: defaults)
-          defaults.removeObject(forKey: self.monitoringLastErrorKey)
-          defaults.set(configurationSignature, forKey: self.monitoringConfigSignatureKey)
-
-          return [
-            "success": true,
-            "persistentActivityCount": persistentCount,
-            "totalActivityCount": center.activities.count
-          ]
         } catch {
-          self.recordMonitoringFailure(error, context: "synchronizeMonitoringConfiguration")
+          defaults.set(false, forKey: self.persistentMonitoringOperationalKey)
+          self.recordMonitoringFailure(error, context: "persistent-monitoring")
           self.updateOverallMonitoringHealth(defaults: defaults)
           return [
             "success": false,
             "persistentActivityCount": persistentCount,
             "totalActivityCount": center.activities.count,
-            "errorCode": "native_registration_failed",
+            "errorCode": "persistent_registration_failed",
             "errorMessage": error.localizedDescription
           ]
         }
+
+        // Phase 2: Expiry monitor error boundary
+        do {
+          try self.ensureNearestExpiryMonitor(state: state)
+        } catch {
+          // ensureNearestExpiryMonitor already sets expiryMonitoringOperationalKey = false
+          // and records the error details via recordMonitoringFailure
+          self.updateOverallMonitoringHealth(defaults: defaults)
+          return [
+            "success": false,
+            "persistentActivityCount": persistentCount,
+            "totalActivityCount": center.activities.count,
+            "errorCode": "expiry_registration_failed",
+            "errorMessage": error.localizedDescription
+          ]
+        }
+
+        // Both phases succeeded!
+        self.updateOverallMonitoringHealth(defaults: defaults)
+        defaults.removeObject(forKey: self.monitoringLastErrorKey)
+        defaults.set(configurationSignature, forKey: self.monitoringConfigSignatureKey)
+
+        return [
+          "success": true,
+          "persistentActivityCount": persistentCount,
+          "totalActivityCount": center.activities.count
+        ]
       }
       #endif
 
