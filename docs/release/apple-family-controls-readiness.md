@@ -15,17 +15,19 @@
 
 ## 2. Apple Entitlement & Provisioning Status Matrix
 
-| Gate / Requirement | Status | Current Reality & Action Required |
+The application codebase defines all required identifiers, entitlements, App Groups, and extension targets. Physical portal status requires owner confirmation in the Apple Developer console:
+
+| Gate / Requirement | Status | Verification & Current Reality |
 | :--- | :--- | :--- |
-| **Apple Developer Program Membership** | `available` | Project owner holds active Apple Developer Program account. |
-| **Main App ID Registration** | `available` | Registered under `com.terinit.rhythmicroutine`. |
-| **Extension App ID Registration** | `available` | Registered under `com.terinit.rhythmicroutine.activitymonitor`. |
-| **App Group Creation & Assignment** | `available` | Assigned to `group.com.terinit.rhythmicroutine` across both targets. |
-| **Family Controls (Development Capability)** | `available` | Authorized on personal development team devices via Xcode / development provisioning. |
-| **Family Controls (Distribution Capability — Main)** | `pending` (`WAITING_ON_APPLE_ENTITLEMENT`) | Apple requires formal request submission via Apple Developer portal for TestFlight and App Store distribution profiles. |
-| **Family Controls (Distribution Capability — Extension)** | `pending` (`WAITING_ON_APPLE_ENTITLEMENT`) | Must be approved concurrently for the DeviceActivity monitor extension target. |
-| **Ad-Hoc / Preview Provisioning Profile** | `provisioning-blocked` | Awaiting Apple Family Controls distribution entitlement assignment before EAS can generate ad-hoc profile. |
-| **App Store Distribution Provisioning Profile** | `provisioning-blocked` | Awaiting Apple Family Controls distribution entitlement assignment before EAS can generate distribution profile. |
+| **Apple Developer Program Membership** | `owner-confirmation-required` | Project owner must log into Apple Developer console to verify active membership. |
+| **Main App ID Registration** | `owner-confirmation-required` | Must be registered under `com.terinit.rhythmicroutine`. |
+| **Extension App ID Registration** | `owner-confirmation-required` | Must be registered under `com.terinit.rhythmicroutine.activitymonitor`. |
+| **App Group Creation & Assignment** | `owner-confirmation-required` | Must be enabled with identifier `group.com.terinit.rhythmicroutine` on both app IDs. |
+| **Family Controls (Development Capability)** | `owner-confirmation-required` | Apple allows development testing on signed personal development devices. |
+| **Family Controls (Distribution Capability — Main)** | `NOT_REQUESTED` (`owner-confirmation-required`) | Official Apple lifecycle status: `NOT_REQUESTED`, `PENDING`, `APPROVED`, or `DECLINED`. Apple requires formal entitlement request submission via Developer portal for TestFlight and App Store distribution profiles. |
+| **Family Controls (Distribution Capability — Extension)** | `NOT_REQUESTED` (`owner-confirmation-required`) | Must be requested and approved concurrently for the DeviceActivity monitor extension target. |
+| **Ad-Hoc / Internal Provisioning Profile** | `provisioning-blocked` | Awaiting Apple Family Controls distribution entitlement assignment before EAS or Xcode can generate ad-hoc/internal profile. |
+| **App Store Distribution Provisioning Profile** | `provisioning-blocked` | Awaiting Apple Family Controls distribution entitlement assignment before EAS or Xcode can generate App Store profile. |
 
 ---
 

@@ -77,14 +77,18 @@ On Windows development environments, Expo CNG purposefully skips creating the `i
   ✓ Verified: RhythmDeviceActivityMonitor.appex is embedded in Embed App Extensions phase
   ✓ Verified: exactly 1 PBXTargetDependency exists
   ✓ Verified: exactly 1 RhythmDeviceActivityMonitor.appex build file exists
+  ✓ Verified: PrivacyInfo.xcprivacy file reference exists in extension group
+  ✓ Verified: PrivacyInfo.xcprivacy is added to extension PBXResourcesBuildPhase
 [verify-ios-extension] Verifying idempotent project re-synthesis (Pass 2)...
   ✓ Verified idempotency: exactly 1 PBXTargetDependency remains after re-synthesis
   ✓ Verified idempotency: exactly 2 native targets exist without duplicates
+  ✓ Verified idempotency: exactly 1 PrivacyInfo.xcprivacy resource build file exists
 [verify-ios-extension] All Xcode extension embedding checks passed successfully.
 ```
 
 - **PBXTargetDependency Invariant:** Exactly 1 target dependency connects `RhythmicRoutine` to `RhythmDeviceActivityMonitor`. Idempotent re-runs do not create duplicates.
 - **PBXCopyFilesBuildPhase Invariant:** Exactly 1 `.appex` build file is embedded into destination subfolder `13` (Plugins/App Extensions).
+- **Extension Privacy Manifest Invariant:** `PrivacyInfo.xcprivacy` is copied to the extension destination and wired into the extension target's `PBXResourcesBuildPhase` (not `PBXSourcesBuildPhase`).
 
 ---
 
@@ -143,8 +147,10 @@ On Windows development environments, Expo CNG purposefully skips creating the `i
 
 ## 6. iOS Qualification Classification
 
-- **Classification:** **`generated-project-verified`** (EAS/macOS build & physical hardware gates remain).
-- **Blockers:**
-  - Lack of macOS local environment for direct `xcodebuild` on host.
-  - Family Controls distribution entitlement pending Apple Developer Program approval (`WAITING_ON_APPLE_ENTITLEMENT`).
-  - Physical iPhone device testing pending signed ad-hoc / internal build distribution.
+- **Source & Configuration Classification:** **`source-config-verified`**
+  - All iOS configuration keys, main app privacy manifests, extension targets, entitlements, and Xcode synthesis invariants are structurally verified and 100% passing.
+- **Binary & Execution Classification:** **`real-bundle-verification-pending`**
+  - Blockers:
+    - Host machine is Windows; direct `xcodebuild` requires macOS or remote EAS cloud build.
+    - Family Controls distribution entitlement pending Apple Developer Program approval (`owner-confirmation-required` / `WAITING_ON_APPLE_ENTITLEMENT`).
+    - Physical iPhone testing pending signed ad-hoc / internal device distribution.

@@ -36,19 +36,21 @@ class RhythmDeviceModule : Module() {
     }
 
     AsyncFunction("requestUsagePermission") {
-      val context = appContext.reactContext ?: return@AsyncFunction
+      val context = appContext.reactContext ?: return@AsyncFunction false
       val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK
       }
       context.startActivity(intent)
+      return@AsyncFunction true
     }
 
     AsyncFunction("requestRestrictionPermission") {
-      val context = appContext.reactContext ?: return@AsyncFunction
+      val context = appContext.reactContext ?: return@AsyncFunction false
       val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK
       }
       context.startActivity(intent)
+      return@AsyncFunction true
     }
 
     AsyncFunction("getInstalledApps") {

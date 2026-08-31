@@ -107,7 +107,7 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
         if (target) {
           // Add PBXGroup for extension files
           xcodeProject.addPbxGroup(
-            ['DeviceActivityMonitorExtension.swift', 'Info.plist', `${EXTENSION_TARGET_NAME}.entitlements`],
+            ['DeviceActivityMonitorExtension.swift', 'Info.plist', `${EXTENSION_TARGET_NAME}.entitlements`, 'PrivacyInfo.xcprivacy'],
             EXTENSION_TARGET_NAME,
             EXTENSION_TARGET_NAME
           );
@@ -125,6 +125,14 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
             [],
             'PBXFrameworksBuildPhase',
             'Frameworks',
+            target.uuid
+          );
+
+          // Add Resources build phase for extension (specifically for PrivacyInfo.xcprivacy)
+          xcodeProject.addBuildPhase(
+            ['PrivacyInfo.xcprivacy'],
+            'PBXResourcesBuildPhase',
+            'Resources',
             target.uuid
           );
 

@@ -62,6 +62,37 @@ function verifySynthesizedProject() {
     'com.terinit.rhythmicroutine.activitymonitor'
   );
 
+  // Add extension group with PrivacyInfo.xcprivacy
+  proj.addPbxGroup(
+    ['DeviceActivityMonitorExtension.swift', 'Info.plist', 'RhythmDeviceActivityMonitor.entitlements', 'PrivacyInfo.xcprivacy'],
+    'RhythmDeviceActivityMonitor',
+    'RhythmDeviceActivityMonitor'
+  );
+
+  // Add sources phase
+  proj.addBuildPhase(
+    ['DeviceActivityMonitorExtension.swift'],
+    'PBXSourcesBuildPhase',
+    'Sources',
+    target.uuid
+  );
+
+  // Add frameworks phase
+  proj.addBuildPhase(
+    [],
+    'PBXFrameworksBuildPhase',
+    'Frameworks',
+    target.uuid
+  );
+
+  // Add resources phase specifically for PrivacyInfo.xcprivacy
+  proj.addBuildPhase(
+    ['PrivacyInfo.xcprivacy'],
+    'PBXResourcesBuildPhase',
+    'Resources',
+    target.uuid
+  );
+
   // Note: proj.addTarget() with type 'app_extension' automatically links target dependency from main to extension.
   // We explicitly do NOT call proj.addTargetDependency to avoid duplicate PBXTargetDependency entries.
 
@@ -108,6 +139,31 @@ function verifySynthesizedProject() {
   }
   console.log(`  ✓ Verified: exactly 1 RhythmDeviceActivityMonitor.appex build file exists`);
 
+  // Assertions for PrivacyInfo.xcprivacy in extension target
+  const privacyFileRef1 = Object.keys(proj.hash.project.objects.PBXFileReference || {})
+    .filter((k) => !k.endsWith('_comment'))
+    .filter((k) => {
+      const fr = proj.hash.project.objects.PBXFileReference[k];
+      return (fr.name && fr.name.includes('PrivacyInfo.xcprivacy')) ||
+             (fr.path && fr.path.includes('PrivacyInfo.xcprivacy'));
+    });
+  if (privacyFileRef1.length < 1) {
+    throw new Error('Expected PrivacyInfo.xcprivacy file reference in Xcode project');
+  }
+  console.log(`  ✓ Verified: PrivacyInfo.xcprivacy file reference exists in extension group`);
+
+  const privacyBuildFiles1 = Object.keys(proj.hash.project.objects.PBXBuildFile || {})
+    .filter((k) => !k.endsWith('_comment'))
+    .filter((k) => {
+      const bf = proj.hash.project.objects.PBXBuildFile[k];
+      return (bf.fileRef_comment && bf.fileRef_comment.includes('PrivacyInfo.xcprivacy')) ||
+             (proj.hash.project.objects.PBXBuildFile[k + '_comment'] && proj.hash.project.objects.PBXBuildFile[k + '_comment'].includes('PrivacyInfo.xcprivacy'));
+    });
+  if (privacyBuildFiles1.length !== 1) {
+    throw new Error(`Expected exactly 1 PrivacyInfo.xcprivacy PBXBuildFile, found ${privacyBuildFiles1.length}`);
+  }
+  console.log(`  ✓ Verified: exactly 1 PrivacyInfo.xcprivacy build file exists in Resources phase`);
+
   // 2. Second prebuild idempotency test
   // Existing target check prevents duplicate target creation
   const existingTarget = proj.pbxTargetByName('RhythmDeviceActivityMonitor');
@@ -133,6 +189,18 @@ function verifySynthesizedProject() {
     throw new Error(`Expected exactly 1 PBXTargetDependency after Pass 2, found ${targetDeps2.length}`);
   }
   console.log(`  ✓ Verified idempotency: exactly 1 PBXTargetDependency remains after re-synthesis`);
+
+  const privacyBuildFiles2 = Object.keys(proj.hash.project.objects.PBXBuildFile || {})
+    .filter((k) => !k.endsWith('_comment'))
+    .filter((k) => {
+      const bf = proj.hash.project.objects.PBXBuildFile[k];
+      return (bf.fileRef_comment && bf.fileRef_comment.includes('PrivacyInfo.xcprivacy')) ||
+             (proj.hash.project.objects.PBXBuildFile[k + '_comment'] && proj.hash.project.objects.PBXBuildFile[k + '_comment'].includes('PrivacyInfo.xcprivacy'));
+    });
+  if (privacyBuildFiles2.length !== 1) {
+    throw new Error(`Expected exactly 1 PrivacyInfo.xcprivacy PBXBuildFile after Pass 2, found ${privacyBuildFiles2.length}`);
+  }
+  console.log(`  ✓ Verified idempotency: exactly 1 PrivacyInfo.xcprivacy build file remains after re-synthesis`);
 
   // Confirm no duplicate targets or phases
   const nativeTargets = Object.keys(proj.hash.project.objects.PBXNativeTarget).filter((k) => !k.endsWith('_comment'));

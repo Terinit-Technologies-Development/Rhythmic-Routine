@@ -56,7 +56,10 @@ The application uses Android's AccessibilityService API for the sole purpose of 
 Prior to directing the user to Android's system Accessibility Settings, Rhythmic-Routine presents an unmissable, prominent in-app disclosure modal.
 
 ### Disclosure Requirements Met:
-1. **Prominent Placement:** Appears within the normal user flow in Settings upon tapping "Enable Intervention".
+1. **Prominent Placement:** Appears directly in normal product flow from two intuitive locations:
+   - **Home / Today:** Via the prominent "Finish device setup" card rendered whenever restriction authorization is not granted.
+   - **Settings:** In the Permissions section upon tapping "Enable Intervention".
+   Both locations share the exact same `AndroidAccessibilityDisclosure` component and copy.
 2. **Explicit Explanation:** Explains what is observed (foreground package identity), why it is observed (to trigger Touch Grass during active routines/cooldowns), and what is NOT observed (screen content, messages, passwords).
 3. **No Coercion:** Explicitly provides two clear buttons:
    - **"Cancel"**: Closes the dialog without opening system settings.

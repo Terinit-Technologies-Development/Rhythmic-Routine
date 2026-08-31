@@ -28,9 +28,11 @@ Apple App Store guidelines distinguish between **Data Collected (transmitted off
 In compliance with Apple's Spring 2024 privacy manifest requirements for third-party SDKs and required reason APIs:
 
 ### Required Reason API Usage
-- **UserDefaults (System API):**
-  - Reason Category: `CA92.1` (Access user defaults that are managed by the app itself to read and write app-specific preferences).
-  - Scope: Storing non-sensitive configuration keys, opaque FamilyActivitySelection data in App Group storage, and configuration signatures.
+- **UserDefaults (System API Category `NSPrivacyAccessedAPICategoryUserDefaults`):**
+  - Reason Code: `1C8F.1` (Access user defaults that are shared between an app and app extensions in the same App Group).
+  - Main App (`app.config.ts` -> `ios.privacyManifests`): Declares `1C8F.1` for storing and reading shared rhythm state, activity selection references, and configuration signatures in `UserDefaults(suiteName: "group.com.terinit.rhythmicroutine")`.
+  - Extension (`ios-targets/RhythmDeviceActivityMonitor/PrivacyInfo.xcprivacy`): Declares `1C8F.1` for reading routine configurations, active lease expiry times, and recording monitor status in the shared App Group.
+  - Reason code `CA92.1` is deliberately not used because preferences are shared between the application and extension targets within the shared App Group rather than confined to a single isolated app container.
 
 ### Tracking Domains
 - `NSPrivacyTracking`: `false`

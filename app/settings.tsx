@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Platform,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -27,6 +26,7 @@ import { colors, radii, shadows } from '../src/theme/tokens';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { getPlatformServices } from '../src/platform/PlatformServices';
 import RhythmDeviceModule from '../modules/rhythm-device';
+import { AndroidAccessibilityDisclosure } from '../src/components/AndroidAccessibilityDisclosure';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -260,47 +260,11 @@ export default function SettingsScreen() {
       </ScrollView>
 
       {/* Affirmative Consent Disclosure Modal (Android) */}
-      <Modal visible={showDisclosureModal} transparent animationType="fade">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <ShieldAlert size={28} color={colors.forestDark} />
-              <Text style={styles.modalTitle}>Accessibility Permission & Privacy</Text>
-            </View>
-            <Text style={styles.modalBody}>
-              Rhythmic-Routine is designed to support healthy digital routines and is NOT an assistive tool for people with disabilities.
-            </Text>
-            <View style={styles.bulletList}>
-              <Text style={styles.bulletItem}>
-                • Rhythm observes only the active app&#39;s package name using Window State Change events.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • It does NOT read screen text, passwords, messages, keystrokes, or form content.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • All observation is strictly local on your device. Zero data is shared with cloud servers or third parties.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • Purpose: Display the calm Touch Grass reminder when an app in an active routine or cooldown is opened.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.confirmConsentBtn}
-              activeOpacity={0.85}
-              onPress={handleConfirmAndroidConsent}
-            >
-              <Text style={styles.confirmConsentText}>I Understand — Enable Intervention</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.cancelConsentBtn}
-              activeOpacity={0.7}
-              onPress={() => setShowDisclosureModal(false)}
-            >
-              <Text style={styles.cancelConsentText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <AndroidAccessibilityDisclosure
+        visible={showDisclosureModal}
+        onCancel={() => setShowDisclosureModal(false)}
+        onConfirm={handleConfirmAndroidConsent}
+      />
     </SafeAreaView>
   );
 }

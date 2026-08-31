@@ -39,6 +39,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+build/
+.cxx/
+modules/**/android/build/
+modules/**/android/.cxx/
 
 # QA & test artifacts
 .playwright-mcp/

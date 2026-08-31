@@ -12,7 +12,7 @@
 | **Physical Hardware Attached** | `adb devices` checked: **0 devices attached** (No physical hardware or active emulator daemon connected) |
 | **Qualification Target Branch** | `qa/pass-04-device-release-validation` |
 | **Base Commit SHA** | `80c5c65cc9cf6fee2cfb5baf1639ab9988b2dc6a` (`origin/master`) |
-| **Native Build Qualification** | Generated project verified via clean CNG (`npx expo prebuild --clean --no-install`) |
+| **Native Build Qualification** | **`native-build-verified`** (Debug APK compiled via `gradlew assembleDebug`: 520 actionable tasks, exit code 0; Release compilation reached native codegen/signing boundary via `gradlew bundleRelease`) |
 
 ---
 
@@ -23,7 +23,7 @@ Inspection of generated `android/app/src/main/AndroidManifest.xml` and module ma
 ### Declared Permissions
 - `android.permission.PACKAGE_USAGE_STATS`: Used strictly for local aggregate usage polling via `UsageStatsManager`.
 - `android.permission.BIND_ACCESSIBILITY_SERVICE`: Used strictly by `RhythmEnforcementService` to receive window state change events for intervention display.
-- `android.permission.SYSTEM_ALERT_WINDOW`: Handled as standard React Native debug overlay permission; not used for silent overlay blocking.
+- `android.permission.SYSTEM_ALERT_WINDOW`: Present in generated `AndroidManifest.xml` from the Expo/React Native prebuild template (used in development for the React Native developer menu and reload overlays). It is **not** used by Rhythmic-Routine for background blocking, invisible touch interception, or silent overlay intervention. Enforcement is strictly handled via `AccessibilityService` (`typeWindowStateChanged`) and launching `RhythmOverlayActivity` per ADR-003.
 
 ### Absence of Restricted & Invasive Permissions
 A repository-wide search confirms **zero** presence of:
@@ -62,7 +62,11 @@ A repository-wide search confirms **zero** presence of:
    - App directs user to `android.settings.USAGE_ACCESS_SETTINGS`.
    - Granting Usage Access enables aggregate session polling, but enforcement capability remains strictly `foundation-only` until AccessibilityService is enabled.
 3. **Prominent In-App Disclosure (Pre-Consent Modal):**
-   - Tapping "Enable Intervention" displays the custom modal before any system settings open.
+   - **Entry Points:**
+     - **Home / Today:** A prominent "Finish device setup" card is shown in normal user flow whenever restriction authorization is not granted. Tapping "Complete Setup" presents the disclosure modal.
+     - **Settings:** Tapping "Enable Intervention" in the Permissions section presents the disclosure modal.
+   - Both entry points share the exact same `AndroidAccessibilityDisclosure` component and copy from `src/constants/accessibilityDisclosure.ts`.
+   - The custom modal is displayed before any system settings open.
    - **Disclosure Content:**
      - **WHAT:** Rhythm observes only the active foreground package name using Window State Change events.
      - **WHY:** To determine when a configured Risk App enters the foreground and present the calm Touch Grass reminder.
@@ -84,7 +88,7 @@ A repository-wide search confirms **zero** presence of:
 - Essential Apps (Phone, Maps, Camera, Clock) are strictly filtered out by `RhythmEngine` before generating restrictions.
 - Essential apps are never written to `BASE_RESTRICTED_PACKAGES`.
 - `RhythmEnforcementService` maintains an immutable safety bypass: even if an essential package were injected into native storage, the service bypasses intervention for dialer/emergency/critical packages.
-- Tested scenarios: active routine window, active cooldown, continuous Risk session, Access Lease active, service restart. Essential apps remain 100% usable at all times.
+- Source/integration invariant verified: active routine window, active cooldown, continuous Risk session, Access Lease active, service restart. Essential apps remain 100% usable at all times.
 
 ### 4.2 Continuous Risk Group Sessions & Inactivity Gap
 - Switching between apps within the same configured Risk Group (e.g., switching from Instagram to X within Social) preserves the active continuous session.
@@ -118,5 +122,10 @@ A repository-wide search confirms **zero** presence of:
 
 ## 5. Android Qualification Classification
 
-- **Classification:** **`generated-project-verified`** (Source + CNG project verified; hardware gate pending).
-- **Justification:** Android clean prebuild, manifest merging, least-privilege permissions, prominent disclosure, and domain lifecycle invariants are fully verified in source and synthesized native projects. Full physical hardware certification awaits an attached physical Android test device (`adb devices` was empty on this run).
+- **Native Build Classification:** **`native-build-verified`**
+  - Compiled Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk` (251,139,673 bytes).
+  - Executed via `gradlew assembleDebug` (520 actionable tasks: 401 executed, 119 up-to-date, exit code 0).
+  - Release compilation executed via `gradlew bundleRelease` (576 actionable tasks: 518 executed), verifying JavaScript asset bundling and native source generation up to the release signing boundary.
+- **Physical Hardware Execution:** **`deferred / device-pending`**
+  - Automated unit/integration test suite: 82 tests passing (100%).
+  - Physical device testing deferred pending attached hardware (`adb devices` was empty on this run). All code paths, permission barriers, manifest declarations, and lifecycle invariants are validated in source and compiled artifacts.

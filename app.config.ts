@@ -19,6 +19,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'com.apple.developer.family-controls': true,
       'com.apple.security.application-groups': ['group.com.terinit.rhythmicroutine'],
     },
+    privacyManifests: {
+      NSPrivacyTracking: false,
+      NSPrivacyCollectedDataTypes: [],
+      NSPrivacyAccessedAPITypes: [
+        {
+          NSPrivacyAccessedAPIType: 'NSPrivacyAccessedAPICategoryUserDefaults',
+          NSPrivacyAccessedAPITypeReasons: ['1C8F.1'],
+        },
+      ],
+    },
   },
   android: {
     package: 'com.terinit.rhythmicroutine',
