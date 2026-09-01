@@ -40,8 +40,8 @@
 - **Qualification Document:** [`docs/qa/pass-04-android-device-results.md`](./pass-04-android-device-results.md)
 - **Target & Compile SDK:** SDK 36 (Android 16).
 - **Service Configuration:** `canRetrieveWindowContent="false"`, `TYPE_WINDOW_STATE_CHANGED`, no `isAccessibilityTool`.
-- **Physical Hardware State:** `adb devices` returns 0 devices attached (no physical phone attached on host).
-- **Classification:** `native-build-verified` (hardware testing deferred to device deployment).
+- **Physical Hardware State:** **`PHYSICAL_DEVICE_VERIFIED`** (Owner confirmed 100% checklist pass on physical Android device with standalone QA APK).
+- **Classification:** `PHYSICAL_DEVICE_VERIFIED` & `native-build-verified`.
 
 ### iOS Platform
 - **Qualification Document:** [`docs/qa/pass-04-ios-build-results.md`](./pass-04-ios-build-results.md)
@@ -69,9 +69,7 @@
 
 ## 5. Summary Qualification Decision
 
-- **Exit State:** **`SOURCE_READY_DEVICE_GATES_REMAIN`**
+- **Exit State:** **`ANDROID_PHYSICAL_QUALIFIED_IOS_GATES_REMAIN`**
 - **Decision Rationale:**
-  All source code, engine invariants, SQLite persistence, Expo SDK 57 dependencies, CNG project generation, and store policy declarations are 100% verified and defect-free. Progression to a full production release candidate is gated solely on external platform dependencies:
-  1. Attachment of a physical Android device for hardware validation.
-  2. Apple approval of the Family Controls distribution entitlement request for TestFlight/App Store provisioning.
-  3. Execution of native build on macOS / EAS.
+  - **Android Platform:** Fully qualified and verified end-to-end on physical hardware (`PHYSICAL_DEVICE_VERIFIED`). The standalone QA APK runs offline with complete local native module, SQLite, Usage Access, and Accessibility intervention support.
+  - **iOS Platform:** Source configuration and extension synthesis verified; awaiting Apple Family Controls distribution entitlement grant and EAS/macOS cloud build.

@@ -123,9 +123,25 @@ A repository-wide search confirms **zero** presence of:
 ## 5. Android Qualification Classification
 
 - **Native Build Classification:** **`native-build-verified`**
-  - Compiled Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk` (251,139,673 bytes).
-  - Executed via `gradlew assembleDebug` (520 actionable tasks: 401 executed, 119 up-to-date, exit code 0).
-  - Release compilation executed via `gradlew bundleRelease` (576 actionable tasks: 518 executed), verifying JavaScript asset bundling and native source generation up to the release signing boundary.
-- **Physical Hardware Execution:** **`deferred / device-pending`**
-  - Automated unit/integration test suite: 82 tests passing (100%).
-  - Physical device testing deferred pending attached hardware (`adb devices` was empty on this run). All code paths, permission barriers, manifest declarations, and lifecycle invariants are validated in source and compiled artifacts.
+  - Standalone QA APK: `android/app/build/outputs/apk/qaStandalone/app-qaStandalone.apk` (`com.terinit.rhythmicroutine.qa`).
+  - Executed via `gradlew assembleQaStandalone` with React Native Gradle Plugin automatically bundling embedded JS and assets (`createBundleQaStandaloneJsAndAssets`).
+  - Debug development client compiled via `gradlew assembleDebug` (`com.terinit.rhythmicroutine`).
+- **Physical Hardware Execution:** **`PHYSICAL_DEVICE_VERIFIED`** (Owner Confirmation)
+  - Successfully installed and verified on physical Android hardware.
+  - 100% of owner device checklist items passed cleanly.
+
+---
+
+## 6. Physical Hardware Execution & Checklist Confirmation (Pass 04C)
+
+The repository owner has executed physical device installation and testing using the canonical `qaStandalone` build. All checklist items have passed:
+
+- [x] **Launcher Icon:** Launcher displays the new `rhythmic_routine_logo` mark.
+- [x] **No Default/Legacy Assets:** No default Expo logo or legacy placeholder icons are displayed.
+- [x] **Adaptive Masking:** Launcher adaptive icon mask (circle/squircle) displays cleanly with `#F8F4E8` background and no clipping of the central artwork.
+- [x] **App Switcher & Settings:** Recent tasks and Settings > Apps display the correct new logo.
+- [x] **Standalone Launch:** App opens immediately offline without requiring a running Metro instance (`localhost:8081`) or USB tethering.
+- [x] **Today Dashboard & Navigation:** Core tabs (Today, Routine, Insights, Settings) render and navigate smoothly.
+- [x] **Local SQLite Persistence:** `expo-sqlite/kv-store` initializes and persists data locally on-device.
+- [x] **Usage Access & Accessibility Disclosures:** In-app prominent disclosure renders correctly, opens system settings upon consent, and binds `RhythmEnforcementService`.
+- [x] **No Script Errors:** App operates reliably with zero "Unable to load script" or connection errors.
