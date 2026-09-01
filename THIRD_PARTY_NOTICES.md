@@ -23,7 +23,4 @@ All third-party components remain subject to their respective copyright notices,
 
 ---
 
-Full license texts for installed node dependencies can be inspected in the `node_modules/` directory or queried via:
-```bash
-npm license-checker
-```
+For the authoritative license information for installed dependencies, consult each package's metadata and license file in the resolved dependency tree / `node_modules`.

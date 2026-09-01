@@ -4,14 +4,16 @@ Thank you for your interest in contributing to **Rhythmic-Routine**!
 
 To protect the integrity of the project and ensure that Terinit Technologies can continue distributing, licensing, maintaining, and developing Rhythmic-Routine under its source-available and commercial licensing models, all contributors must agree to the terms of this Contributor License Agreement ("CLA").
 
-By submitting a Pull Request, patch, issue content, or other contribution to this repository, you agree to the following terms:
+By submitting a Pull Request, code patch, documentation patch, design asset, or other material that you explicitly submit for incorporation into Rhythmic-Routine, you agree to these terms.
+
+Ordinary issue reports, feature requests, discussions, and comments are not treated as code contributions under this CLA unless the author explicitly submits included material for incorporation into the project.
 
 ---
 
 ## 1. Definitions
 
 - **"You"** (or **"Contributor"**) means the individual or legal entity submitting a Contribution.
-- **"Contribution"** means any original work of authorship, including software source code, documentation, designs, or bug fixes, intentionally submitted for inclusion in the Rhythmic-Routine project.
+- **"Contribution"** means any original work of authorship, including software source code, documentation, designs, or bug fixes, intentionally and explicitly submitted for incorporation into the Rhythmic-Routine project.
 - **"Terinit Technologies"** means the copyright holder and maintainer of Rhythmic-Routine.
 
 ---

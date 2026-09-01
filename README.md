@@ -92,7 +92,7 @@ Platform Adapters:
 * **No Cloud Backend:** No remote servers, cloud databases, or API backends.
 * **No Analytics SDKs:** Zero tracking pixels, telemetry frameworks, or event trackers.
 * **No Ads:** Zero ad networks, monetization SDKs, or commercial tracking.
-* **No Telemetry Upload:** Exactly 0 bytes of usage telemetry transmitted off-device.
+* **No Telemetry Upload:** Rhythmic-Routine does not transmit app inventory, usage history, routine configuration, or usage telemetry off-device.
 * **App Inventory Remains Local:** Discovered launcher package names stay strictly in device memory.
 * **Usage History Remains Local:** Stored exclusively in sandboxed local SQLite (`expo-sqlite`).
 

@@ -1,9 +1,9 @@
 # License History
 
-Earlier versions and commits of Rhythmic-Routine were published under the MIT License.
+Earlier revisions of Rhythmic-Routine were published under the MIT License.
 
-Beginning with version 1.0.0 / the V1 repository-closeout licensing commit, current and future versions are distributed under the license present in the current `LICENSE` file (Rhythmic-Routine Personal Use License 1.0) unless explicitly stated otherwise.
+The project transitioned to the Rhythmic-Routine Personal Use License 1.0 beginning with commit `71ed59fdbc799b7fa5814a4ee1d2bc23941b8df4` and revisions derived from it.
 
-This prospective license change does not revoke permissions already granted for copies obtained under the earlier MIT License.
+The official `v1.0.0` release tag is intended to be created from a post-transition revision.
 
-The transition commit introducing this license change on branch `release/v1-repository-closeout` is `71ed59f`.
+This change is prospective. It does not revoke permissions already granted for copies of earlier revisions received under the MIT License.

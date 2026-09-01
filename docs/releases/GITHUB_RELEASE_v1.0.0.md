@@ -30,7 +30,7 @@ Rhythmic-Routine is designed around **intentional digital rhythm** rather than a
 
 Rhythmic-Routine is **source-available**:
 - **Personal / Non-Commercial Use:** Free to run, study, modify, and inspect under the [Rhythmic-Routine Personal Use License](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/LICENSE).
-- **Commercial Use:** Requires a separate commercial license from Terinit Technologies. Inquire at `commercial@terinit.com` or review [Commercial Licensing](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/COMMERCIAL_LICENSE.md).
+- **Commercial Use:** Requires a separate commercial license from Terinit Technologies. Inquire at `commercial@terinittechnologies.com` or review [Commercial Licensing](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/COMMERCIAL_LICENSE.md).
 - **Historical MIT Notice:** Earlier commits published under MIT retain their original grants ([License History](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/LICENSE_HISTORY.md)).
 - **Trademarks:** Rhythmic-Routine and Rhythm logos are protected trademarks ([Trademark Policy](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/TRADEMARKS.md)).
 

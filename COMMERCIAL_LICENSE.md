@@ -1,6 +1,6 @@
 # Commercial Licensing
 
-Rhythmic-Routine is distributed under the [Rhythmic-Routine Personal Use License](LICENSE), which permits free personal, private, educational, and non-commercial evaluation and use.
+Rhythmic-Routine is distributed under the [Rhythmic-Routine Personal Use License](LICENSE), which permits free personal, private, and non-commercial use by individuals.
 
 Commercial use of Rhythmic-Routine requires a separate, written commercial license executed by **Terinit Technologies**.
 
@@ -23,10 +23,12 @@ A commercial license is required if you or your organization intend to use, depl
 ## What Does NOT Require a Commercial License
 
 You do **not** need a commercial license if you are:
-- An individual using Rhythmic-Routine on your personal phone, tablet, or workstation for personal wellbeing.
-- An individual studying, testing, or experimenting with the codebase for personal learning.
-- An academic researcher conducting non-commercial studies on digital habits.
-- Contributing non-commercial bug fixes or improvements back to the public repository.
+- An individual using Rhythmic-Routine on your personal device.
+- An individual studying or experimenting with the code privately.
+- An individual modifying Rhythmic-Routine for your own personal non-commercial use.
+- A contributor submitting non-commercial improvements back to the project.
+
+If an organization, university, nonprofit, research group, business, contractor, or other legal entity wishes to deploy or use the software beyond an individual's private, personal use, please contact `commercial@terinittechnologies.com` for clarification or licensing.
 
 ---
 
@@ -37,7 +39,7 @@ Commercial licenses are tailored to your organization's deployment model, fleet 
 To inquire about commercial licensing, partner integrations, or enterprise deployment:
 
 - **Contact:** Terinit Technologies
-- **Email:** `commercial@terinit.com` (or submit an inquiry via the official [Terinit Technologies](https://github.com/Terinit-Technologies-Development) repository contact)
+- **Email:** `commercial@terinittechnologies.com` (or submit an inquiry via the official [Terinit Technologies](https://github.com/Terinit-Technologies-Development) repository contact)
 - **Subject Line:** `[Commercial Licensing Inquiry] Rhythmic-Routine`
 
 Please include:

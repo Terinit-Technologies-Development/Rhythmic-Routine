@@ -18,8 +18,8 @@ Rhythmic-Routine is an experimental, local-first digital-wellbeing application. 
 If you believe you have found a security vulnerability or sensitive permission boundary defect:
 
 1. **Do NOT Post Publicly:** Do not open a public GitHub issue or discuss exploitable vulnerabilities in public forums.
-2. **Private Vulnerability Reporting:** Use GitHub's **Private Vulnerability Reporting** feature on this repository if enabled.
-3. **Direct Contact:** If private reporting is unavailable, contact the maintainers at `security@terinit.com` (or contact Terinit Technologies via official repository communication).
+2. **Private Vulnerability Reporting (Preferred):** Use GitHub's **Private Vulnerability Reporting** feature on this repository if enabled.
+3. **Direct Contact:** If private reporting is unavailable, contact the maintainers at `security@terinittechnologies.com`.
 4. **Data Hygiene:** **Never** include device passwords, auth tokens, personal messages, or private application inventories in vulnerability reports. Use sanitized package identifiers (e.g. `com.example.app`) and synthetic logs.
 
 ---

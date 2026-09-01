@@ -22,4 +22,4 @@ If your organization requires:
 - Custom enterprise MDM/EMM integration.
 - Proprietary or white-labeled licensing terms.
 
-Please see [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) or contact **Terinit Technologies** at `commercial@terinit.com`.
+Please see [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) or contact **Terinit Technologies** at `commercial@terinittechnologies.com`.

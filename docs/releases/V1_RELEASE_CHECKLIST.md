@@ -18,10 +18,11 @@ This checklist tracks the qualification, licensing, hygiene, and publication gat
 
 ## 2. Platform Qualification Status
 
-- [x] **Android Hardware Qualification:** Standalone QA APK (`app-qaStandalone.apk`) verified on physical device hardware across Pass 04C and Pass 04D.
-- [x] **Android Launcher Discovery:** Targeted package queries (`ACTION_MAIN` + `CATEGORY_LAUNCHER`) verified without `QUERY_ALL_PACKAGES`.
-- [x] **Android Enforcement & Overlay:** Foreground re-evaluation, opaque calm theme (`#FAF7F0`), debounce, and Back-to-Home navigation verified.
+- [x] **Owner-Qualified Android Hardware Behavior:** Standalone QA APK (`app-qaStandalone.apk`) verified on physical device hardware across Pass 04C and Pass 04D manual owner testing.
+- [x] **Android Launcher Discovery:** Targeted package queries (`ACTION_MAIN` + `CATEGORY_LAUNCHER`) verified without `QUERY_ALL_PACKAGES` during owner device qualification.
+- [x] **Android Enforcement & Overlay:** Foreground re-evaluation, opaque calm theme (`#FAF7F0`), debounce, and Back-to-Home navigation verified on physical hardware by owner.
 - [x] **iOS Status Truthfulness:** iOS documented as experimental source implementation, explicitly unverified on physical hardware.
+- [x] **Pass 05 Closeout Scope:** No native compilation executed by closeout agent; non-native validation passing cleanly across lint, typecheck, tests, and web export.
 
 ---
 

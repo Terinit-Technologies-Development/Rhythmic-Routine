@@ -1,6 +1,6 @@
 # Trademark & Brand Policy
 
-The trademarks, brand names, service marks, logos, and visual trade dress of Rhythmic-Routine are valuable assets belonging to **Terinit Technologies**.
+The brand names, logos, marks, and visual branding assets of Rhythmic-Routine are valuable assets belonging to **Terinit Technologies**.
 
 The [Rhythmic-Routine Personal Use License](LICENSE) grants permissions regarding the software source code and binaries, but **does not grant any license or right to use Terinit Technologies trademarks or brand assets**.
 
@@ -39,4 +39,4 @@ Without prior written permission from Terinit Technologies, you may **not**:
 
 ## 4. Inquiries & Authorizations
 
-For inquiries regarding trademark usage, press assets, or brand permissions, contact Terinit Technologies at `legal@terinit.com` or via the official repository.
+For inquiries regarding trademark usage, press assets, or brand permissions, contact Terinit Technologies at `legal@terinittechnologies.com` or via the official repository.

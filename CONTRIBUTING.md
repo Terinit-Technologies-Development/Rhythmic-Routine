@@ -10,10 +10,14 @@ Rhythmic-Routine is a **source-available** project distributed under the [Rhythm
 
 Before submitting code, documentation, or design improvements, please review the [Contributor License Agreement (CLA)](CONTRIBUTOR_LICENSE.md).
 
-By submitting a Pull Request, you certify that:
+Submitting a Pull Request, code patch, documentation patch, or other material for incorporation constitutes acceptance of [CONTRIBUTOR_LICENSE.md](CONTRIBUTOR_LICENSE.md).
+
+By submitting material for incorporation, you certify that:
 1. Your contribution is your own original work.
 2. You grant Terinit Technologies a perpetual, transferable, sublicensable license to incorporate, redistribute, and dual-license your contribution under the Personal Use License and commercial licenses.
 3. You check the CLA confirmation box in the Pull Request template.
+
+Merely opening an issue, submitting a bug report, suggesting a feature, commenting, or participating in a community discussion does not constitute a code contribution under the CLA.
 
 ---
 
