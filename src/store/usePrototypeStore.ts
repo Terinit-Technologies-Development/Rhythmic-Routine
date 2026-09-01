@@ -68,6 +68,7 @@ interface PrototypeState {
 
   // Core Actions
   initializeApps: () => Promise<void>;
+  refreshInstalledApps: () => Promise<void>;
   refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
@@ -170,6 +171,21 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       await get().refreshInsights();
     } catch {
       // Fallback
+    }
+  },
+
+  refreshInstalledApps: async () => {
+    try {
+      const coordinator = RhythmCoordinator.getInstance();
+      const result = await coordinator.refreshInstalledApps();
+      if (result.apps && result.apps.length > 0) {
+        set({
+          apps: result.apps,
+          riskGroups: result.riskGroups,
+        });
+      }
+    } catch {
+      // Non-fatal
     }
   },
 

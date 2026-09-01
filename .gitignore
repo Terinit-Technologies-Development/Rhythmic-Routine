@@ -39,7 +39,29 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+build/
+.cxx/
+modules/**/android/build/
+modules/**/android/.cxx/
 
 # QA & test artifacts
 .playwright-mcp/
 
+# Release & packaging binaries
+*.apk
+*.aab
+android/app/build/
+
+# Credentials, keys & signing
+*.keystore
+*.jks
+*.p12
+*.p8
+*.key
+*.mobileprovision
+credentials.json
+
+# Environment variables
+.env
+.env.*
+.env*.local

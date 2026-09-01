@@ -9,6 +9,7 @@ import {
   getRestrictableAppIds,
 } from '../selectors';
 import { getPlatformServices } from '../../platform/PlatformServices';
+import { RhythmCoordinator } from '../../application/RhythmCoordinator';
 
 describe('Zustand Store Reconciliation Integration Tests', () => {
   test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', () => {
@@ -124,9 +125,14 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
 
   test('Centralized Timer & Expiry: resolveExpiredTimer clears restrictions and resets state', async () => {
     const store = usePrototypeStore.getState();
+    const originalRoutines = store.routineWindows;
+    const coordinator = RhythmCoordinator.getInstance();
 
-    // Simulate cooldown expired 10 seconds ago
+    // Temporarily disable routine windows so the test is deterministic regardless of wall-clock hour
+    const disabledRoutines = originalRoutines.map((r) => ({ ...r, enabled: false }));
+    await coordinator.updateConfig({ routineWindows: disabledRoutines });
     usePrototypeStore.setState({
+      routineWindows: disabledRoutines,
       rhythmState: 'cooldown',
       activeRiskGroupId: 'social',
       activeTimerEndsAt: Date.now() - 10000,
@@ -141,5 +147,9 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     const { restrictions } = getPlatformServices();
     const restrictedAppIds = await restrictions.getActiveRestrictedApps();
     assert.equal(restrictedAppIds.length, 0);
+
+    // Restore routines
+    await coordinator.updateConfig({ routineWindows: originalRoutines });
+    usePrototypeStore.setState({ routineWindows: originalRoutines });
   });
 });

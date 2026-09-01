@@ -9,6 +9,8 @@ import {
 } from '../domain/rhythm/types';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
+import { DeviceApp, RiskGroup } from '../types/domain';
+import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
@@ -320,6 +322,52 @@ export class RhythmCoordinator {
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
     await this.syncNativeState();
     this.notifyListeners();
+  }
+
+  /**
+   * Refreshes installed launcher apps from platform usage provider,
+   * merges existing classifications, defaults new packages to unclassified,
+   * reconciles group membership, and updates configuration.
+   */
+  public async refreshInstalledApps(): Promise<{ apps: DeviceApp[]; riskGroups: RiskGroup[] }> {
+    if (!this.config || !this.engine) {
+      await this.initialize();
+    }
+    if (!this.config || !this.engine) {
+      return { apps: [], riskGroups: [] };
+    }
+
+    const { usage } = getPlatformServices();
+    const discoveredApps = await usage.getInstalledApps();
+    if (!discoveredApps || discoveredApps.length === 0) {
+      return { apps: this.config.apps, riskGroups: this.config.riskGroups };
+    }
+
+    const existingAppMap = new Map(this.config.apps.map((a) => [a.id, a]));
+    const mergedApps: DeviceApp[] = discoveredApps.map((discovered) => {
+      const existing = existingAppMap.get(discovered.id);
+      if (existing) {
+        return {
+          ...discovered,
+          classification: existing.classification,
+          riskGroupId: existing.riskGroupId,
+        };
+      }
+      return {
+        ...discovered,
+        classification: 'unclassified',
+        riskGroupId: undefined,
+      };
+    });
+
+    const reconciledRiskGroups = reconcileRiskGroupMembership(mergedApps, this.config.riskGroups);
+
+    await this.updateConfig({
+      apps: mergedApps,
+      riskGroups: reconciledRiskGroups,
+    });
+
+    return { apps: mergedApps, riskGroups: reconciledRiskGroups };
   }
 
   /**

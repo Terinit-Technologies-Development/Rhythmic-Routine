@@ -22,7 +22,7 @@ We evaluated five architectural options for Android intervention:
 
 4. **Device Owner / Enterprise Work Profile (MDM APIs)**
    * *Pros:* System-level application suspension (`setPackagesSuspended`).
-   * *Cons:* Requires factory reset or provisioning via ADB QR code; completely impractical for ordinary consumers installing an open-source wellbeing app from GitHub / Google Play.
+   * *Cons:* Requires factory reset or provisioning via ADB QR code; completely impractical for ordinary consumers installing a personal wellbeing app from GitHub / Google Play.
 
 5. **VPN / Local Loopback DNS Filtering**
    * *Pros:* Blocks network traffic to specific domains.

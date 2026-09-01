@@ -102,7 +102,7 @@ describe('RhythmCoordinator — Platform Composition, Lifecycle & Native Identit
     const tNow = Date.now();
     const mockStorage = new MockStorageProvider(
       {
-        routineWindows: initialRoutineWindows,
+        routineWindows: initialRoutineWindows.map((r) => ({ ...r, enabled: false })),
         riskGroups: [
           {
             id: 'social',

@@ -1,26 +1,44 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronRight } from 'lucide-react-native';
+import { ChevronRight, ShieldAlert } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { RhythmStateHeroCard } from '../../src/components/RhythmStateHeroCard';
 import { DayTimeline } from '../../src/components/DayTimeline';
 import { RiskGroupCard } from '../../src/components/RiskGroupCard';
+import { AndroidAccessibilityDisclosure } from '../../src/components/AndroidAccessibilityDisclosure';
+import { ExpoGoDevBanner } from '../../src/components/ExpoGoDevBanner';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
+import { getPlatformServices } from '../../src/platform/PlatformServices';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, G } from 'react-native-svg';
 
 export default function TodayScreen() {
   const router = useRouter();
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);
+  const permissionState = usePrototypeStore((s) => s.permissionState);
+  const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
+  const [showDisclosureModal, setShowDisclosureModal] = useState(false);
+
+  useEffect(() => {
+    checkPermissions();
+  }, [checkPermissions]);
+
+  const handleConfirmAndroidConsent = async () => {
+    setShowDisclosureModal(false);
+    const { permissions } = getPlatformServices();
+    await permissions.requestRestrictionAccess();
+    await checkPermissions();
+  };
 
   const hours = Math.floor(insightMetrics.protectedTimeTodayMinutes / 60);
   const minutes = insightMetrics.protectedTimeTodayMinutes % 60;
@@ -40,6 +58,29 @@ export default function TodayScreen() {
           <Text style={styles.greetingTitle}>Good morning, Alex ⛅</Text>
           <Text style={styles.greetingSubtitle}>Find your rhythm. Protect your day.</Text>
         </View>
+
+        {/* Expo Go Development Notice (Native Only, Hidden when Custom Native Module is present) */}
+        <ExpoGoDevBanner />
+
+        {/* Android Normal Setup Flow Disclosure Card */}
+        {Platform.OS === 'android' && permissionState.restrictionAuthorization !== 'granted' && (
+          <View style={styles.setupCard}>
+            <View style={styles.setupHeaderRow}>
+              <ShieldAlert size={20} color={colors.forestDark} />
+              <Text style={styles.setupTitle}>Finish device setup</Text>
+            </View>
+            <Text style={styles.setupSubtitle}>
+              Rhythm can notice when a Risk App enters the foreground so Touch Grass can appear at the right moment.
+            </Text>
+            <TouchableOpacity
+              style={styles.setupButton}
+              activeOpacity={0.85}
+              onPress={() => setShowDisclosureModal(true)}
+            >
+              <Text style={styles.setupButtonText}>Set up intervention</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Centerpiece Hero Countdown Card */}
         <RhythmStateHeroCard />
@@ -161,6 +202,13 @@ export default function TodayScreen() {
           </View>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Android Accessibility Disclosure Modal */}
+      <AndroidAccessibilityDisclosure
+        visible={showDisclosureModal}
+        onCancel={() => setShowDisclosureModal(false)}
+        onConfirm={handleConfirmAndroidConsent}
+      />
     </SafeAreaView>
   );
 }
@@ -188,6 +236,45 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textSecondary,
     marginTop: 2,
+  },
+  setupCard: {
+    backgroundColor: colors.sageSoft,
+    borderRadius: radii.xxl,
+    padding: 16,
+    marginHorizontal: 20,
+    marginTop: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    ...shadows.card,
+  },
+  setupHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  setupTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  setupSubtitle: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  setupButton: {
+    backgroundColor: colors.forest,
+    paddingVertical: 10,
+    borderRadius: radii.xl,
+    alignItems: 'center',
+  },
+  setupButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   timelineSection: {
     paddingHorizontal: 14,

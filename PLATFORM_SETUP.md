@@ -39,23 +39,35 @@ npm run build:web
 
 ---
 
-## 3. Android Native Setup
+## 3. Android Native Setup & Runtime Modes
 
-1. Generate the native Android project:
-   ```bash
-   npx expo prebuild --platform android
-   ```
-2. Build and run on an Android device or emulator:
-   ```bash
-   npx expo run:android
-   ```
-3. Grant permissions in Android Settings:
-   * **Usage Access:** Settings -> Apps -> Special app access -> Usage Access -> Enable **Rhythmic-Routine**.
-   * **Accessibility Intervention:** Settings -> Accessibility -> Downloaded apps -> Enable **Rhythmic-Routine**.
+### Canonical App Icon
+The canonical application icon is located at [`assets/rhythmic_routine_logo.png`](assets/rhythmic_routine_logo.png) (1254x1254) with background `#F8F4E8`. It is configured as the main icon and Android adaptive icon foreground image.
+
+### Build Modes:
+1. **Mode 1: Expo Go (`npm run start:go`)**:
+   UI layout testing only. Activates truthful unlinked native fallback (`foundation-only`, zero permissions).
+2. **Mode 2: Rhythm Development Client (`app-debug.apk`)**:
+   Built with `expo-dev-client`. Connects to Metro via `adb reverse tcp:8081 tcp:8081` and `npm run start:dev`. Used for live feature development and hot-reloading. *Note: `app-debug.apk` is not a standalone APK and requires Metro.*
+3. **Mode 3: Standalone QA APK (`app-qaStandalone.apk`)**:
+   Canonical standalone APK. Uses the `qaStandalone` build type to automatically embed the offline JavaScript bundle via React Native Gradle Plugin (`createBundleQaStandaloneJsAndAssets`). Runs completely offline without Metro or PC tethering.
+   * **Pass 04D Owner V1 Test Runbook:** See [`docs/qa/pass-04d-owner-v1-test.md`](docs/qa/pass-04d-owner-v1-test.md).
+   * **Owner Manual Build Instructions:** See [`docs/qa/pass-04c-owner-build-commands.md`](docs/qa/pass-04c-owner-build-commands.md).
+
+### Permissions on Device:
+* **Usage Access:** Settings -> Apps -> Special app access -> Usage Access -> Enable **Rhythmic-Routine**.
+* **Accessibility Intervention:** Settings -> Accessibility -> Downloaded apps -> Enable **Rhythmic-Routine**.
 
 ---
 
-## 4. iOS Native Setup (Screen Time & Device Activity)
+## 4. Platform Release Status
+
+* **Android:** **Experimental V1 (Physical Device Verified)**. App discovery via targeted launcher `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque calm styling, and Back-to-Home navigation are verified on physical hardware across Pass 04C and Pass 04D.
+* **iOS:** **Experimental**. Source-implemented foundation with DeviceActivity extension and App Group communication. Untested on physical Apple hardware; requires Apple Family Controls distribution entitlement and macOS/Xcode build environment.
+
+---
+
+## 5. iOS Native Setup (Screen Time & Device Activity)
 
 1. Generate the native iOS project:
    ```bash

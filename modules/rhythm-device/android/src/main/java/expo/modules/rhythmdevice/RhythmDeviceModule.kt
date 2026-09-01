@@ -36,43 +36,74 @@ class RhythmDeviceModule : Module() {
     }
 
     AsyncFunction("requestUsagePermission") {
-      val context = appContext.reactContext ?: return@AsyncFunction
+      val context = appContext.reactContext ?: return@AsyncFunction false
       val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK
       }
       context.startActivity(intent)
+      return@AsyncFunction true
     }
 
     AsyncFunction("requestRestrictionPermission") {
-      val context = appContext.reactContext ?: return@AsyncFunction
+      val context = appContext.reactContext ?: return@AsyncFunction false
       val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK
       }
       context.startActivity(intent)
+      return@AsyncFunction true
     }
 
     AsyncFunction("getInstalledApps") {
       val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any>>()
       val pm = context.packageManager
-      val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+      val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+        addCategory(Intent.CATEGORY_LAUNCHER)
+      }
 
-      val result = mutableListOf<Map<String, Any>>()
-      for (appInfo in packages) {
-        // Filter out system apps without launcher intent
-        val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-        val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-        if (!isSystem || isUpdatedSystem || pm.getLaunchIntentForPackage(appInfo.packageName) != null) {
+      val activities = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        pm.queryIntentActivities(
+          launcherIntent,
+          PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
+        )
+      } else {
+        @Suppress("DEPRECATION")
+        pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_ALL)
+      }
+
+      val packageMap = LinkedHashMap<String, Map<String, Any>>()
+      val myPackageName = context.packageName
+
+      for (resolveInfo in activities) {
+        val appInfo = resolveInfo.activityInfo?.applicationInfo ?: continue
+        val pkgName = appInfo.packageName ?: continue
+
+        // Exclude Rhythm itself (both debug and QA package variants)
+        if (pkgName == myPackageName) {
+          continue
+        }
+
+        if (!packageMap.containsKey(pkgName)) {
           val appName = pm.getApplicationLabel(appInfo).toString()
-          result.add(
-            mapOf(
-              "packageName" to appInfo.packageName,
-              "appName" to appName,
-              "category" to (appInfo.category.toString())
-            )
+          val category = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val catInt = appInfo.category
+            if (catInt >= 0) ApplicationInfo.getCategoryTitle(context, catInt)?.toString() ?: "App" else "App"
+          } else {
+            "App"
+          }
+
+          packageMap[pkgName] = mapOf(
+            "packageName" to pkgName,
+            "appName" to appName,
+            "category" to category
           )
         }
       }
-      return@AsyncFunction result
+
+      // Sort case-insensitively by app label
+      val sorted = packageMap.values.sortedBy {
+        (it["appName"] as? String)?.lowercase() ?: ""
+      }
+      return@AsyncFunction sorted
     }
 
     AsyncFunction("queryUsageEvents") { startTime: Double, endTime: Double ->
@@ -112,7 +143,38 @@ class RhythmDeviceModule : Module() {
       val context = appContext.reactContext ?: return@AsyncFunction false
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
       prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).apply()
+      RhythmEnforcementService.instance?.onBaseRestrictionsChanged()
       return@AsyncFunction checkAccessibilityPermission(context)
+    }
+
+    AsyncFunction("getEnforcementDiagnostics") {
+      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
+        "serviceRunning" to false,
+        "baseRestrictedPackageCount" to 0,
+        "activeLeaseCount" to 0,
+        "overlayVisible" to false
+      )
+      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val baseSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet()
+      val leases = RhythmEnforcementService.loadActiveLeases(context)
+      val service = RhythmEnforcementService.instance
+
+      val result = mutableMapOf<String, Any?>(
+        "serviceRunning" to RhythmEnforcementService.isRunning,
+        "baseRestrictedPackageCount" to baseSet.size,
+        "activeLeaseCount" to leases.size,
+        "overlayVisible" to RhythmOverlayActivity.isVisible
+      )
+      if (service?.lastForegroundPackage != null) {
+        result["lastForegroundPackage"] = service.lastForegroundPackage
+      }
+      if (service?.lastInterventionPackage != null) {
+        result["lastInterventionPackage"] = service.lastInterventionPackage
+      }
+      if (service?.lastInterventionAt != null && service.lastInterventionAt > 0L) {
+        result["lastInterventionAt"] = service.lastInterventionAt.toDouble()
+      }
+      return@AsyncFunction result
     }
 
     AsyncFunction("applyShieldRestrictions") { _: List<String> ->

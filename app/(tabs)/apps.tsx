@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,8 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Search, SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react-native';
+import { useFocusEffect } from 'expo-router';
+import { Search, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { AppRow } from '../../src/components/AppRow';
@@ -21,8 +22,19 @@ export default function AppsScreen() {
   const setSearchQuery = usePrototypeStore((s) => s.setSearchQuery);
   const filterClassification = usePrototypeStore((s) => s.filterClassification);
   const setFilterClassification = usePrototypeStore((s) => s.setFilterClassification);
+  const refreshInstalledApps = usePrototypeStore((s) => s.refreshInstalledApps);
 
   const [expanded, setExpanded] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshInstalledApps();
+    }, [refreshInstalledApps])
+  );
+
+  const handleManualRefresh = () => {
+    refreshInstalledApps().catch(() => {});
+  };
 
   const filterChips: { id: AppClassification | 'all'; label: string }[] = [
     { id: 'all', label: 'All' },
@@ -32,11 +44,14 @@ export default function AppsScreen() {
     { id: 'unclassified', label: 'Unclassified' },
   ];
 
-  // Filtering
+  // Filtering: searches display name, category, and package name (ID)
+  const normalizedQuery = searchQuery.trim().toLowerCase();
   const filteredApps = apps.filter((app) => {
     const matchesSearch =
-      app.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      app.defaultCategory.toLowerCase().includes(searchQuery.toLowerCase());
+      !normalizedQuery ||
+      app.name.toLowerCase().includes(normalizedQuery) ||
+      app.defaultCategory.toLowerCase().includes(normalizedQuery) ||
+      app.id.toLowerCase().includes(normalizedQuery);
 
     const matchesFilter =
       filterClassification === 'all' || app.classification === filterClassification;
@@ -119,8 +134,23 @@ export default function AppsScreen() {
         <View style={styles.appsCard}>
           {/* Card Header */}
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Installed apps</Text>
-            <Text style={styles.appsCountBadge}>{filteredApps.length} apps</Text>
+            <View style={styles.titleColumn}>
+              <Text style={styles.cardTitle}>Launchable apps</Text>
+              <Text style={styles.cardSubtitle}>
+                Apps launchable in this profile. Hidden services excluded.
+              </Text>
+            </View>
+            <View style={styles.headerActions}>
+              <Text style={styles.appsCountBadge}>{filteredApps.length} launchable apps</Text>
+              <TouchableOpacity
+                style={styles.refreshButton}
+                onPress={handleManualRefresh}
+                activeOpacity={0.7}
+                accessibilityLabel="Refresh launchable apps"
+              >
+                <RotateCcw size={13} color={colors.forest} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* App Rows List */}
@@ -254,15 +284,38 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F4EFE6',
   },
+  titleColumn: {
+    flex: 1,
+    marginRight: 10,
+  },
   cardTitle: {
     fontSize: 15,
     fontWeight: '700',
     color: colors.text,
   },
+  cardSubtitle: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   appsCountBadge: {
     fontSize: 12,
     color: colors.textSecondary,
     fontWeight: '500',
+  },
+  refreshButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#F4EFE6',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   appList: {
     paddingVertical: 4,

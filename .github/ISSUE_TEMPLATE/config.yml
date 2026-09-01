@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Commercial Licensing Inquiries
+    url: https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/COMMERCIAL_LICENSE.md
+    about: Inquire about commercial licensing, enterprise deployment, or bespoke agreements.
+  - name: Security Vulnerability Reporting
+    url: https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/blob/master/SECURITY.md
+    about: Report sensitive security vulnerabilities privately.

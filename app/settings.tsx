@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Platform,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -27,6 +26,8 @@ import { colors, radii, shadows } from '../src/theme/tokens';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { getPlatformServices } from '../src/platform/PlatformServices';
 import RhythmDeviceModule from '../modules/rhythm-device';
+import { AndroidAccessibilityDisclosure } from '../src/components/AndroidAccessibilityDisclosure';
+import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -39,9 +40,26 @@ export default function SettingsScreen() {
 
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+
+  const fetchDiagnostics = async () => {
+    if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
+      try {
+        const diag = await RhythmDeviceModule.getEnforcementDiagnostics();
+        setDiagnostics(diag);
+      } catch {
+        // Non-fatal
+      }
+    }
+  };
 
   useEffect(() => {
     checkPermissions();
+    if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
+      RhythmDeviceModule.getEnforcementDiagnostics()
+        .then((diag) => setDiagnostics(diag))
+        .catch(() => {});
+    }
   }, [checkPermissions]);
 
   const requestRestriction = async () => {
@@ -93,6 +111,8 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        <ExpoGoDevBanner />
+
         {/* Pass 03 Release Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
@@ -246,6 +266,57 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Experimental Android Diagnostics */}
+        {Platform.OS === 'android' && diagnostics && (
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <View style={[styles.iconCircle, { backgroundColor: '#F4EFE6' }]}>
+                <Cpu size={18} color={colors.forest} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Experimental Diagnostics</Text>
+                <Text style={styles.cardSub}>Native enforcement technical state</Text>
+              </View>
+              <TouchableOpacity
+                onPress={fetchDiagnostics}
+                style={styles.diagRefreshBtn}
+                accessibilityLabel="Refresh diagnostics"
+              >
+                <RotateCcw size={14} color={colors.forest} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.diagGrid}>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Accessibility Service</Text>
+                <Text style={[styles.diagValue, { color: diagnostics.serviceRunning ? colors.forest : colors.textMuted }]}>
+                  {diagnostics.serviceRunning ? 'Active' : 'Inactive'}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Restricted Apps Now</Text>
+                <Text style={styles.diagValue}>{diagnostics.baseRestrictedPackageCount}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Active Leases</Text>
+                <Text style={styles.diagValue}>{diagnostics.activeLeaseCount}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Touch Grass Overlay</Text>
+                <Text style={styles.diagValue}>{diagnostics.overlayVisible ? 'Visible' : 'Idle'}</Text>
+              </View>
+              {diagnostics.lastInterventionPackage && (
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Last Intervention</Text>
+                  <Text style={styles.diagValuePackage} numberOfLines={1}>
+                    {diagnostics.lastInterventionPackage}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* Philosophy Card */}
         <View style={styles.philosophyCard}>
           <Text style={styles.philTitle}>Rhythmic-Routine Philosophy</Text>
@@ -260,47 +331,11 @@ export default function SettingsScreen() {
       </ScrollView>
 
       {/* Affirmative Consent Disclosure Modal (Android) */}
-      <Modal visible={showDisclosureModal} transparent animationType="fade">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <ShieldAlert size={28} color={colors.forestDark} />
-              <Text style={styles.modalTitle}>Accessibility Permission & Privacy</Text>
-            </View>
-            <Text style={styles.modalBody}>
-              Rhythmic-Routine is designed to support healthy digital routines and is NOT an assistive tool for people with disabilities.
-            </Text>
-            <View style={styles.bulletList}>
-              <Text style={styles.bulletItem}>
-                • Rhythm observes only the active app&#39;s package name using Window State Change events.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • It does NOT read screen text, passwords, messages, keystrokes, or form content.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • All observation is strictly local on your device. Zero data is shared with cloud servers or third parties.
-              </Text>
-              <Text style={styles.bulletItem}>
-                • Purpose: Display the calm Touch Grass reminder when an app in an active routine or cooldown is opened.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.confirmConsentBtn}
-              activeOpacity={0.85}
-              onPress={handleConfirmAndroidConsent}
-            >
-              <Text style={styles.confirmConsentText}>I Understand — Enable Intervention</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.cancelConsentBtn}
-              activeOpacity={0.7}
-              onPress={() => setShowDisclosureModal(false)}
-            >
-              <Text style={styles.cancelConsentText}>Not Now</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <AndroidAccessibilityDisclosure
+        visible={showDisclosureModal}
+        onCancel={() => setShowDisclosureModal(false)}
+        onConfirm={handleConfirmAndroidConsent}
+      />
     </SafeAreaView>
   );
 }
@@ -542,5 +577,37 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 13,
     fontWeight: '600',
+  },
+  diagRefreshBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F4EFE6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  diagGrid: {
+    marginTop: 14,
+    gap: 8,
+  },
+  diagRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  diagLabel: {
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  diagValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  diagValuePackage: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.forestDark,
+    maxWidth: 160,
   },
 });

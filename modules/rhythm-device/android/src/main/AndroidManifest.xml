@@ -6,6 +6,13 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application>
         <service
             android:name=".RhythmEnforcementService"
@@ -21,9 +28,10 @@
 
         <activity
             android:name=".RhythmOverlayActivity"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:theme="@style/Theme.Rhythm.Overlay"
             android:exported="false"
-            android:launchMode="singleTask" />
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true" />
     </application>
 
 </manifest>

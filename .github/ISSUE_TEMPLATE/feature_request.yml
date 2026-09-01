@@ -1,0 +1,34 @@
+name: Feature Request
+description: Suggest an enhancement or new capability for Rhythmic-Routine.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement! Rhythmic-Routine is strictly committed to local-first digital wellbeing without telemetry, tracking, or cloud surveillance.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Need
+      description: What challenge or digital habit need does this feature address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your proposed design, interaction, or architectural addition.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy_impact
+    attributes:
+      label: Local-First & Privacy Impact
+      description: How does this proposal ensure zero remote data leakage and maintain local storage?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternative approaches or workarounds have you considered?

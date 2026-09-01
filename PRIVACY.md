@@ -14,6 +14,7 @@ Rhythmic-Routine is designed from first principles as a **strictly local-first d
   * Observes only window state changes (`TYPE_WINDOW_STATE_CHANGED`) to detect when a restricted application enters the foreground during an active routine buffer or recovery cooldown.
   * **Zero Content Inspection:** The service explicitly configures `canRetrieveWindowContent="false"`. It NEVER reads screen text, keystrokes, form entries, or private messages.
   * **No Disability Tool Misrepresentation:** We do not declare `android:isAccessibilityTool="true"`.
+* **Targeted App Discovery:** Discovers launchable applications using Android's standard launcher query (`ACTION_MAIN` + `CATEGORY_LAUNCHER`). Rhythmic-Routine does NOT request the broad, invasive `QUERY_ALL_PACKAGES` permission. Your installed application inventory is never uploaded or shared.
 
 ## 3. iOS Screen Time & Family Controls Boundary
 * On iOS, application shielding and usage events are managed out-of-process by Apple's `DeviceActivity` and `ManagedSettings` frameworks.

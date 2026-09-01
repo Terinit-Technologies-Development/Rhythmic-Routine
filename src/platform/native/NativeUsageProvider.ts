@@ -17,7 +17,7 @@ export class NativeUsageProvider implements UsageProvider {
         return nativeApps.map((app) => ({
           id: app.packageName,
           name: app.appName,
-          classification: 'normal',
+          classification: 'unclassified',
           iconName: 'smartphone',
           iconColor: '#235D43',
           iconBg: '#E8EFE5',

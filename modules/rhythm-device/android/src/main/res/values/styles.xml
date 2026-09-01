@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.Rhythm.Overlay" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">#FAF7F0</item>
+        <item name="android:colorAccent">#164B38</item>
+        <item name="android:statusBarColor">#FAF7F0</item>
+        <item name="android:navigationBarColor">#FAF7F0</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

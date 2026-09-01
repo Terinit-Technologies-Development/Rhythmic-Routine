@@ -1,11 +1,23 @@
 {
   "name": "rhythmic-routine",
+  "version": "1.0.0",
+  "description": "Experimental local-first digital wellbeing app built around routines, Risk Groups, cooldowns, and calm intervention.",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/issues"
+  },
+  "homepage": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine#readme",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.14",
     "@react-navigation/bottom-tabs": "^7.18.18",
-    "expo": "~57.0.17",
-    "expo-constants": "~57.0.15",
+    "expo": "~57.0.18",
+    "expo-constants": "~57.0.16",
+    "expo-dev-client": "~57.0.16",
     "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.8",
     "expo-router": "~57.0.17",
@@ -22,7 +34,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@types/jest": "^30.0.0",
+    "@types/jest": "~29.5.14",
     "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
     "eslint": "^9.39.5",
@@ -32,13 +44,31 @@
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "start:go": "expo start --go",
+    "start:dev": "expo start --dev-client",
+    "android": "expo run:android",
+    "android:dev": "expo run:android --device",
+    "android:release": "expo run:android --variant release",
+    "android:prebuild": "expo prebuild --clean --no-install",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "node --stack-size=8192 ./node_modules/typescript/bin/tsc --noEmit",
     "build:web": "expo export -p web",
-    "test": "tsx --test src/domain/__tests__/*.test.ts src/domain/rhythm/__tests__/*.test.ts src/domain/insights/__tests__/*.test.ts"
+    "test": "tsx --test src/domain/__tests__/*.test.ts src/domain/rhythm/__tests__/*.test.ts src/domain/insights/__tests__/*.test.ts",
+    "postinstall": "node scripts/patch-worklets-invoker.js"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "install": {
+      "exclude": [
+        "@expo/metro-runtime",
+        "expo",
+        "expo-constants",
+        "expo-dev-client",
+        "expo-linking",
+        "expo-router"
+      ]
+    }
+  }
 }

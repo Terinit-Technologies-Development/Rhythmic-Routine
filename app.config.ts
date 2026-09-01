@@ -6,8 +6,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   slug: 'Rhythmic-Routine',
   scheme: 'rhythmic-routine',
   version: '1.0.0',
+  runtimeVersion: {
+    policy: 'appVersion',
+  },
   orientation: 'portrait',
-  icon: './assets/icon.png',
+  icon: './assets/rhythmic_routine_logo.png',
   userInterfaceStyle: 'light',
   ios: {
     supportsTablet: true,
@@ -16,14 +19,22 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'com.apple.developer.family-controls': true,
       'com.apple.security.application-groups': ['group.com.terinit.rhythmicroutine'],
     },
+    privacyManifests: {
+      NSPrivacyTracking: false,
+      NSPrivacyCollectedDataTypes: [],
+      NSPrivacyAccessedAPITypes: [
+        {
+          NSPrivacyAccessedAPIType: 'NSPrivacyAccessedAPICategoryUserDefaults',
+          NSPrivacyAccessedAPITypeReasons: ['1C8F.1'],
+        },
+      ],
+    },
   },
   android: {
     package: 'com.terinit.rhythmicroutine',
     adaptiveIcon: {
-      backgroundColor: '#E6F4FE',
-      foregroundImage: './assets/android-icon-foreground.png',
-      backgroundImage: './assets/android-icon-background.png',
-      monochromeImage: './assets/android-icon-monochrome.png',
+      foregroundImage: './assets/rhythmic_routine_logo.png',
+      backgroundColor: '#F8F4E8',
     },
     predictiveBackGestureEnabled: false,
     permissions: ['android.permission.PACKAGE_USAGE_STATS'],
@@ -36,6 +47,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-status-bar',
     'expo-sqlite',
     './plugins/withRhythmScreenTime',
+    './plugins/withRhythmAndroidQaBuild',
   ],
   extra: {
     eas: {
