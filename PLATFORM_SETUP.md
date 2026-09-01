@@ -51,6 +51,7 @@ The canonical application icon is located at [`assets/rhythmic_routine_logo.png`
    Built with `expo-dev-client`. Connects to Metro via `adb reverse tcp:8081 tcp:8081` and `npm run start:dev`. Used for live feature development and hot-reloading. *Note: `app-debug.apk` is not a standalone APK and requires Metro.*
 3. **Mode 3: Standalone QA APK (`app-qaStandalone.apk`)**:
    Canonical standalone APK. Uses the `qaStandalone` build type to automatically embed the offline JavaScript bundle via React Native Gradle Plugin (`createBundleQaStandaloneJsAndAssets`). Runs completely offline without Metro or PC tethering.
+   * **Pass 04D Owner V1 Test Runbook:** See [`docs/qa/pass-04d-owner-v1-test.md`](docs/qa/pass-04d-owner-v1-test.md).
    * **Owner Manual Build Instructions:** See [`docs/qa/pass-04c-owner-build-commands.md`](docs/qa/pass-04c-owner-build-commands.md).
 
 ### Permissions on Device:
@@ -59,7 +60,14 @@ The canonical application icon is located at [`assets/rhythmic_routine_logo.png`
 
 ---
 
-## 4. iOS Native Setup (Screen Time & Device Activity)
+## 4. Platform Release Status
+
+* **Android:** **Experimental V1 Candidate**. App discovery via targeted launcher `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque calm styling, and Back-to-Home navigation are source-implemented and covered by 104 automated tests. Physical device qualification verified in Pass 04C; Pass 04D ready for owner device testing.
+* **iOS:** **Experimental**. Source-implemented foundation with DeviceActivity extension and App Group communication. Untested on physical Apple hardware; requires Apple Family Controls distribution entitlement and macOS/Xcode build environment.
+
+---
+
+## 5. iOS Native Setup (Screen Time & Device Activity)
 
 1. Generate the native iOS project:
    ```bash

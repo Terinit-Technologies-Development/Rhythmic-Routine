@@ -47,5 +47,17 @@
     "test": "tsx --test src/domain/__tests__/*.test.ts src/domain/rhythm/__tests__/*.test.ts src/domain/insights/__tests__/*.test.ts"
   },
   "private": true,
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "expo": {
+    "install": {
+      "exclude": [
+        "@expo/metro-runtime",
+        "expo",
+        "expo-constants",
+        "expo-dev-client",
+        "expo-linking",
+        "expo-router"
+      ]
+    }
+  }
 }

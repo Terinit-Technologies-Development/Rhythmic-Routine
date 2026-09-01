@@ -40,9 +40,26 @@ export default function SettingsScreen() {
 
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+
+  const fetchDiagnostics = async () => {
+    if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
+      try {
+        const diag = await RhythmDeviceModule.getEnforcementDiagnostics();
+        setDiagnostics(diag);
+      } catch {
+        // Non-fatal
+      }
+    }
+  };
 
   useEffect(() => {
     checkPermissions();
+    if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
+      RhythmDeviceModule.getEnforcementDiagnostics()
+        .then((diag) => setDiagnostics(diag))
+        .catch(() => {});
+    }
   }, [checkPermissions]);
 
   const requestRestriction = async () => {
@@ -248,6 +265,57 @@ export default function SettingsScreen() {
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Experimental Android Diagnostics */}
+        {Platform.OS === 'android' && diagnostics && (
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <View style={[styles.iconCircle, { backgroundColor: '#F4EFE6' }]}>
+                <Cpu size={18} color={colors.forest} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Experimental Diagnostics</Text>
+                <Text style={styles.cardSub}>Native enforcement technical state</Text>
+              </View>
+              <TouchableOpacity
+                onPress={fetchDiagnostics}
+                style={styles.diagRefreshBtn}
+                accessibilityLabel="Refresh diagnostics"
+              >
+                <RotateCcw size={14} color={colors.forest} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.diagGrid}>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Accessibility Service</Text>
+                <Text style={[styles.diagValue, { color: diagnostics.serviceRunning ? colors.forest : colors.textMuted }]}>
+                  {diagnostics.serviceRunning ? 'Active' : 'Inactive'}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Restricted Apps Now</Text>
+                <Text style={styles.diagValue}>{diagnostics.baseRestrictedPackageCount}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Active Leases</Text>
+                <Text style={styles.diagValue}>{diagnostics.activeLeaseCount}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Touch Grass Overlay</Text>
+                <Text style={styles.diagValue}>{diagnostics.overlayVisible ? 'Visible' : 'Idle'}</Text>
+              </View>
+              {diagnostics.lastInterventionPackage && (
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Last Intervention</Text>
+                  <Text style={styles.diagValuePackage} numberOfLines={1}>
+                    {diagnostics.lastInterventionPackage}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
 
         {/* Philosophy Card */}
         <View style={styles.philosophyCard}>
@@ -509,5 +577,37 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 13,
     fontWeight: '600',
+  },
+  diagRefreshBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F4EFE6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  diagGrid: {
+    marginTop: 14,
+    gap: 8,
+  },
+  diagRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  diagLabel: {
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  diagValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  diagValuePackage: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.forestDark,
+    maxWidth: 160,
   },
 });

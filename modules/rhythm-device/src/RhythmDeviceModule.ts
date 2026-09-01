@@ -3,6 +3,7 @@ import {
   MonitoringDiagnostics,
   MonitoringSyncResult,
   NativeAppInfo,
+  NativeEnforcementDiagnostics,
   NativePermissionStatus,
   NativeUsageEvent,
 } from './RhythmDevice.types';
@@ -44,6 +45,12 @@ export const FallbackModule = {
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
+  getEnforcementDiagnostics: async (): Promise<NativeEnforcementDiagnostics> => ({
+    serviceRunning: false,
+    baseRestrictedPackageCount: 0,
+    activeLeaseCount: 0,
+    overlayVisible: false,
+  }),
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => isWeb,

@@ -2,6 +2,14 @@
 
 > **"Use your phone. Just don’t live in it."**
 
+> [!IMPORTANT]
+> **Experimental V1**
+>
+> Rhythmic-Routine is an experimental digital-wellbeing project.
+> Android has been validated on physical hardware during V1 development.
+> The iOS implementation remains experimental and has not yet been
+> validated on physical Apple hardware.
+
 **Rhythmic-Routine** is an open-source digital wellbeing application designed around **natural digital rhythm** rather than punitive daily screen-time quotas.
 
 Instead of locking you out of your device with arbitrary limits, Rhythm structures your day into intentional focus buffers, provides continuous-session recovery periods, groups related scroll-heavy apps to protect your attention, and offers calm emergency overrides.
@@ -112,11 +120,12 @@ npm run start:dev
 * **Canonical App Icon:** [`assets/rhythmic_routine_logo.png`](assets/rhythmic_routine_logo.png)
 * **Development Client:** `app-debug.apk` backed by Metro (`adb reverse tcp:8081 tcp:8081 && npm run start:dev`). Note: `app-debug.apk` is **not** a standalone offline binary.
 * **Standalone Phone QA:** `app-qaStandalone.apk` with embedded offline JavaScript bundle and `.qa` package ID. Runs without Metro or PC tethering.
-* **Owner Manual Runbook:** See [`docs/qa/pass-04c-owner-build-commands.md`](docs/qa/pass-04c-owner-build-commands.md) and [`docs/qa/android-runtime-build-modes.md`](docs/qa/android-runtime-build-modes.md).
+* **Pass 04D V1 Manual Test Runbook:** See [`docs/qa/pass-04d-owner-v1-test.md`](docs/qa/pass-04d-owner-v1-test.md).
+* **Architecture Runbook:** See [`docs/qa/pass-04c-owner-build-commands.md`](docs/qa/pass-04c-owner-build-commands.md) and [`docs/qa/android-runtime-build-modes.md`](docs/qa/android-runtime-build-modes.md).
 
 ### Quality & Testing Commands
 ```bash
-# Run 53 domain, engine, access lease, insights, persistence, and deduplication unit tests
+# Run 104 domain, engine, access lease, insights, persistence, discovery, and overlay tests
 npm test
 
 # Run TypeScript typecheck

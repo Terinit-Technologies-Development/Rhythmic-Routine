@@ -145,3 +145,17 @@ The repository owner has executed physical device installation and testing using
 - [x] **Local SQLite Persistence:** `expo-sqlite/kv-store` initializes and persists data locally on-device.
 - [x] **Usage Access & Accessibility Disclosures:** In-app prominent disclosure renders correctly, opens system settings upon consent, and binds `RhythmEnforcementService`.
 - [x] **No Script Errors:** App operates reliably with zero "Unable to load script" or connection errors.
+
+---
+
+## 7. Pass 04D Final V1 Hardening Status: `V1_CANDIDATE`
+
+Source implementation for full launcher app discovery, real package ID reconciliation, and overlay hardening is 100% complete and verified across 104 automated tests:
+
+- **Manifest Queries:** `<queries>` with `ACTION_MAIN` and `CATEGORY_LAUNCHER` added; `QUERY_ALL_PACKAGES` strictly absent.
+- **Reconciliation:** Real package IDs (`com.instagram.android`, etc.) strictly derived via `reconcileRiskGroupMembership`; stale mock IDs pruned.
+- **Live Foreground Re-Evaluation:** `setBaseRestrictions()` directly notifies `RhythmEnforcementService.onBaseRestrictionsChanged()`.
+- **Overlay Hardening:** Single-task launch, `@Volatile isVisible` tracking, 850ms debounce, opaque `#FAF7F0` theme, Back navigation to Home, and 1s auto-close timer on window expiry.
+- **Diagnostics:** Technical state exposed via `getEnforcementDiagnostics()` and in Settings > Experimental Diagnostics.
+- **Owner Runbook:** Complete instructions and 10-point checklist published in [`docs/qa/pass-04d-owner-v1-test.md`](./pass-04d-owner-v1-test.md).
+- **Classification:** **`V1_CANDIDATE`** (awaiting owner physical device confirmation).

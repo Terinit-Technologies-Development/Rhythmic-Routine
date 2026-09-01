@@ -50,3 +50,13 @@ export interface MonitoringDiagnostics {
   configSignature: string;
   lastError: string;
 }
+
+export interface NativeEnforcementDiagnostics {
+  serviceRunning: boolean;
+  baseRestrictedPackageCount: number;
+  activeLeaseCount: number;
+  lastForegroundPackage?: string;
+  lastInterventionPackage?: string;
+  lastInterventionAt?: number;
+  overlayVisible: boolean;
+}

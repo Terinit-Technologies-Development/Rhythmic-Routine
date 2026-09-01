@@ -5,6 +5,9 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.widget.Button
@@ -13,8 +16,27 @@ import android.widget.TextView
 
 class RhythmOverlayActivity : Activity() {
 
+    private val checkHandler = Handler(Looper.getMainLooper())
+    private var targetPackage: String? = null
+
+    private val autoCloseRunnable = object : Runnable {
+        override fun run() {
+            val pkg = targetPackage
+            if (pkg != null) {
+                val now = System.currentTimeMillis()
+                if (!RhythmEnforcementService.isEffectivelyRestricted(this@RhythmOverlayActivity, pkg, now)) {
+                    Log.i(TAG, "Restriction ended for $pkg; auto-closing Touch Grass overlay")
+                    finish()
+                    return
+                }
+            }
+            checkHandler.postDelayed(this, 1000L)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        targetPackage = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_PACKAGE_NAME)
 
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -40,7 +62,7 @@ class RhythmOverlayActivity : Activity() {
         }
 
         val subtitleView = TextView(this).apply {
-            text = "Take a gentle breath.\nThis app is currently in a recovery cooldown or focus buffer."
+            text = "This app is paused by your current Rhythm window or recovery cooldown.\n\nReturn home for now, or open Rhythm to review your routine."
             textSize = 15f
             setTextColor(Color.parseColor("#5A6B5C"))
             gravity = Gravity.CENTER
@@ -59,12 +81,7 @@ class RhythmOverlayActivity : Activity() {
             background = bg
             setPadding(48, 28, 48, 28)
             setOnClickListener {
-                val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                    addCategory(Intent.CATEGORY_HOME)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(homeIntent)
-                finish()
+                navigateHome()
             }
         }
 
@@ -93,13 +110,56 @@ class RhythmOverlayActivity : Activity() {
         setContentView(rootLayout)
     }
 
+    override fun onStart() {
+        super.onStart()
+        isVisible = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isVisible = true
+        checkHandler.removeCallbacks(autoCloseRunnable)
+        checkHandler.postDelayed(autoCloseRunnable, 1000L)
+    }
+
+    override fun onPause() {
+        checkHandler.removeCallbacks(autoCloseRunnable)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        isVisible = false
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        isVisible = false
+        checkHandler.removeCallbacks(autoCloseRunnable)
+        super.onDestroy()
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        navigateHome()
+    }
+
+    private fun navigateHome() {
+        try {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(homeIntent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to navigate home on back press", e)
         }
-        startActivity(homeIntent)
         finish()
+    }
+
+    companion object {
+        private const val TAG = "RhythmOverlay"
+
+        @Volatile
+        var isVisible: Boolean = false
     }
 }

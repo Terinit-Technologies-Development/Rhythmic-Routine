@@ -3,6 +3,7 @@ import { initialApps, initialRiskGroups, initialRoutineWindows } from '../data/m
 import { RhythmEngine } from '../domain/rhythm/RhythmEngine';
 import { EngineStatus, RhythmConfiguration, RhythmPreferences } from '../domain/rhythm/types';
 import { reconcileRhythm } from './reconcileRhythm';
+import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 
 export interface BootstrapResult {
   engine: RhythmEngine;
@@ -47,12 +48,15 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     issues.push(`Bootstrap exception: ${String(err)}`);
   }
 
-  const baseApps = installedApps.length > 0 ? installedApps : initialApps;
+  const isRealNative = installedApps.length > 0;
+  const baseApps = isRealNative ? installedApps : initialApps;
 
   // Build preferences if not previously stored
   const preferences: RhythmPreferences = persistedPreferences || {
     routineWindows: initialRoutineWindows,
-    riskGroups: initialRiskGroups,
+    riskGroups: isRealNative
+      ? initialRiskGroups.map((g) => ({ ...g, appIds: [] }))
+      : initialRiskGroups,
     appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
@@ -76,6 +80,12 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     }
     return app;
   });
+
+  // Reconcile risk group membership strictly from authoritative app classifications
+  if (isRealNative) {
+    preferences.riskGroups = reconcileRiskGroupMembership(apps, preferences.riskGroups);
+    storage.savePreferences(preferences).catch(() => {});
+  }
 
   const config: RhythmConfiguration = {
     routineWindows: preferences.routineWindows,
