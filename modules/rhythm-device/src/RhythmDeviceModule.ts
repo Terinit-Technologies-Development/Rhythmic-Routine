@@ -7,11 +7,18 @@ import {
   NativeUsageEvent,
 } from './RhythmDevice.types';
 
-// Mock/fallback when native binary is not linked (web / simulator without native build)
-const FallbackModule = {
+// Fallback behavior:
+// - Web: demo/mock capability allowed
+// - Native platforms without RhythmDevice (Expo Go / unlinked native environment):
+//   native unavailable, permissions false, capability foundation-only
+const isWeb =
+  typeof window !== 'undefined' &&
+  typeof (window as any).document !== 'undefined';
+
+export const FallbackModule = {
   checkPermissions: async (): Promise<NativePermissionStatus> => ({
-    hasUsagePermission: true,
-    hasRestrictionPermission: true,
+    hasUsagePermission: isWeb,
+    hasRestrictionPermission: isWeb,
     familyControlsStatus: 'unsupported',
     hasSelection: false,
     shieldingOperational: false,
@@ -24,7 +31,7 @@ const FallbackModule = {
   requestFamilyControls: async (): Promise<string> => 'unsupported',
   showFamilyActivityPicker: async (groupId: string): Promise<IOSSelectionReference> => ({
     localSelectionId: `selection.${groupId}`,
-    tokenCount: 1,
+    tokenCount: isWeb ? 1 : 0,
     revision: 1,
     kind: 'mixed',
   }),
@@ -39,29 +46,30 @@ const FallbackModule = {
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
-  startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => true,
-  endAccessLease: async (_groupId: string): Promise<boolean> => true,
+  startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => isWeb,
+  endAccessLease: async (_groupId: string): Promise<boolean> => isWeb,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
   getSharedRhythmState: async (): Promise<string | null> => null,
   synchronizeMonitoringConfiguration: async (
     _stateJson: string,
     _signature: string
   ): Promise<MonitoringSyncResult> => ({
-    success: true,
-    persistentActivityCount: 3,
-    totalActivityCount: 3,
+    success: isWeb,
+    persistentActivityCount: isWeb ? 3 : 0,
+    totalActivityCount: isWeb ? 3 : 0,
   }),
   getMonitoringDiagnostics: async (): Promise<MonitoringDiagnostics> => ({
-    activityCount: 3,
-    activityNames: ['routine|morning-buffer|daily', 'routine|evening-wind-down|daily', 'risk.daily'],
-    monitoringOperational: true,
-    persistentMonitoringOperational: true,
-    expiryMonitoringOperational: true,
-    configSignature: 'fallback',
-    lastError: '',
+    activityCount: isWeb ? 3 : 0,
+    activityNames: isWeb ? ['routine|morning-buffer|daily', 'routine|evening-wind-down|daily', 'risk.daily'] : [],
+    monitoringOperational: isWeb,
+    persistentMonitoringOperational: isWeb,
+    expiryMonitoringOperational: isWeb,
+    configSignature: isWeb ? 'fallback' : '',
+    lastError: isWeb ? '' : 'Native module unavailable',
   }),
 };
 
+let nativeModuleAvailable = false;
 let NativeModule: typeof FallbackModule = FallbackModule;
 
 try {
@@ -69,6 +77,7 @@ try {
   const { requireNativeModule } = require('expo-modules-core');
   const mod = requireNativeModule('RhythmDevice');
   if (mod) {
+    nativeModuleAvailable = true;
     NativeModule = {
       ...FallbackModule,
       ...mod,
@@ -78,4 +87,6 @@ try {
   // Use fallback
 }
 
+export const isRhythmNativeModuleAvailable = nativeModuleAvailable;
 export default NativeModule;
+

@@ -49,6 +49,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-status-bar',
     'expo-sqlite',
     './plugins/withRhythmScreenTime',
+    './plugins/withRhythmAndroidQaBuild',
   ],
   extra: {
     eas: {

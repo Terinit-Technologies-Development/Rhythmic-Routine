@@ -27,6 +27,7 @@ import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { getPlatformServices } from '../src/platform/PlatformServices';
 import RhythmDeviceModule from '../modules/rhythm-device';
 import { AndroidAccessibilityDisclosure } from '../src/components/AndroidAccessibilityDisclosure';
+import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -93,6 +94,8 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        <ExpoGoDevBanner />
+
         {/* Pass 03 Release Architecture Banner */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>

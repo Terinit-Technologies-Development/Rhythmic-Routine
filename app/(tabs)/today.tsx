@@ -16,6 +16,7 @@ import { RhythmStateHeroCard } from '../../src/components/RhythmStateHeroCard';
 import { DayTimeline } from '../../src/components/DayTimeline';
 import { RiskGroupCard } from '../../src/components/RiskGroupCard';
 import { AndroidAccessibilityDisclosure } from '../../src/components/AndroidAccessibilityDisclosure';
+import { ExpoGoDevBanner } from '../../src/components/ExpoGoDevBanner';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
 import { getPlatformServices } from '../../src/platform/PlatformServices';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, G } from 'react-native-svg';
@@ -57,6 +58,9 @@ export default function TodayScreen() {
           <Text style={styles.greetingTitle}>Good morning, Alex ⛅</Text>
           <Text style={styles.greetingSubtitle}>Find your rhythm. Protect your day.</Text>
         </View>
+
+        {/* Expo Go Development Notice (Native Only, Hidden when Custom Native Module is present) */}
+        <ExpoGoDevBanner />
 
         {/* Android Normal Setup Flow Disclosure Card */}
         {Platform.OS === 'android' && permissionState.restrictionAuthorization !== 'granted' && (
