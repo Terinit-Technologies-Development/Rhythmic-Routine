@@ -62,7 +62,7 @@ The canonical application icon is located at [`assets/rhythmic_routine_logo.png`
 
 ## 4. Platform Release Status
 
-* **Android:** **Experimental V1 Candidate**. App discovery via targeted launcher `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque calm styling, and Back-to-Home navigation are source-implemented and covered by 104 automated tests. Physical device qualification verified in Pass 04C; Pass 04D ready for owner device testing.
+* **Android:** **Experimental V1 (Physical Device Verified)**. App discovery via targeted launcher `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque calm styling, and Back-to-Home navigation are verified on physical hardware across Pass 04C and Pass 04D.
 * **iOS:** **Experimental**. Source-implemented foundation with DeviceActivity extension and App Group communication. Untested on physical Apple hardware; requires Apple Family Controls distribution entitlement and macOS/Xcode build environment.
 
 ---

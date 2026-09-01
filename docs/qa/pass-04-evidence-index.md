@@ -40,8 +40,8 @@
 - **Qualification Document:** [`docs/qa/pass-04-android-device-results.md`](./pass-04-android-device-results.md)
 - **Target & Compile SDK:** SDK 36 (Android 16).
 - **Service Configuration:** `canRetrieveWindowContent="false"`, `TYPE_WINDOW_STATE_CHANGED`, no `isAccessibilityTool`.
-- **Physical Hardware State:** **`PHYSICAL_DEVICE_VERIFIED`** (Pass 04C confirmed by owner). Pass 04D app discovery and overlay hardening: **`V1_CANDIDATE`** awaiting owner runbook test.
-- **Classification:** `PHYSICAL_DEVICE_VERIFIED` (Pass 04C) / `V1_CANDIDATE` (Pass 04D).
+- **Physical Hardware State:** **`PHYSICAL_DEVICE_VERIFIED`** (Pass 04D confirmed 100% pass on physical Android hardware by owner).
+- **Classification:** `PHYSICAL_DEVICE_VERIFIED` & `native-build-verified`.
 
 ### iOS Platform
 - **Qualification Document:** [`docs/qa/pass-04-ios-build-results.md`](./pass-04-ios-build-results.md)
@@ -70,7 +70,7 @@
 
 ## 5. Summary Qualification Decision
 
-- **Exit State:** **`V1_SOURCE_READY_FOR_OWNER_ANDROID_FINAL_TEST`**
+- **Exit State:** **`V1_COMPLETE_ANDROID_PHYSICAL_VERIFIED`**
 - **Decision Rationale:**
-  - **Android Platform:** Experimental V1 candidate. Full launcher app discovery via `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque theme, and auto-close timer are 100% implemented and covered by 104 automated tests. Ready for manual compilation and physical phone verification.
+  - **Android Platform:** Fully qualified and physically verified on real Android hardware (`PHYSICAL_DEVICE_VERIFIED`). Full launcher app discovery via `<queries>`, package deduplication, real package ID reconciliation, live foreground re-evaluation, overlay debounce, opaque theme, and auto-close timer are verified end-to-end.
   - **iOS Platform:** Included as an experimental, source-implemented foundation. It has not yet been validated on physical Apple hardware and will be qualified in a future release.
