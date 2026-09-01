@@ -55,10 +55,10 @@ The following gates are left unchecked for the repository owner:
 - [x] **Owner Review & Legal Confirmation:** Review custom Personal Use License and Commercial Licensing terms (and optionally seek professional legal counsel).
 - [x] **Closeout PR Review:** Review the final closeout Pull Request from `release/v1-repository-closeout` to `master`.
 - [x] **Merge PR:** Merge `release/v1-repository-closeout` into `master`.
-- [ ] **Tag Release:** Create and push the Git tag `v1.0.0` from `master`:
+- [x] **Tag Release:** Create and push the Git tag `v1.0.0` from `master`:
   ```bash
   git tag -a v1.0.0 -m "Rhythmic-Routine v1.0.0 (Experimental V1)"
   git push origin v1.0.0
   ```
-- [ ] **Publish GitHub Release:** Publish the release using the markdown prepared in [`docs/releases/GITHUB_RELEASE_v1.0.0.md`](GITHUB_RELEASE_v1.0.0.md).
+- [x] **Publish GitHub Release:** Publish the release using the markdown prepared in [`docs/releases/GITHUB_RELEASE_v1.0.0.md`](GITHUB_RELEASE_v1.0.0.md).
 - [ ] **Signed Release Artifact (Optional):** In a separate signing/distribution pass, compile and publish a production-signed Android APK/AAB if desired.

@@ -23,6 +23,6 @@
 
 ## Distribution Status
 
-- **Public Source Repository:** Hosted at [GitHub](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine).
-- **Binary Distribution:** Source-only release. Binaries are compiled manually by the user or enterprise licensee.
+- **GitHub Source Release:** Published as [`v1.0.0`](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/releases/tag/v1.0.0).
+- **Android Signed Production Binary:** Not yet distributed (source compilation supported via standalone QA profile; official release key signing pending future distribution pass).
 - **App Stores:** Google Play Console and Apple App Store submissions have **not** been published. Policy declarations, data safety inventories, and video scripts are documented in `docs/release/` for prospective future submission.
