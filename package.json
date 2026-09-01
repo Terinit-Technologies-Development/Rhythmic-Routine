@@ -1,5 +1,16 @@
 {
   "name": "rhythmic-routine",
+  "version": "1.0.0",
+  "description": "Experimental local-first digital wellbeing app built around routines, Risk Groups, cooldowns, and calm intervention.",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/issues"
+  },
+  "homepage": "https://github.com/Terinit-Technologies-Development/Rhythmic-Routine#readme",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.14",
@@ -48,7 +59,6 @@
     "postinstall": "node scripts/patch-worklets-invoker.js"
   },
   "private": true,
-  "version": "1.0.0",
   "expo": {
     "install": {
       "exclude": [

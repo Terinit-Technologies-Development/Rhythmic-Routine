@@ -65,7 +65,7 @@ To ensure complete transparency and policy compliance:
 
 ## 5. Keywords / Tags
 
-`digital wellbeing`, `screen time`, `routine buffer`, `mindful focus`, `app limiter`, `local only`, `open source`, `productivity`, `habits`
+`digital wellbeing`, `screen time`, `routine buffer`, `mindful focus`, `app limiter`, `local only`, `source available`, `productivity`, `habits`
 
 ---
 

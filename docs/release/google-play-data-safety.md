@@ -47,7 +47,7 @@ Google Play requires disclosure of data **accessed on-device** versus data **col
 | :--- | :--- | :--- |
 | **Analytics SDKs (Google Analytics, Mixpanel, Amplitude, etc.)** | **NONE** | 0 analytics SDKs in `package.json` or native build files. |
 | **Crash Reporting SDKs (Firebase Crashlytics, Sentry, Bugsnag, etc.)** | **NONE** | No external crash upload services. |
-| **Advertising SDKs (AdMob, Unity Ads, AppLovin, etc.)** | **NONE** | Completely ad-free open-source software. |
+| **Advertising SDKs (AdMob, Unity Ads, AppLovin, etc.)** | **NONE** | Completely ad-free source-available software. |
 | **Cloud Storage / Database Sync (Supabase, Firebase, AWS, etc.)** | **NONE** | All state is persisted via local `expo-sqlite` and Android `SharedPreferences`. |
 
 ---

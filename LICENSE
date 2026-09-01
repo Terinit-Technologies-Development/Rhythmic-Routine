@@ -1,21 +1,41 @@
-MIT License
+Rhythmic-Routine Personal Use License 1.0
 
-Copyright (c) 2026 Rhythmic-Routine Contributors
+Copyright © 2026 Terinit Technologies. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Grant of License
+Subject to the terms and conditions of this License, Terinit Technologies hereby grants to each individual who obtains a copy of this software and associated documentation files (the "Software") a perpetual, worldwide, non-exclusive, no-charge, royalty-free license to:
+  (a) Use, run, study, inspect, copy, and modify the Software solely for personal, private, and non-commercial purposes.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. Redistribution Conditions
+You may reproduce and distribute copies of the Software, with or without modifications, in source or binary form, provided that you meet all of the following conditions:
+  (a) The redistribution is strictly non-commercial;
+  (b) You include a copy of this License with any copy or substantial portion of the Software;
+  (c) You retain all copyright, trademark, and attribution notices from the Software;
+  (d) You cause any modified files to carry prominent notices stating that you changed the files;
+  (e) Recipients receive no broader rights than those granted to you under this License; and
+  (f) You do not grant any sublicenses other than permitting recipients to exercise rights under this License.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Commercial Use Restriction
+Any Commercial Use of the Software is strictly prohibited without a separate, written commercial license executed by Terinit Technologies.
+
+"Commercial Use" includes, without limitation:
+  (a) Selling, renting, leasing, sublicensing, or distributing the Software for a fee or any form of monetary compensation;
+  (b) Incorporating or bundling the Software into a commercial product, service, subscription, or software offering;
+  (c) Operating the Software as a hosted service, Software-as-a-Service (SaaS), platform-as-a-service, or cloud offering for third parties;
+  (d) Deploying or utilizing the Software internally within a commercial enterprise, business, corporation, partnership, or revenue-generating organization;
+  (e) Using the Software in the performance of paid client engagements, customer consulting, or commercial contracted work;
+  (f) Contractor, employee, or agency use in providing commercial services to third parties;
+  (g) Monetized or advertising-supported distribution of the Software;
+  (h) OEM or bundled commercial distribution with hardware or third-party proprietary systems; and
+  (i) Creating, distributing, or operating commercial derivative works based on the Software.
+
+If the nature of your intended use is ambiguous or uncertain, written commercial permission must be obtained from Terinit Technologies prior to deployment. For commercial licensing terms and inquiries, see COMMERCIAL_LICENSE.md or contact Terinit Technologies.
+
+4. Trademark Reservation
+This License does not grant any right, title, or interest in or to the names, marks, logos, or trade dress of "Rhythmic-Routine", "Rhythm", "Terinit Technologies", or any associated graphical designs. Use of these marks for advertising, endorsement, or redistribution branding without prior written authorization is strictly prohibited. See TRADEMARKS.md for details.
+
+5. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. Experimental Software Notice & Assumption of Risk
+RHYTHMIC-ROUTINE IS EXPERIMENTAL SOFTWARE DESIGNED FOR DIGITAL WELLBEING EXPLORATION. IT IS NOT MEDICAL, PSYCHOLOGICAL, ADDICTION-TREATMENT, HEALTHCARE, EMERGENCY, SECURITY, PARENTAL-CONTROL, OR SAFETY-CRITICAL SOFTWARE. THE SOFTWARE DOES NOT GUARANTEE THE INTERRUPTION, BLOCKING, OR RESTRICTION OF APPS OR NOTIFICATIONS UNDER ALL OPERATING CONDITIONS OR SYSTEM STATES. YOU ASSUME ALL RISK AND RESPONSIBILITY ASSOCIATED WITH YOUR USE OF THE SOFTWARE.
