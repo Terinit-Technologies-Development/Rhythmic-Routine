@@ -12,7 +12,7 @@ Rhythmic-Routine supports distinct runtime modes designed for different stages o
 | :--- | :--- | :--- | :--- | :--- |
 | **Mode 1: Expo Go** | Store-downloaded Expo Go APK | Local Metro bundler | **Fallback/Mock only** (no native code) | Rapid UI layout and design testing without native device features. Shows subtle notice banner. |
 | **Mode 2: Rhythm Dev Client** | `app-debug.apk` (with `expo-dev-client`) | Local Metro bundler (`:8081`) | **Full custom native modules** | Active feature development with live reloading and full native capability. |
-| **Mode 3: Standalone QA APK** | `app-qaStandalone.apk` / `app-debug.apk` | Embedded offline JS bundle (`assets/index.android.bundle`) | **Full custom native modules** | Physical device QA, offline testing, tap-and-play installation without Metro. |
+| **Mode 3: Standalone QA APK** | `app-qaStandalone.apk` | Embedded offline JS bundle (`assets/index.android.bundle` via RNGP) | **Full custom native modules** | Physical device QA, offline testing, tap-and-play installation without Metro. |
 | **Mode 4: Production Release** | `app-release.aab` / `app-release.apk` | Embedded minified JS bundle | **Full custom native modules** | Production distribution signed with release keystore. |
 
 ---
@@ -30,7 +30,8 @@ Rhythmic-Routine supports distinct runtime modes designed for different stages o
 
 ## 3. Mode 2: Rhythm Development Client
 
-- **Build Command**:
+- **Purpose**: Live development, interactive debugging, hot-reloading with native module support.
+- **Build Command** (Owner manual):
   ```powershell
   cd android
   .\gradlew.bat assembleDebug -PreactNativeArchitectures=arm64-v8a
@@ -48,31 +49,49 @@ Rhythmic-Routine supports distinct runtime modes designed for different stages o
   - Replaces Expo Go on physical devices.
   - Connects to Metro over USB or Wi-Fi for live reloading.
   - Executes full custom Kotlin modules and Android background services.
+  - **Important**: `app-debug.apk` is the development client and requires Metro; it is NOT the standalone installed version.
 
 ---
 
-## 4. Mode 3: Standalone QA APK (Offline / No Metro)
+## 4. Mode 3: Standalone QA APK (Canonical Architecture: `qaStandalone`)
 
-- **Automated Script**:
-  ```powershell
-  .\scripts\build-android-qa.ps1
+- **Architecture**:
   ```
-- **Manual Build Steps**:
-  1. Generate embedded offline JavaScript bundle:
+  Expo CNG (withRhythmAndroidQaBuild plugin)
+      ↓
+  qaStandalone build type (initWith release, debug signing, .qa package suffix)
+      ↓
+  React Native Gradle Plugin bundles JS (createBundleQaStandaloneJsAndAssets)
+      ↓
+  JS assets embedded in APK
+      ↓
+  Standalone APK (app-qaStandalone.apk)
+      ↓
+  No Metro / No localhost:8081 required
+  ```
+- **Owner Manual Build Steps**:
+  1. Generate clean Android native project via Expo Prebuild:
      ```powershell
-     npx expo export:embed --platform android --dev false --entry-file node_modules/expo-router/entry.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res
+     npx expo prebuild --platform android --clean --no-install
      ```
-  2. Assemble APK:
+  2. Assemble the standalone QA APK:
      ```powershell
      cd android
-     .\gradlew.bat assembleDebug -PreactNativeArchitectures=arm64-v8a
+     .\gradlew.bat clean
+     .\gradlew.bat assembleQaStandalone -PreactNativeArchitectures=arm64-v8a --console=plain
      ```
   3. Verify with inspection script:
      ```powershell
-     node scripts/verify-android-qa-apk.mjs
+     cd ..
+     node .\scripts\verify-android-qa-apk.mjs .\android\app\build\outputs\apk\qaStandalone\app-qaStandalone.apk
+     ```
+  4. Install onto physical device:
+     ```powershell
+     adb install -r .\android\app\build\outputs\apk\qaStandalone\app-qaStandalone.apk
      ```
 - **Behavior**:
-  - Embeds `index.android.bundle` inside the APK assets.
+  - React Native Gradle Plugin automatically executes `createBundleQaStandaloneJsAndAssets` and embeds `index.android.bundle` inside the APK assets.
+  - Application ID is `com.terinit.rhythmicroutine.qa`, allowing co-existence with the development client.
   - Launches immediately on phone taps without needing Metro, PC connection, or terminal commands.
 
 ---
@@ -82,4 +101,4 @@ Rhythmic-Routine supports distinct runtime modes designed for different stages o
 - **Windows Ninja Path Length Limit**:
   React Native New Architecture generates deeply nested C++ object paths. Gradle autolinking subdirectories have been shortened (`safear_b`, `rngest_b`, `rnrean_b`, `rnscre_b`, `rnsvg_b`, `rnwork_b`), keeping all object file paths under 240 characters (well below the Win32 260-character `_MAX_PATH` threshold).
 - **Concurrency & JVM Configuration**:
-  Gradle daemon memory is configured to `-Xmx3072m -XX:MaxMetaspaceSize=512m` with `org.gradle.workers.max=4` to prevent native memory exhaustion during C++ and Kotlin compilation.
+  Gradle daemon memory is configured to `-Xmx3072m -XX:MaxMetaspaceSize=512m` with `org.gradle.parallel=true` and `org.gradle.workers.max=4` to prevent native memory exhaustion during C++ and Kotlin compilation.

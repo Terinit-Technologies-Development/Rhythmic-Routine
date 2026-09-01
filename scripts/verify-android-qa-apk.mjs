@@ -52,8 +52,15 @@ console.log(`  ✓ APK size verified: ${sizeMb} MB (${stats.size.toLocaleString(
 
 // 2. Filename check
 const filename = path.basename(targetApk);
+if (filename === 'app-debug.apk' && !targetApk.toLowerCase().includes('qastandalone')) {
+  console.error(`  ✗ Error: Target is a debug development client ("${filename}"), NOT a standalone QA APK.`);
+  console.error('    The standalone QA APK is located under android/app/build/outputs/apk/qaStandalone/.');
+  console.error('    To build it, run: .\\gradlew.bat assembleQaStandalone -PreactNativeArchitectures=arm64-v8a');
+  process.exit(1);
+}
 if (!filename.toLowerCase().includes('qa') && !targetApk.toLowerCase().includes('qastandalone')) {
-  console.error(`  ✗ Error: APK path does not indicate a QA variant: "${filename}"`);
+  console.error(`  ✗ Error: APK path does not indicate a QA standalone variant: "${filename}"`);
+  console.error('    Expected an artifact from the "qaStandalone" build type.');
   process.exit(1);
 }
 console.log(`  ✓ QA variant name verified: ${filename}`);

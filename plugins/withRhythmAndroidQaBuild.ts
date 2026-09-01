@@ -12,11 +12,6 @@ export const RHYTHM_QA_STANDALONE_BLOCK = `
             minifyEnabled false
             shrinkResources false
             matchingFallbacks = ['release']
-            externalNativeBuild {
-                cmake {
-                    arguments "-DCMAKE_OBJECT_PATH_MAX=200"
-                }
-            }
         }
 `;
 
@@ -75,7 +70,7 @@ const withRhythmAndroidQaBuild: ConfigPlugin = (config) => {
 
   config = withGradleProperties(config, (props) => {
     setGradleProperty(props.modResults, 'org.gradle.jvmargs', '-Xmx3072m -XX:MaxMetaspaceSize=512m');
-    setGradleProperty(props.modResults, 'org.gradle.parallel', 'false');
+    setGradleProperty(props.modResults, 'org.gradle.parallel', 'true');
     setGradleProperty(props.modResults, 'org.gradle.workers.max', '4');
     return props;
   });

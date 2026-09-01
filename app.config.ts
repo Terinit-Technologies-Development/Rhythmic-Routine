@@ -10,7 +10,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     policy: 'appVersion',
   },
   orientation: 'portrait',
-  icon: './assets/icon.png',
+  icon: './assets/rhythmic_routine_logo.png',
   userInterfaceStyle: 'light',
   ios: {
     supportsTablet: true,
@@ -33,10 +33,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   android: {
     package: 'com.terinit.rhythmicroutine',
     adaptiveIcon: {
-      backgroundColor: '#E6F4FE',
-      foregroundImage: './assets/android-icon-foreground.png',
-      backgroundImage: './assets/android-icon-background.png',
-      monochromeImage: './assets/android-icon-monochrome.png',
+      foregroundImage: './assets/rhythmic_routine_logo.png',
+      backgroundColor: '#F8F4E8',
     },
     predictiveBackGestureEnabled: false,
     permissions: ['android.permission.PACKAGE_USAGE_STATS'],

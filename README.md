@@ -101,9 +101,18 @@ npm install
 # Start the web client (runs with full mock platform adapters and interactive state switcher)
 npm run web
 
-# Start Expo dev client for mobile simulators
-npm run start
+# Start Expo Go UI fallback (UI-only, truthful foundation mock)
+npm run start:go
+
+# Start Rhythm Development Client (Metro-backed, full local native modules)
+npm run start:dev
 ```
+
+### Android Build Modes & Physical Device QA
+* **Canonical App Icon:** [`assets/rhythmic_routine_logo.png`](assets/rhythmic_routine_logo.png)
+* **Development Client:** `app-debug.apk` backed by Metro (`adb reverse tcp:8081 tcp:8081 && npm run start:dev`). Note: `app-debug.apk` is **not** a standalone offline binary.
+* **Standalone Phone QA:** `app-qaStandalone.apk` with embedded offline JavaScript bundle and `.qa` package ID. Runs without Metro or PC tethering.
+* **Owner Manual Runbook:** See [`docs/qa/pass-04c-owner-build-commands.md`](docs/qa/pass-04c-owner-build-commands.md) and [`docs/qa/android-runtime-build-modes.md`](docs/qa/android-runtime-build-modes.md).
 
 ### Quality & Testing Commands
 ```bash
