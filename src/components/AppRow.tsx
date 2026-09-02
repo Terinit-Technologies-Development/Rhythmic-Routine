@@ -41,6 +41,7 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
   const openAppEdit = usePrototypeStore((s) => s.openAppEdit);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
 
   const groupName = app.riskGroupId
     ? riskGroups.find((g) => g.id === app.riskGroupId)?.name
@@ -58,6 +59,13 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
 
   const renderUsageSignal = () => {
     if (!isRisk) return null;
+    if (dailyUsageError) {
+      return (
+        <Text style={[styles.usageSignal, styles.usageUnavailable]}>
+          Usage unavailable
+        </Text>
+      );
+    }
     if (allowanceMinutes === 0) {
       return <Text style={styles.usageSignal}>0 min planned today</Text>;
     }
@@ -206,6 +214,10 @@ const styles = StyleSheet.create({
   usageExhausted: {
     color: colors.coralDark,
     fontWeight: '600',
+  },
+  usageUnavailable: {
+    color: colors.textMuted,
+    fontStyle: 'italic',
   },
   rightCol: {
     flexDirection: 'row',

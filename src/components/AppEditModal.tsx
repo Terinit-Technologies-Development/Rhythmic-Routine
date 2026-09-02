@@ -24,6 +24,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const updateDailyRiskAllowance = usePrototypeStore((s) => s.updateDailyRiskAllowance);
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
   const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
 
   const [classification, setClassification] = useState<AppClassification>(
     selectedApp.classification
@@ -39,12 +40,16 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const isLocked = selectedApp.dailyRiskAllowance?.lastEditedDateKey === getLocalDateKey();
 
   const snapshotApp = dailyUsageSnapshot?.apps.find((a) => a.packageName === selectedApp.id);
+  const isUsageUnavailable = !!dailyUsageError || !snapshotApp;
   const usedTodayMinutes = snapshotApp
     ? Math.floor(snapshotApp.usedSeconds / 60)
     : (selectedApp.usageTodayMinutes || 0);
   const remainingMinutes = snapshotApp
     ? Math.ceil(snapshotApp.remainingSeconds / 60)
     : Math.max(0, persistedMinutes - usedTodayMinutes);
+
+  const usedDisplay = isUsageUnavailable ? '—' : `${usedTodayMinutes} min`;
+  const remainingDisplay = isUsageUnavailable ? '—' : `${remainingMinutes} min`;
 
   const handleSave = async () => {
     setAllowanceError(null);
@@ -149,7 +154,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
             <View style={styles.allowanceStatsRow}>
               <View style={styles.allowanceStatCol}>
                 <Text style={styles.allowanceStatLabel}>Used today</Text>
-                <Text style={styles.allowanceStatValue}>{usedTodayMinutes} min</Text>
+                <Text style={styles.allowanceStatValue}>{usedDisplay}</Text>
               </View>
               <View style={styles.allowanceStatCol}>
                 <Text style={styles.allowanceStatLabel}>Planned</Text>
@@ -157,7 +162,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
               </View>
               <View style={styles.allowanceStatCol}>
                 <Text style={styles.allowanceStatLabel}>Remaining</Text>
-                <Text style={styles.allowanceStatValue}>{remainingMinutes} min</Text>
+                <Text style={styles.allowanceStatValue}>{remainingDisplay}</Text>
               </View>
             </View>
 

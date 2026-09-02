@@ -753,6 +753,166 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
 
       delete process.env.RHYTHM_PLATFORM_OVERRIDE;
     });
+
+    test('Successful snapshot 18/30 -> failure clears snapshot and sets error -> subsequent success restores 20/30', async () => {
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
+
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          iconName: 'camera',
+          iconColor: '#000',
+          iconBg: '#FFF',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          dailyRiskAllowance: { allowanceMinutes: 30 },
+        },
+      ];
+
+      const usageProvider = new MockUsageProvider(testApps);
+      usageProvider.getDailyUsageSnapshot = async () => ({
+        dateKey: getLocalDateKey(),
+        apps: [
+          {
+            packageName: 'com.instagram.android',
+            usedSeconds: 18 * 60,
+            allowanceMinutes: 30,
+            remainingSeconds: 12 * 60,
+            exhausted: false,
+          },
+        ],
+      });
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: usageProvider,
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await coordinator.initialize();
+      usePrototypeStore.setState({ apps: [...testApps] });
+
+      // 1. Successful snapshot = 18/30
+      await usePrototypeStore.getState().refreshDailyUsage();
+      let state = usePrototypeStore.getState();
+      assert.equal(state.dailyUsageError, undefined);
+      assert.ok(state.dailyUsageSnapshot);
+      assert.equal(state.dailyUsageSnapshot?.apps[0].usedSeconds, 18 * 60);
+
+      // 2. Next snapshot throws
+      usageProvider.getDailyUsageSnapshot = async () => {
+        throw new Error('Ledger binder error');
+      };
+      usageProvider.reconcileDailyUsage = async () => {
+        throw new Error('Ledger binder error');
+      };
+
+      await usePrototypeStore.getState().refreshDailyUsage();
+      state = usePrototypeStore.getState();
+      // UI / store no longer treats 18 as current measured usage
+      assert.equal(state.dailyUsageSnapshot, undefined);
+      assert.equal(state.dailyUsageError, 'Usage unavailable');
+      // Configured 30-minute allowance remains intact
+      const app = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(app.dailyRiskAllowance?.allowanceMinutes, 30);
+
+      // 3. Subsequent success = 20/30
+      const nextSnapshot = {
+        dateKey: getLocalDateKey(),
+        apps: [
+          {
+            packageName: 'com.instagram.android',
+            usedSeconds: 20 * 60,
+            allowanceMinutes: 30,
+            remainingSeconds: 10 * 60,
+            exhausted: false,
+          },
+        ],
+      };
+      usageProvider.getDailyUsageSnapshot = async () => nextSnapshot;
+      usageProvider.reconcileDailyUsage = async () => nextSnapshot;
+
+      await usePrototypeStore.getState().refreshDailyUsage();
+      state = usePrototypeStore.getState();
+      assert.equal(state.dailyUsageError, undefined);
+      assert.ok(state.dailyUsageSnapshot);
+      assert.equal(state.dailyUsageSnapshot?.apps[0].usedSeconds, 20 * 60);
+      assert.equal(state.apps.find((a) => a.id === 'com.instagram.android')?.usageTodayMinutes, 20);
+
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    });
+
+    test('Android observed first/final use does not fall back to engine history when observedAggregation exists with no risk use today', async () => {
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
+
+      const now = Date.now();
+      const todayKey = getLocalDateKey(now);
+
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          riskGroupId: 'social',
+          iconName: 'camera',
+          iconColor: '#000',
+          iconBg: '#FFF',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          dailyRiskAllowance: { allowanceMinutes: 30 },
+        },
+      ];
+
+      // UsageStats succeeds but returns 0 events for risk apps today
+      const mockUsage = new MockUsageProvider(testApps);
+      mockUsage.queryActivityEvents = async () => [];
+
+      // Storage has history indicating first=09:00, final=20:00
+      const storage = new MockStorageProvider();
+      await storage.saveDailySummary({
+        dateKey: todayKey,
+        riskUsageSecondsByGroup: { social: 3600 },
+        sessionCountByGroup: { social: 2 },
+        cooldownCountByGroup: {},
+        cooldownMinutesByGroup: {},
+        scheduledRoutineMinutes: 0,
+        observedProtectedMinutes: 120,
+        accessLeaseCount: 0,
+        longestRiskSessionSeconds: 1800,
+        firstRiskAppUseTime: '09:00',
+        finalRiskAppUseTime: '20:00',
+      });
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: mockUsage,
+        storage,
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await coordinator.initialize();
+      usePrototypeStore.setState({ apps: [...testApps] });
+
+      await usePrototypeStore.getState().refreshInsights();
+
+      const state = usePrototypeStore.getState();
+      // On Android with successful UsageStats aggregation, first/final must NOT fall back to 09:00 / 20:00
+      assert.equal(state.insightMetrics.firstRiskAppUseTime, '—');
+      assert.equal(state.insightMetrics.finalRiskAppUseTime, '—');
+
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    });
   });
 
   describe('6. Seven-Day Local Calendar Window & DST Invariants', () => {

@@ -308,11 +308,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         apps: hydratedApps,
         dailyUsageSnapshot: snapshot,
         dailyUsageLoading: false,
+        dailyUsageError: undefined,
       });
     } catch {
       set({
         dailyUsageLoading: false,
         dailyUsageError: 'Usage unavailable',
+        dailyUsageSnapshot: undefined,
       });
     }
   },
@@ -395,10 +397,12 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
           Object.assign(groupUsageMinutes, weeklySummary.groupUsageMinutes);
         }
 
-        const firstRiskTime =
-          observedAggregation?.firstRiskUseTime ?? (todaySummary?.firstRiskAppUseTime || '—');
-        const finalRiskTime =
-          observedAggregation?.finalRiskUseTime ?? (todaySummary?.finalRiskAppUseTime || '—');
+        const firstRiskTime = observedAggregation
+          ? (observedAggregation.firstRiskUseTime ?? '—')
+          : (todaySummary?.firstRiskAppUseTime || '—');
+        const finalRiskTime = observedAggregation
+          ? (observedAggregation.finalRiskUseTime ?? '—')
+          : (todaySummary?.finalRiskAppUseTime || '—');
 
         const updatedWeeklySummary: WeeklyRhythmSummary = {
           ...weeklySummary,

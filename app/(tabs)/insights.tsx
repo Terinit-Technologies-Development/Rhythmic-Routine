@@ -32,6 +32,7 @@ export default function InsightsScreen() {
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const apps = usePrototypeStore((s) => s.apps);
   const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
   const insightDataState = usePrototypeStore((s) => s.insightDataState);
   const refreshInsights = usePrototypeStore((s) => s.refreshInsights);
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
@@ -77,6 +78,8 @@ export default function InsightsScreen() {
 
   // Today's Risk Allowances: strictly for Risk apps, sorted exhausted first, then most-used
   const riskApps = apps.filter((a) => a.classification === 'risk');
+  const isDailyUsageUnavailable = !!dailyUsageError || !dailyUsageSnapshot;
+
   const riskAppsWithAllowance = riskApps
     .map((app) => {
       const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
@@ -90,7 +93,9 @@ export default function InsightsScreen() {
         snap?.exhausted ?? (allowanceMinutes > 0 && usedMinutes >= allowanceMinutes);
 
       let statusText = '';
-      if (allowanceMinutes === 0) {
+      if (isDailyUsageUnavailable) {
+        statusText = `${allowanceMinutes} min planned`;
+      } else if (allowanceMinutes === 0) {
         statusText = '0 min planned';
       } else if (isExhausted || remainingMinutes <= 0) {
         statusText = 'Allowance complete';
@@ -211,13 +216,18 @@ export default function InsightsScreen() {
             <View style={styles.allowanceCardHeader}>
               <Clock size={18} color={colors.forest} />
               <Text style={styles.allowanceCardTitle}>Today&apos;s Risk Allowances</Text>
+              {isDailyUsageUnavailable && (
+                <Text style={styles.allowanceCardUnavailable}>Current usage unavailable</Text>
+              )}
             </View>
             {riskAppsWithAllowance.map((item) => (
               <View key={item.id} style={styles.allowanceRow}>
                 <View style={styles.allowanceRowInfo}>
                   <Text style={styles.allowanceRowName}>{item.name}</Text>
                   <Text style={styles.allowanceRowSub}>
-                    {item.allowanceMinutes === 0
+                    {isDailyUsageUnavailable
+                      ? `${item.allowanceMinutes} min planned`
+                      : item.allowanceMinutes === 0
                       ? '0 min planned today'
                       : `${item.usedMinutes} / ${item.allowanceMinutes} min`}
                   </Text>
@@ -413,7 +423,9 @@ export default function InsightsScreen() {
               <Text style={styles.reflectionTitle}>Weekly Rhythm Takeaway 🌿</Text>
             </View>
             <Text style={styles.reflectionBody}>
-              Your routine consistency reached {consistencyScore}% this week. By postponing doomscrolling and taking mindful breaks, you reclaimed hours of uninterrupted presence.
+              {showDemo
+                ? `Your routine consistency reached ${consistencyScore}% this week. By postponing doomscrolling and taking mindful breaks, you reclaimed hours of uninterrupted presence.`
+                : 'Your week reflects the routines, Risk-app use, and recovery breaks Rhythm observed on this device.'}
             </Text>
           </View>
         )}
@@ -685,6 +697,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: colors.text,
+  },
+  allowanceCardUnavailable: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+    marginLeft: 'auto',
   },
   allowanceRow: {
     flexDirection: 'row',
