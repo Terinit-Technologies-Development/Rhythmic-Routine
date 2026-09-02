@@ -43,6 +43,9 @@ export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
 }
 
 function getPlatformOS(): string {
+  if (process.env.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Platform } = require('react-native');
@@ -209,31 +212,34 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             .map((a) => a.id)
             .sort();
 
-          const scheduleWindows = config.routineWindows.map((w) => {
-            const protectedPackageNames = new Set<string>();
-            for (const gid of w.protectedGroupIds) {
-              const grp = config.riskGroups.find((g) => g.id === gid);
-              if (grp) {
-                for (const pkg of grp.appIds) {
-                  protectedPackageNames.add(pkg);
+          const scheduleWindows = config.routineWindows
+            .filter(
+              (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
+                w.type === 'morning-buffer' ||
+                w.type === 'evening-wind-down'
+            )
+            .map((w) => {
+              const protectedPackageNames = new Set<string>();
+              for (const gid of w.protectedGroupIds) {
+                const grp = config.riskGroups.find((g) => g.id === gid);
+                if (grp) {
+                  for (const pkg of grp.appIds) {
+                    protectedPackageNames.add(pkg);
+                  }
                 }
               }
-            }
-            const routineType: 'morning-buffer' | 'evening-wind-down' =
-              w.id.includes('morning') || w.name?.toLowerCase().includes('morning')
-                ? 'morning-buffer'
-                : 'evening-wind-down';
 
-            return {
-              id: w.id,
-              type: routineType,
-              startTime: w.startTime,
-              endTime: w.endTime ?? '00:00',
-              activeDays: [...w.activeDays].sort(),
-              protectedPackages: Array.from(protectedPackageNames).sort(),
-              enabled: w.enabled,
-            };
-          }).sort((a, b) => a.id.localeCompare(b.id));
+              return {
+                id: w.id,
+                type: w.type,
+                startTime: w.startTime,
+                endTime: w.endTime ?? '00:00',
+                activeDays: [...w.activeDays].sort(),
+                protectedPackages: Array.from(protectedPackageNames).sort(),
+                enabled: w.enabled,
+              };
+            })
+            .sort((a, b) => a.id.localeCompare(b.id));
 
           const scheduleInput = {
             windows: scheduleWindows,

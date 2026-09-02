@@ -1439,4 +1439,293 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       coordinator.destroy();
     });
   });
+
+  describe('5. Android Routine-Schedule Serialization & Explicit Type Invariants', () => {
+    it('Integration: Morning + Open Day + Evening serializes to exactly 2 native routine windows (open-day absent)', async () => {
+      const syncProvider = new PlatformNativeRhythmSyncProvider();
+      let capturedScheduleInput: any = null;
+
+      (RhythmDeviceModule as any).setRoutineSchedule = async (schedule: any) => {
+        capturedScheduleInput = schedule;
+        return true;
+      };
+
+      const configWithOpenDay: RhythmConfiguration = {
+        routineWindows: [
+          {
+            id: 'routine|morning-buffer|daily',
+            name: 'Morning Buffer',
+            type: 'morning-buffer',
+            startTime: '06:30',
+            endTime: '08:30',
+            activeDays: [1, 2, 3, 4, 5, 6, 7],
+            protectedGroupIds: ['social'],
+            enabled: true,
+            tagline: 'Morning protection',
+            description: 'Buffer mornings',
+          },
+          {
+            id: 'routine|open-day|daily',
+            name: 'Open Day',
+            type: 'open-day',
+            startTime: '08:30',
+            endTime: '21:00',
+            activeDays: [1, 2, 3, 4, 5, 6, 7],
+            protectedGroupIds: [],
+            enabled: true,
+            tagline: 'Open Day',
+            description: 'Mindful open day',
+          },
+          {
+            id: 'routine|evening-wind-down|daily',
+            name: 'Evening Wind-Down',
+            type: 'evening-wind-down',
+            startTime: '21:00',
+            endTime: '23:00',
+            activeDays: [1, 2, 3, 4, 5, 6, 7],
+            protectedGroupIds: ['social'],
+            enabled: true,
+            tagline: 'Evening wind-down',
+            description: 'Wind down',
+          },
+        ],
+        riskGroups: [
+          {
+            id: 'social',
+            name: 'Social',
+            description: 'Social networking',
+            iconName: 'share-2',
+            iconColor: '#235D43',
+            iconBg: '#E8EFE5',
+            appIds: ['com.instagram.android'],
+            sessionThresholdMinutes: 20,
+            cooldownMinutes: 15,
+            currentSessionMinutes: 0,
+          },
+        ],
+        apps: [
+          {
+            id: 'com.instagram.android',
+            name: 'Instagram',
+            classification: 'risk',
+            iconName: 'smartphone',
+            iconColor: '#235D43',
+            iconBg: '#E8EFE5',
+            defaultCategory: 'Social',
+            usageTodayMinutes: 0,
+            sessionMinutes: 0,
+          },
+        ],
+        sessionResetGapMs: 300000,
+      };
+
+      const dummyRuntime: RhythmRuntime = {
+        state: 'available',
+        activeRoutineWindowIds: [],
+        activeCooldowns: {},
+        activeAccessLeases: {},
+        activeRestrictions: [],
+      };
+
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
+      try {
+        await syncProvider.sync(dummyRuntime, configWithOpenDay);
+      } finally {
+        delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+      }
+
+      assert.ok(capturedScheduleInput, 'setRoutineSchedule must have been called');
+      assert.equal(capturedScheduleInput.windows.length, 2, 'Exactly 2 native routine windows must be serialized');
+
+      const types = capturedScheduleInput.windows.map((w: any) => w.type);
+      assert.ok(types.includes('morning-buffer'), 'morning-buffer must be present');
+      assert.ok(types.includes('evening-wind-down'), 'evening-wind-down must be present');
+      assert.equal(types.includes('open-day'), false, 'open-day must be completely absent from native windows');
+
+      const openDayWindow = capturedScheduleInput.windows.find(
+        (w: any) => w.id.includes('open-day') || w.type === 'open-day'
+      );
+      assert.equal(openDayWindow, undefined, 'Open Day must never be serialized to Android native routine restrictions');
+    });
+
+    it('Behavioral: Evening disabled + Morning enabled + Open Day enabled -> NO overnight protection', () => {
+      // Simulate native evaluator
+      const windows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer' as const,
+          startTime: '06:00',
+          endTime: '08:30',
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down' as const,
+          startTime: '21:00',
+          endTime: '23:00',
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: false, // Disabled
+        },
+      ];
+
+      const evaluateOvernight = (currentMins: number, isoToday: number) => {
+        const morning = windows.find((w) => w.type === 'morning-buffer');
+        const evening = windows.find((w) => w.type === 'evening-wind-down');
+
+        const isPreMidnight = currentMins >= 720;
+        if (isPreMidnight) {
+          const isoTomorrow = isoToday === 7 ? 1 : isoToday + 1;
+          const eveningActiveToday = evening ? evening.enabled && evening.activeDays.has(isoToday) : false;
+          const morningActiveTomorrow = morning ? morning.enabled && morning.activeDays.has(isoTomorrow) : false;
+          if (eveningActiveToday && morningActiveTomorrow) {
+            return currentMins >= 1380;
+          }
+        } else {
+          const isoYesterday = isoToday === 1 ? 7 : isoToday - 1;
+          const eveningActiveYesterday = evening ? evening.enabled && evening.activeDays.has(isoYesterday) : false;
+          const morningActiveToday = morning ? morning.enabled && morning.activeDays.has(isoToday) : false;
+          if (eveningActiveYesterday && morningActiveToday) {
+            return currentMins < 360;
+          }
+        }
+        return false;
+      };
+
+      // Pre-midnight 23:30 (1410 min)
+      assert.equal(evaluateOvernight(1410, 3), false, 'Evening disabled must prevent overnight protection pre-midnight');
+      // Post-midnight 03:00 (180 min)
+      assert.equal(evaluateOvernight(180, 4), false, 'Evening disabled must prevent overnight protection post-midnight');
+    });
+
+    it('Behavioral: Morning disabled + Evening enabled + Open Day enabled -> NO overnight protection', () => {
+      const windows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer' as const,
+          startTime: '06:00',
+          endTime: '08:30',
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: false, // Disabled
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down' as const,
+          startTime: '21:00',
+          endTime: '23:00',
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+      ];
+
+      const evaluateOvernight = (currentMins: number, isoToday: number) => {
+        const morning = windows.find((w) => w.type === 'morning-buffer');
+        const evening = windows.find((w) => w.type === 'evening-wind-down');
+
+        const isPreMidnight = currentMins >= 720;
+        if (isPreMidnight) {
+          const isoTomorrow = isoToday === 7 ? 1 : isoToday + 1;
+          const eveningActiveToday = evening ? evening.enabled && evening.activeDays.has(isoToday) : false;
+          const morningActiveTomorrow = morning ? morning.enabled && morning.activeDays.has(isoTomorrow) : false;
+          if (eveningActiveToday && morningActiveTomorrow) {
+            return currentMins >= 1380;
+          }
+        } else {
+          const isoYesterday = isoToday === 1 ? 7 : isoToday - 1;
+          const eveningActiveYesterday = evening ? evening.enabled && evening.activeDays.has(isoYesterday) : false;
+          const morningActiveToday = morning ? morning.enabled && morning.activeDays.has(isoToday) : false;
+          if (eveningActiveYesterday && morningActiveToday) {
+            return currentMins < 360;
+          }
+        }
+        return false;
+      };
+
+      // Pre-midnight 23:30 (1410 min)
+      assert.equal(evaluateOvernight(1410, 3), false, 'Morning disabled must prevent overnight protection pre-midnight');
+      // Post-midnight 03:00 (180 min)
+      assert.equal(evaluateOvernight(180, 4), false, 'Morning disabled must prevent overnight protection post-midnight');
+    });
+
+    it('Behavioral: Evening Sunday + Morning Monday -> overnight protection', () => {
+      const windows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer' as const,
+          startTime: '06:00',
+          endTime: '08:30',
+          activeDays: new Set([1]), // Monday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down' as const,
+          startTime: '21:00',
+          endTime: '23:00',
+          activeDays: new Set([7]), // Sunday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+      ];
+
+      const evaluateOvernight = (currentMins: number, isoToday: number) => {
+        const morning = windows.find((w) => w.type === 'morning-buffer');
+        const evening = windows.find((w) => w.type === 'evening-wind-down');
+
+        const isPreMidnight = currentMins >= 720;
+        if (isPreMidnight) {
+          const isoTomorrow = isoToday === 7 ? 1 : isoToday + 1;
+          const eveningActiveToday = evening ? evening.enabled && evening.activeDays.has(isoToday) : false;
+          const morningActiveTomorrow = morning ? morning.enabled && morning.activeDays.has(isoTomorrow) : false;
+          if (eveningActiveToday && morningActiveTomorrow) {
+            return currentMins >= 1380;
+          }
+        } else {
+          const isoYesterday = isoToday === 1 ? 7 : isoToday - 1;
+          const eveningActiveYesterday = evening ? evening.enabled && evening.activeDays.has(isoYesterday) : false;
+          const morningActiveToday = morning ? morning.enabled && morning.activeDays.has(isoToday) : false;
+          if (eveningActiveYesterday && morningActiveToday) {
+            return currentMins < 360;
+          }
+        }
+        return false;
+      };
+
+      // Sunday 23:30 (isoToday = 7, 1410 min)
+      assert.equal(evaluateOvernight(1410, 7), true, 'Sunday Evening + Monday Morning must activate overnight pre-midnight');
+      // Monday 03:00 (isoToday = 1, 180 min, isoYesterday = 7)
+      assert.equal(evaluateOvernight(180, 1), true, 'Sunday Evening + Monday Morning must activate overnight post-midnight');
+    });
+
+    it('Native Kotlin parser trusts explicit supported types and rejects open-day from routine schedule', () => {
+      const serviceSource = fs.readFileSync(servicePath, 'utf8');
+
+      // 1. Verifies that parseRoutineScheduleInput strictly filters by explicit supported types
+      assert.ok(
+        serviceSource.includes('rawType == "morning-buffer" || rawType == "evening-wind-down"'),
+        'Kotlin parser must explicitly require morning-buffer or evening-wind-down'
+      );
+
+      // 2. Verifies evaluator uses exact type matching
+      assert.ok(
+        serviceSource.includes('windows.find { it.type == "morning-buffer" }'),
+        'Evaluator must look up morning-buffer by exact type'
+      );
+      assert.ok(
+        serviceSource.includes('windows.find { it.type == "evening-wind-down" }'),
+        'Evaluator must look up evening-wind-down by exact type'
+      );
+
+      // 3. Verifies evaluator does not match on arbitrary IDs
+      assert.ok(
+        !serviceSource.includes('it.type == "morning-buffer" || it.id.contains("morning")'),
+        'Evaluator must not use fuzzy id.contains fallbacks after normalization'
+      );
+    });
+  });
 });

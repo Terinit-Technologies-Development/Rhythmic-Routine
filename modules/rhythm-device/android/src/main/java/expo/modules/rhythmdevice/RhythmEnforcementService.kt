@@ -1078,8 +1078,8 @@ class RhythmEnforcementService : AccessibilityService() {
             val isoYesterday = if (isoToday == 1) 7 else isoToday - 1
             val currentMins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
 
-            val morning = windows.find { it.type == "morning-buffer" || it.id.contains("morning") }
-            val evening = windows.find { it.type == "evening-wind-down" || it.id.contains("evening") }
+            val morning = windows.find { it.type == "morning-buffer" }
+            val evening = windows.find { it.type == "evening-wind-down" }
 
             // 1. Morning Buffer window
             if (morning != null && morning.enabled && morning.activeDays.contains(isoToday)) {
@@ -1309,7 +1309,14 @@ class RhythmEnforcementService : AccessibilityService() {
                 for (item in rawWindows) {
                     if (item is Map<*, *>) {
                         val id = item["id"] as? String ?: continue
-                        val type = item["type"] as? String ?: if (id.contains("morning")) "morning-buffer" else "evening-wind-down"
+                        val rawType = item["type"] as? String
+                        val type = when {
+                            rawType == "morning-buffer" || rawType == "evening-wind-down" -> rawType
+                            rawType.isNullOrEmpty() && id.contains("morning") -> "morning-buffer"
+                            rawType.isNullOrEmpty() && id.contains("evening") -> "evening-wind-down"
+                            else -> null
+                        } ?: continue
+
                         val start = item["startTime"] as? String ?: "00:00"
                         val end = item["endTime"] as? String ?: "00:00"
                         val enabled = item["enabled"] as? Boolean ?: true
@@ -1322,7 +1329,14 @@ class RhythmEnforcementService : AccessibilityService() {
                 for (item in input) {
                     if (item is Map<*, *>) {
                         val id = item["id"] as? String ?: continue
-                        val type = item["type"] as? String ?: if (id.contains("morning")) "morning-buffer" else "evening-wind-down"
+                        val rawType = item["type"] as? String
+                        val type = when {
+                            rawType == "morning-buffer" || rawType == "evening-wind-down" -> rawType
+                            rawType.isNullOrEmpty() && id.contains("morning") -> "morning-buffer"
+                            rawType.isNullOrEmpty() && id.contains("evening") -> "evening-wind-down"
+                            else -> null
+                        } ?: continue
+
                         val start = item["startTime"] as? String ?: "00:00"
                         val end = item["endTime"] as? String ?: "00:00"
                         val enabled = item["enabled"] as? Boolean ?: true
@@ -1356,7 +1370,14 @@ class RhythmEnforcementService : AccessibilityService() {
                         for (i in 0 until rawWindows.length()) {
                             val obj = rawWindows.getJSONObject(i)
                             val id = obj.optString("id", "")
-                            val type = obj.optString("type", if (id.contains("morning")) "morning-buffer" else "evening-wind-down")
+                            val rawType = if (obj.has("type") && !obj.isNull("type")) obj.optString("type") else null
+                            val type = when {
+                                rawType == "morning-buffer" || rawType == "evening-wind-down" -> rawType
+                                rawType.isNullOrEmpty() && id.contains("morning") -> "morning-buffer"
+                                rawType.isNullOrEmpty() && id.contains("evening") -> "evening-wind-down"
+                                else -> null
+                            } ?: continue
+
                             val start = obj.optString("startTime", "00:00")
                             val end = obj.optString("endTime", "00:00")
                             val enabled = obj.optBoolean("enabled", true)
@@ -1378,7 +1399,14 @@ class RhythmEnforcementService : AccessibilityService() {
                     for (i in 0 until array.length()) {
                         val obj = array.getJSONObject(i)
                         val id = obj.optString("id", "")
-                        val type = obj.optString("type", if (id.contains("morning")) "morning-buffer" else "evening-wind-down")
+                        val rawType = if (obj.has("type") && !obj.isNull("type")) obj.optString("type") else null
+                        val type = when {
+                            rawType == "morning-buffer" || rawType == "evening-wind-down" -> rawType
+                            rawType.isNullOrEmpty() && id.contains("morning") -> "morning-buffer"
+                            rawType.isNullOrEmpty() && id.contains("evening") -> "evening-wind-down"
+                            else -> null
+                        } ?: continue
+
                         val start = obj.optString("startTime", "00:00")
                         val end = obj.optString("endTime", "00:00")
                         val enabled = obj.optBoolean("enabled", true)
