@@ -29,6 +29,8 @@ export interface AllowanceEditResult {
   nextMinutes: number;
   consumesDailyEdit?: boolean;
   reason?:
+    | 'app-not-found'
+    | 'not-risk-app'
     | 'already-edited-today'
     | 'increase-too-large'
     | 'invalid-step'
@@ -38,6 +40,7 @@ export interface AllowanceEditResult {
 /**
  * Validates a proposed daily allowance modification.
  * Rules:
+ * - App must be a Risk app (non-risk rejected as 'not-risk-app')
  * - Proposed must be >= MIN_DAILY_RISK_ALLOWANCE_MINUTES (0)
  * - Proposed must be a multiple of DAILY_ALLOWANCE_STEP_MINUTES (15)
  * - Proposed === current: no-op, allowed, does not consume daily edit
@@ -49,10 +52,27 @@ export interface AllowanceEditResult {
 export function validateDailyAllowanceEdit(
   currentPolicy: DailyRiskAllowancePolicy | undefined,
   proposedMinutes: number,
-  nowOrDateKey: Date | number | string = Date.now()
+  nowOrDateKey: Date | number | string = Date.now(),
+  appOrClassification?: DeviceApp | DeviceApp['classification']
 ): AllowanceEditResult {
   const currentMinutes =
     currentPolicy?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES;
+
+  if (appOrClassification) {
+    const classification =
+      typeof appOrClassification === 'string'
+        ? appOrClassification
+        : appOrClassification.classification;
+    if (classification !== 'risk') {
+      return {
+        allowed: false,
+        nextMinutes: currentMinutes,
+        consumesDailyEdit: false,
+        reason: 'not-risk-app',
+      };
+    }
+  }
+
   const todayDateKey =
     typeof nowOrDateKey === 'string' ? nowOrDateKey : getLocalDateKey(nowOrDateKey);
 
@@ -166,11 +186,12 @@ export function rolloverDailyAppUsage(
     } else {
       if (usage.activeSegmentStartedAt) {
         const segStart = Math.max(todayStartMs, usage.activeSegmentStartedAt);
-        const elapsedSinceMidnight = Math.max(0, Math.floor((nowMs - segStart) / 1000));
+        // Invariant: An active segment crossing midnight must have one source of elapsed time,
+        // never both committed usedSeconds and an overlapping activeSegmentStartedAt.
         nextUsage[appId] = {
           appId,
           dateKey: currentDateKey,
-          usedSeconds: elapsedSinceMidnight,
+          usedSeconds: 0,
           activeSegmentStartedAt: segStart,
           exhaustedAt: undefined,
         };

@@ -23,11 +23,15 @@ import {
   DeviceApp,
   RiskGroup,
   RoutineWindow,
-  RhythmConfiguration,
 } from '../../../types/domain';
+import { RhythmConfiguration } from '../types';
+import { RhythmEngine } from '../RhythmEngine';
+import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { bootstrapRhythm } from '../../../application/bootstrapRhythm';
 import { MockStorageProvider } from '../../../platform/storage/MockStorageProvider';
 import { MockPermissionProvider } from '../../../platform/permissions/MockPermissionProvider';
+import { MockUsageProvider } from '../../../platform/mock/MockUsageProvider';
+import { MockRestrictionProvider } from '../../../platform/mock/MockRestrictionProvider';
 import { configurePlatformServices } from '../../../platform/PlatformServices';
 
 describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants', () => {
@@ -471,6 +475,7 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
         {
           state: 'overnight-protected',
           activeCooldowns: {},
+          activeAccessLeases: {},
           activeRoutineWindowIds: [],
           activeRestrictions: [],
         },
@@ -510,52 +515,170 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
       assert.equal(nextUsage['app-1'].usedSeconds, 0);
       assert.equal(nextUsage['app-1'].exhaustedAt, undefined);
 
-      // app-2 split active segment: 15s elapsed since midnight on Day 2
+      // app-2 split active segment: single source of elapsed time is activeSegmentStartedAt (midnight)
       assert.equal(nextUsage['app-2'].dateKey, day2);
-      assert.equal(nextUsage['app-2'].usedSeconds, 15);
+      assert.equal(nextUsage['app-2'].usedSeconds, 0, 'Committed usedSeconds must be 0 to prevent double counting');
+      assert.equal(nextUsage['app-2'].activeSegmentStartedAt, new Date(2026, 8, 3, 0, 0, 0).getTime());
       assert.equal(nextUsage['app-2'].exhaustedAt, undefined);
+    });
+
+    it('regression: 23:59:30 foreground -> 00:00:15 rollover -> 00:00:30 background yields exactly 30s of new-day usage', () => {
+      const tForeground = new Date(2026, 8, 2, 23, 59, 30).getTime();
+      const tRollover = new Date(2026, 8, 3, 0, 0, 15).getTime();
+      const tBackground = new Date(2026, 8, 3, 0, 0, 30).getTime();
+
+      const app = standardApps[0]; // Instagram (risk)
+      const engine = new RhythmEngine(
+        {
+          routineWindows: standardWindows,
+          riskGroups: [standardRiskGroup],
+          apps: [app],
+        },
+        null,
+        tForeground
+      );
+
+      // 1. Foreground at 23:59:30
+      engine.dispatch({
+        type: 'APP_FOREGROUND',
+        appId: app.id,
+        timestamp: tForeground,
+      });
+
+      // 2. Rollover at 00:00:15 (CLOCK_TICK on Day 2)
+      engine.dispatch({
+        type: 'CLOCK_TICK',
+        timestamp: tRollover,
+      });
+
+      const usageAtRollover = engine.getDailyAppUsage()[app.id];
+      assert.equal(usageAtRollover.dateKey, '2026-09-03');
+      assert.equal(usageAtRollover.usedSeconds, 0, 'usedSeconds must remain 0 while segment is running');
+      assert.equal(usageAtRollover.activeSegmentStartedAt, new Date(2026, 8, 3, 0, 0, 0).getTime());
+
+      // 3. Background at 00:00:30
+      engine.dispatch({
+        type: 'APP_BACKGROUND',
+        appId: app.id,
+        timestamp: tBackground,
+      });
+
+      const finalDay2Usage = engine.getDailyAppUsage()[app.id];
+      assert.equal(finalDay2Usage.dateKey, '2026-09-03');
+      assert.equal(finalDay2Usage.usedSeconds, 30, 'Must commit exactly 30 seconds of new-day usage');
+      assert.equal(finalDay2Usage.activeSegmentStartedAt, undefined);
+    });
+
+    it('regression: duplicate APP_FOREGROUND preserves existing segment start and Risk A -> Risk B commits A once', () => {
+      const t0 = new Date(2026, 8, 2, 10, 0, 0).getTime();
+      const appA: DeviceApp = {
+        ...standardApps[0],
+        id: 'com.app.a',
+        name: 'App A',
+      };
+      const appB: DeviceApp = {
+        ...standardApps[0],
+        id: 'com.app.b',
+        name: 'App B',
+      };
+
+      const engine = new RhythmEngine(
+        {
+          routineWindows: standardWindows,
+          riskGroups: [
+            { ...standardRiskGroup, appIds: [appA.id, appB.id] },
+          ],
+          apps: [appA, appB],
+        },
+        null,
+        t0
+      );
+
+      // 1. Initial foreground App A at t0
+      engine.dispatch({
+        type: 'APP_FOREGROUND',
+        appId: appA.id,
+        timestamp: t0,
+      });
+      assert.equal(engine.getDailyAppUsage()[appA.id].activeSegmentStartedAt, t0);
+
+      // 2. Duplicate APP_FOREGROUND for App A at t0 + 5s
+      engine.dispatch({
+        type: 'APP_FOREGROUND',
+        appId: appA.id,
+        timestamp: t0 + 5000,
+      });
+      assert.equal(
+        engine.getDailyAppUsage()[appA.id].activeSegmentStartedAt,
+        t0,
+        'Duplicate APP_FOREGROUND must NOT reset activeSegmentStartedAt'
+      );
+
+      // 3. Switch to App B at t0 + 20s
+      engine.dispatch({
+        type: 'APP_FOREGROUND',
+        appId: appB.id,
+        timestamp: t0 + 20000,
+      });
+
+      const usageA = engine.getDailyAppUsage()[appA.id];
+      const usageB = engine.getDailyAppUsage()[appB.id];
+
+      // App A committed exactly once (20s)
+      assert.equal(usageA.usedSeconds, 20);
+      assert.equal(usageA.activeSegmentStartedAt, undefined);
+
+      // App B started at t0 + 20s
+      assert.equal(usageB.usedSeconds, 0);
+      assert.equal(usageB.activeSegmentStartedAt, t0 + 20000);
+
+      // Duplicate foreground for B at t0 + 25s
+      engine.dispatch({
+        type: 'APP_FOREGROUND',
+        appId: appB.id,
+        timestamp: t0 + 25000,
+      });
+      assert.equal(
+        engine.getDailyAppUsage()[appB.id].activeSegmentStartedAt,
+        t0 + 20000,
+        'Duplicate foreground for B must NOT reset segment start'
+      );
     });
   });
 
   describe('5. Bootstrap Migration & Persistence', () => {
     it('migrates existing Risk apps without policy to 30 minutes idempotently', async () => {
       const mockStorage = new MockStorageProvider();
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          iconName: 'smartphone',
+          iconColor: '#235D43',
+          iconBg: '#E8EFE5',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          // No dailyRiskAllowance
+        },
+        {
+          id: 'com.example.notes',
+          name: 'Notes',
+          classification: 'normal',
+          iconName: 'smartphone',
+          iconColor: '#235D43',
+          iconBg: '#E8EFE5',
+          defaultCategory: 'Productivity',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+        },
+      ];
       configurePlatformServices({
         storage: mockStorage,
-        usage: {
-          getInstalledApps: async () => [
-            {
-              id: 'com.instagram.android',
-              name: 'Instagram',
-              classification: 'risk',
-              iconName: 'smartphone',
-              iconColor: '#235D43',
-              iconBg: '#E8EFE5',
-              defaultCategory: 'Social',
-              usageTodayMinutes: 0,
-              sessionMinutes: 0,
-              // No dailyRiskAllowance
-            },
-            {
-              id: 'com.example.notes',
-              name: 'Notes',
-              classification: 'normal',
-              iconName: 'smartphone',
-              iconColor: '#235D43',
-              iconBg: '#E8EFE5',
-              defaultCategory: 'Productivity',
-              usageTodayMinutes: 0,
-              sessionMinutes: 0,
-            },
-          ],
-          getAppUsageEvents: async () => [],
-        },
+        usage: new MockUsageProvider(testApps),
         permissions: new MockPermissionProvider(),
-        restrictions: {
-          applyRestrictions: async () => true,
-          clearRestrictions: async () => true,
-          showFamilyActivityPicker: async () => true,
-        },
+        restrictions: new MockRestrictionProvider(),
       });
 
       const { config, preferences } = await bootstrapRhythm({ deferRestrictionEffects: true });
@@ -569,6 +692,75 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
       // Normal app has no policy
       assert.equal(notes?.dailyRiskAllowance, undefined);
       assert.equal(preferences.appClassifications['com.example.notes'].dailyRiskAllowance, undefined);
+    });
+
+    it('regression: rejects allowance editing for non-risk or missing apps with truthful reasons', async () => {
+      const coordinator = RhythmCoordinator.getInstance();
+      const mockStorage = new MockStorageProvider();
+      configurePlatformServices({
+        storage: mockStorage,
+        usage: new MockUsageProvider(standardApps),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+      });
+      await coordinator.initialize();
+
+      // 1. Missing app
+      const rMissing = await coordinator.updateDailyRiskAllowance('com.missing.app', 45);
+      assert.equal(rMissing.allowed, false);
+      assert.equal(rMissing.reason, 'app-not-found');
+
+      // 2. Normal app
+      const rNormal = await coordinator.updateDailyRiskAllowance('com.example.notes', 45);
+      assert.equal(rNormal.allowed, false);
+      assert.equal(rNormal.reason, 'not-risk-app');
+
+      // 3. Essential app
+      const rEssential = await coordinator.updateDailyRiskAllowance('com.google.android.dialer', 45);
+      assert.equal(rEssential.allowed, false);
+      assert.equal(rEssential.reason, 'not-risk-app');
+
+      // 4. Domain validateDailyAllowanceEdit directly rejects non-risk
+      const rDomainNonRisk = validateDailyAllowanceEdit({ allowanceMinutes: 30 }, 45, '2026-09-02', 'normal');
+      assert.equal(rDomainNonRisk.allowed, false);
+      assert.equal(rDomainNonRisk.reason, 'not-risk-app');
+    });
+
+    it('regression: surfaces migration savePreferences failure in bootstrap issues and degraded status', async () => {
+      class FailingStorageProvider extends MockStorageProvider {
+        override async savePreferences(): Promise<void> {
+          throw new Error('Disk full simulated failure');
+        }
+      }
+
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          iconName: 'smartphone',
+          iconColor: '#235D43',
+          iconBg: '#E8EFE5',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          // missing dailyRiskAllowance -> mutates policy
+        },
+      ];
+
+      configurePlatformServices({
+        storage: new FailingStorageProvider(),
+        usage: new MockUsageProvider(testApps),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+      });
+
+      const result = await bootstrapRhythm({ deferRestrictionEffects: true });
+      assert.equal(result.status.health, 'degraded');
+      assert.ok(
+        result.status.issues.some((issue) => issue.includes('Disk full simulated failure')),
+        'Must surface persistence failure through bootstrap issues'
+      );
     });
   });
 });

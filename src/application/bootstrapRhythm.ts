@@ -73,6 +73,8 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     onboardingCompleted: true,
   };
 
+  let allowanceMigrationMutated = false;
+
   // Reconcile installed app classifications against loaded preferences
   // Migration: existing Risk app without policy -> 30 minutes; non-Risk app -> no policy until Risk
   const apps = baseApps.map((app) => {
@@ -85,6 +87,7 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
       dailyRiskAllowance = {
         allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
       };
+      allowanceMigrationMutated = true;
     }
 
     if (saved) {
@@ -95,6 +98,7 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
         riskGroupId,
         dailyRiskAllowance,
       };
+      allowanceMigrationMutated = true;
     }
 
     return {
@@ -108,7 +112,15 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
   // Reconcile risk group membership strictly from authoritative app classifications
   if (isRealNative) {
     preferences.riskGroups = reconcileRiskGroupMembership(apps, preferences.riskGroups);
-    storage.savePreferences(preferences).catch(() => {});
+  }
+
+  // Await savePreferences if preferences were freshly constructed, mutated by migration, or reconciled for native
+  if (!persistedPreferences || allowanceMigrationMutated || isRealNative) {
+    try {
+      await storage.savePreferences(preferences);
+    } catch (err) {
+      issues.push(`Failed to persist bootstrap preferences: ${String(err)}`);
+    }
   }
 
   const config: RhythmConfiguration = {

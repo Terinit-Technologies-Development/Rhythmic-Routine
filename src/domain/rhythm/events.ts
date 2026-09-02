@@ -169,7 +169,7 @@ export function processRhythmEvent(
         }
       }
 
-      // If foregrounded app is a Risk app, start its active segment for today
+      // If foregrounded app is a Risk app, start its active segment for today if not already active
       const targetApp = config.apps.find((a) => a.id === event.appId);
       if (targetApp && targetApp.classification === 'risk') {
         const currentUsage = nextDailyAppUsage[event.appId] || {
@@ -177,10 +177,12 @@ export function processRhythmEvent(
           dateKey: getLocalDateKey(event.timestamp),
           usedSeconds: 0,
         };
-        nextDailyAppUsage[event.appId] = {
-          ...currentUsage,
-          activeSegmentStartedAt: event.timestamp,
-        };
+        if (!currentUsage.activeSegmentStartedAt) {
+          nextDailyAppUsage[event.appId] = {
+            ...currentUsage,
+            activeSegmentStartedAt: event.timestamp,
+          };
+        }
       }
 
       const targetGroupId = getAppRiskGroupId(event.appId, config.apps);
@@ -439,11 +441,19 @@ export function processRhythmEvent(
     }
   }
 
+  const isOvernight = isInsideOvernightProtection(nowDate, config.routineWindows);
+  const wasOvernight = currentRuntime.state === 'overnight-protected';
+
   // Record observed effective group-protection transitions using state-before vs state-after
+  // NOTE (Pass 03 Insights): Daily allowance exhaustion is tracked per-app via 'daily-allowance-exhausted'.
+  // Group protection events ('group-protection-started'/'ended') capture routine windows, cooldowns,
+  // and overnight protection gaps. Pass 03 Insights aggregation must combine group protection
+  // intervals with per-app daily allowance exhaustion history.
   const computeProtectedGroupsFromRuntimeState = (
     windowIds: string[],
     cooldowns: Record<string, ActiveCooldown>,
-    leases: Record<string, AccessLease>
+    leases: Record<string, AccessLease>,
+    isOvernightGap: boolean
   ): Set<string> => {
     const result = new Set<string>();
     for (const winId of windowIds) {
@@ -455,6 +465,17 @@ export function processRhythmEvent(
     for (const cd of Object.values(cooldowns)) {
       result.add(cd.groupId);
     }
+    if (isOvernightGap) {
+      for (const group of config.riskGroups) {
+        const hasRiskApp = group.appIds.some((id) => {
+          const app = config.apps.find((a) => a.id === id);
+          return app && app.classification === 'risk';
+        });
+        if (hasRiskApp) {
+          result.add(group.id);
+        }
+      }
+    }
     for (const lease of Object.values(leases)) {
       result.delete(lease.groupId);
     }
@@ -464,12 +485,14 @@ export function processRhythmEvent(
   const prevProtected = computeProtectedGroupsFromRuntimeState(
     currentRuntime.activeRoutineWindowIds || [],
     currentRuntime.activeCooldowns || {},
-    currentRuntime.activeAccessLeases || {}
+    currentRuntime.activeAccessLeases || {},
+    wasOvernight
   );
   const nextProtected = computeProtectedGroupsFromRuntimeState(
     activeRoutineWindowIds,
     nextCooldowns,
-    nextAccessLeases
+    nextAccessLeases,
+    isOvernight
   );
 
   for (const gid of nextProtected) {
@@ -511,7 +534,6 @@ export function processRhythmEvent(
   }
 
   // 5. Compute desired effective restrictions and diff against previous
-  const isOvernight = isInsideOvernightProtection(nowDate, config.routineWindows);
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(
     activeRoutineWindows,

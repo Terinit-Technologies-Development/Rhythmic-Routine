@@ -357,7 +357,7 @@ export class RhythmCoordinator {
         allowed: false,
         nextMinutes,
         consumesDailyEdit: false,
-        reason: 'already-edited-today',
+        reason: 'app-not-found',
       };
     }
 
@@ -367,11 +367,21 @@ export class RhythmCoordinator {
         allowed: false,
         nextMinutes,
         consumesDailyEdit: false,
-        reason: 'already-edited-today',
+        reason: 'app-not-found',
       };
     }
 
-    const result = validateDailyAllowanceEdit(app.dailyRiskAllowance, nextMinutes, nowMs);
+    if (app.classification !== 'risk') {
+      return {
+        allowed: false,
+        nextMinutes:
+          app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+        consumesDailyEdit: false,
+        reason: 'not-risk-app',
+      };
+    }
+
+    const result = validateDailyAllowanceEdit(app.dailyRiskAllowance, nextMinutes, nowMs, app);
     if (!result.allowed) {
       return result;
     }
