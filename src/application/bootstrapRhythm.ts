@@ -5,6 +5,8 @@ import { EngineStatus, RhythmConfiguration, RhythmPreferences } from '../domain/
 import { reconcileRhythm } from './reconcileRhythm';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 
+import { DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES } from '../domain/rhythm/allowance';
+
 export interface BootstrapResult {
   engine: RhythmEngine;
   config: RhythmConfiguration;
@@ -57,10 +59,13 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     riskGroups: isRealNative
       ? initialRiskGroups.map((g) => ({ ...g, appIds: [] }))
       : initialRiskGroups,
-    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
+    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
+        dailyRiskAllowance: app.classification === 'risk'
+          ? (app.dailyRiskAllowance ?? { allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES })
+          : app.dailyRiskAllowance,
       };
       return acc;
     }, {}),
@@ -68,23 +73,54 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     onboardingCompleted: true,
   };
 
+  let allowanceMigrationMutated = false;
+
   // Reconcile installed app classifications against loaded preferences
+  // Migration: existing Risk app without policy -> 30 minutes; non-Risk app -> no policy until Risk
   const apps = baseApps.map((app) => {
     const saved = preferences.appClassifications[app.id];
-    if (saved) {
-      return {
-        ...app,
-        classification: saved.classification,
-        riskGroupId: saved.riskGroupId,
+    const classification = saved ? saved.classification : app.classification;
+    const riskGroupId = saved ? saved.riskGroupId : app.riskGroupId;
+    let dailyRiskAllowance = saved?.dailyRiskAllowance ?? app.dailyRiskAllowance;
+
+    if (classification === 'risk' && !dailyRiskAllowance) {
+      dailyRiskAllowance = {
+        allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
       };
+      allowanceMigrationMutated = true;
     }
-    return app;
+
+    if (saved) {
+      saved.dailyRiskAllowance = dailyRiskAllowance;
+    } else {
+      preferences.appClassifications[app.id] = {
+        classification,
+        riskGroupId,
+        dailyRiskAllowance,
+      };
+      allowanceMigrationMutated = true;
+    }
+
+    return {
+      ...app,
+      classification,
+      riskGroupId,
+      dailyRiskAllowance,
+    };
   });
 
   // Reconcile risk group membership strictly from authoritative app classifications
   if (isRealNative) {
     preferences.riskGroups = reconcileRiskGroupMembership(apps, preferences.riskGroups);
-    storage.savePreferences(preferences).catch(() => {});
+  }
+
+  // Await savePreferences if preferences were freshly constructed, mutated by migration, or reconciled for native
+  if (!persistedPreferences || allowanceMigrationMutated || isRealNative) {
+    try {
+      await storage.savePreferences(preferences);
+    } catch (err) {
+      issues.push(`Failed to persist bootstrap preferences: ${String(err)}`);
+    }
   }
 
   const config: RhythmConfiguration = {

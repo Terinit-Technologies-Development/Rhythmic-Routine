@@ -174,6 +174,10 @@ export function aggregateDailySummary(
   // 3. Compute observed protected minutes from effective protection intervals
   // Canonical: if explicit 'group-protection-started' / 'group-protection-ended' events exist, use ONLY them!
   // Legacy fallback: if no explicit protection events are present, derive intervals from routine/cooldown events.
+  // NOTE (Pass 03 Insights): Group protection events capture routine windows, cooldowns, and overnight
+  // protection gaps. Daily allowance exhaustion is tracked per-app via 'daily-allowance-exhausted'.
+  // Pass 03 Insights aggregation must combine group protection intervals with per-app daily allowance
+  // exhaustion history rather than treating group-protection events alone as complete overnight or allowance data.
   const protectionStarts: Record<string, number> = {};
   const rawIntervals: TimeInterval[] = [];
 

@@ -107,6 +107,15 @@ export const DemoStateSwitcher: React.FC = () => {
       bg: colors.lavenderLight,
       action: () => setRhythmState('evening-wind-down'),
     },
+    {
+      id: 'overnight-protected',
+      label: 'Overnight Protected',
+      description: `Risk apps stay protected until ${morningUnlock} morning unlock`,
+      icon: Moon,
+      color: colors.lavenderDark,
+      bg: colors.lavenderLight,
+      action: () => setRhythmState('overnight-protected'),
+    },
   ];
 
   const handleSelect = (item: (typeof states)[0]) => {
