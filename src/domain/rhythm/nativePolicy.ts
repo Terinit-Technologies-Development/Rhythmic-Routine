@@ -1,11 +1,12 @@
 import { RhythmConfiguration, RhythmRuntime } from './types';
-import { isInsideWindow } from './routine';
+import { isInsideOvernightProtection, isInsideWindow } from './routine';
+import { isDailyAllowanceExhausted } from './allowance';
 
 /**
  * Computes the Android native BASE restriction registry.
  *
  * IMPORTANT:
- * - routine + cooldown reasons are included
+ * - routine + cooldown + overnight + daily allowance reasons are included
  * - Access Leases are deliberately ignored (handled exclusively by native lease registry)
  * - Essential apps can never enter this set
  */
@@ -44,6 +45,25 @@ export function computeUnsuppressedBaseRestrictedAppIds(
       if (app.classification === 'essential') continue;
       if (app.classification !== 'risk') continue;
 
+      restrictedAppIds.add(app.id);
+    }
+  }
+
+  // Overnight protection locks all Risk apps
+  if (isInsideOvernightProtection(now, config.routineWindows)) {
+    for (const app of config.apps) {
+      if (app.classification === 'essential') continue;
+      if (app.classification !== 'risk') continue;
+      restrictedAppIds.add(app.id);
+    }
+  }
+
+  // Exhausted daily allowance locks the specific Risk app
+  for (const app of config.apps) {
+    if (app.classification === 'essential') continue;
+    if (app.classification !== 'risk') continue;
+
+    if (isDailyAllowanceExhausted(app, runtime.dailyAppUsage, nowMs)) {
       restrictedAppIds.add(app.id);
     }
   }

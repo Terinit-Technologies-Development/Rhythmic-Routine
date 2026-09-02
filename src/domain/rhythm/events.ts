@@ -1,6 +1,7 @@
 import {
   AccessLease,
   ActiveCooldown,
+  DailyAppUsage,
   EMERGENCY_ACCESS_MINUTES,
   RhythmConfiguration,
   RhythmEffect,
@@ -10,6 +11,7 @@ import {
 } from './types';
 import {
   getActiveRoutineWindowIds,
+  isInsideOvernightProtection,
   isInsideWindow,
   resolveRhythmState,
 } from './routine';
@@ -26,6 +28,11 @@ import {
   computeEffectiveRestrictions,
   diffRestrictions,
 } from './restrictions';
+import {
+  getLocalDateKey,
+  isDailyAllowanceExhausted,
+  rolloverDailyAppUsage,
+} from './allowance';
 
 /**
  * Pure transition reducer processing a single RhythmEvent given configuration and current runtime state.
@@ -45,6 +52,10 @@ export function processRhythmEvent(
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
   const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
+  const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
+    currentRuntime.dailyAppUsage || {},
+    nowMs
+  );
   const effects: RhythmEffect[] = [];
 
   // 1. Check expired cooldowns individually (multi-group support)
@@ -146,6 +157,32 @@ export function processRhythmEvent(
     }
 
     case 'APP_FOREGROUND': {
+      // Finalize active segment for any previously foregrounded app
+      for (const [id, usage] of Object.entries(nextDailyAppUsage)) {
+        if (id !== event.appId && usage.activeSegmentStartedAt) {
+          const elapsed = Math.max(0, Math.floor((event.timestamp - usage.activeSegmentStartedAt) / 1000));
+          nextDailyAppUsage[id] = {
+            ...usage,
+            usedSeconds: usage.usedSeconds + elapsed,
+            activeSegmentStartedAt: undefined,
+          };
+        }
+      }
+
+      // If foregrounded app is a Risk app, start its active segment for today
+      const targetApp = config.apps.find((a) => a.id === event.appId);
+      if (targetApp && targetApp.classification === 'risk') {
+        const currentUsage = nextDailyAppUsage[event.appId] || {
+          appId: event.appId,
+          dateKey: getLocalDateKey(event.timestamp),
+          usedSeconds: 0,
+        };
+        nextDailyAppUsage[event.appId] = {
+          ...currentUsage,
+          activeSegmentStartedAt: event.timestamp,
+        };
+      }
+
       const targetGroupId = getAppRiskGroupId(event.appId, config.apps);
 
       if (targetGroupId) {
@@ -243,9 +280,24 @@ export function processRhythmEvent(
     }
 
     case 'APP_BACKGROUND': {
+      const usage = nextDailyAppUsage[event.appId];
+      if (usage && usage.activeSegmentStartedAt) {
+        const elapsed = Math.max(0, Math.floor((event.timestamp - usage.activeSegmentStartedAt) / 1000));
+        nextDailyAppUsage[event.appId] = {
+          ...usage,
+          usedSeconds: usage.usedSeconds + elapsed,
+          activeSegmentStartedAt: undefined,
+        };
+      }
+
       if (nextSession && nextSession.activeAppId === event.appId) {
         nextSession = recordActiveUsage(nextSession, undefined, event.timestamp);
       }
+      break;
+    }
+
+    case 'SYNC_DAILY_APP_USAGE': {
+      Object.assign(nextDailyAppUsage, event.dailyAppUsage);
       break;
     }
 
@@ -438,7 +490,28 @@ export function processRhythmEvent(
     }
   }
 
+  // Check and record newly exhausted daily allowances
+  for (const app of config.apps) {
+    if (app.classification === 'risk') {
+      const usage = nextDailyAppUsage[app.id];
+      if (usage && isDailyAllowanceExhausted(app, nextDailyAppUsage, nowMs)) {
+        if (!usage.exhaustedAt) {
+          usage.exhaustedAt = nowMs;
+          effects.push({
+            type: 'RECORD_HISTORY',
+            event: {
+              type: 'daily-allowance-exhausted',
+              appId: app.id,
+              timestamp: nowMs,
+            },
+          });
+        }
+      }
+    }
+  }
+
   // 5. Compute desired effective restrictions and diff against previous
+  const isOvernight = isInsideOvernightProtection(nowDate, config.routineWindows);
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
   const { appRestrictions, effectiveAppIds } = computeEffectiveRestrictions(
     activeRoutineWindows,
@@ -446,7 +519,11 @@ export function processRhythmEvent(
     config.riskGroups,
     config.apps,
     nowMs,
-    nextAccessLeases
+    nextAccessLeases,
+    {
+      isOvernight,
+      dailyAppUsage: nextDailyAppUsage,
+    }
   );
 
   const { toApply, toClear } = diffRestrictions(
@@ -483,6 +560,7 @@ export function processRhythmEvent(
     activeAccessLeases: nextAccessLeases,
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
+    dailyAppUsage: nextDailyAppUsage,
   };
 
   return {

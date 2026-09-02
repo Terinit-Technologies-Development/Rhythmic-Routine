@@ -5,6 +5,8 @@ import { EngineStatus, RhythmConfiguration, RhythmPreferences } from '../domain/
 import { reconcileRhythm } from './reconcileRhythm';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 
+import { DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES } from '../domain/rhythm/allowance';
+
 export interface BootstrapResult {
   engine: RhythmEngine;
   config: RhythmConfiguration;
@@ -57,10 +59,13 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     riskGroups: isRealNative
       ? initialRiskGroups.map((g) => ({ ...g, appIds: [] }))
       : initialRiskGroups,
-    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
+    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
+        dailyRiskAllowance: app.classification === 'risk'
+          ? (app.dailyRiskAllowance ?? { allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES })
+          : app.dailyRiskAllowance,
       };
       return acc;
     }, {}),
@@ -69,16 +74,35 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
   };
 
   // Reconcile installed app classifications against loaded preferences
+  // Migration: existing Risk app without policy -> 30 minutes; non-Risk app -> no policy until Risk
   const apps = baseApps.map((app) => {
     const saved = preferences.appClassifications[app.id];
-    if (saved) {
-      return {
-        ...app,
-        classification: saved.classification,
-        riskGroupId: saved.riskGroupId,
+    const classification = saved ? saved.classification : app.classification;
+    const riskGroupId = saved ? saved.riskGroupId : app.riskGroupId;
+    let dailyRiskAllowance = saved?.dailyRiskAllowance ?? app.dailyRiskAllowance;
+
+    if (classification === 'risk' && !dailyRiskAllowance) {
+      dailyRiskAllowance = {
+        allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
       };
     }
-    return app;
+
+    if (saved) {
+      saved.dailyRiskAllowance = dailyRiskAllowance;
+    } else {
+      preferences.appClassifications[app.id] = {
+        classification,
+        riskGroupId,
+        dailyRiskAllowance,
+      };
+    }
+
+    return {
+      ...app,
+      classification,
+      riskGroupId,
+      dailyRiskAllowance,
+    };
   });
 
   // Reconcile risk group membership strictly from authoritative app classifications

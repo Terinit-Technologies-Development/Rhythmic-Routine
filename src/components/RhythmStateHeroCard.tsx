@@ -108,6 +108,21 @@ export const RhythmStateHeroCard: React.FC = () => {
           ArtworkComponent: EveningTwilightLandscape,
           onPress: () => setDemoSwitcherVisible(true),
         };
+      case 'overnight-protected':
+      default:
+        return {
+          title: 'Overnight Protection',
+          subtitle: 'Apps stay protected until Morning Buffer',
+          badgeText: 'Sleep Mode',
+          badgeIcon: Moon,
+          badgeBg: colors.lavenderLight,
+          badgeTextCol: colors.lavenderDark,
+          footerText: `Until morning unlock (${morningUnlock})`,
+          timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
+          icon: Moon,
+          ArtworkComponent: EveningTwilightLandscape,
+          onPress: () => setDemoSwitcherVisible(true),
+        };
     }
   };
 

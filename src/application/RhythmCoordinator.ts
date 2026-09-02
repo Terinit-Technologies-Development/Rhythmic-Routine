@@ -9,8 +9,14 @@ import {
 } from '../domain/rhythm/types';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
-import { DeviceApp, RiskGroup } from '../types/domain';
+import { DeviceApp, RiskGroup, DailyRiskAllowancePolicy } from '../types/domain';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
+import {
+  AllowanceEditResult,
+  DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+  getLocalDateKey,
+  validateDailyAllowanceEdit,
+} from '../domain/rhythm/allowance';
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
@@ -299,10 +305,11 @@ export class RhythmCoordinator {
     };
 
     const { storage } = getPlatformServices();
-    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
+    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
+        dailyRiskAllowance: app.dailyRiskAllowance,
       };
       return acc;
     }, {});
@@ -322,6 +329,81 @@ export class RhythmCoordinator {
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
     await this.syncNativeState();
     this.notifyListeners();
+  }
+
+  public getConfig(): RhythmConfiguration | null {
+    return this.config ? { ...this.config } : null;
+  }
+
+  /**
+   * Validates and updates a Risk app's daily allowance.
+   * Enforces:
+   * - multiples of 15 min
+   * - max +15 min per day
+   * - reductions down to 0 allowed
+   * - at most once per local day
+   * - persists updated policy and emits history event
+   */
+  public async updateDailyRiskAllowance(
+    appId: string,
+    nextMinutes: number,
+    nowMs: number = Date.now()
+  ): Promise<AllowanceEditResult> {
+    if (!this.config || !this.engine) {
+      await this.initialize();
+    }
+    if (!this.config || !this.engine) {
+      return {
+        allowed: false,
+        nextMinutes,
+        consumesDailyEdit: false,
+        reason: 'already-edited-today',
+      };
+    }
+
+    const app = this.config.apps.find((a) => a.id === appId);
+    if (!app) {
+      return {
+        allowed: false,
+        nextMinutes,
+        consumesDailyEdit: false,
+        reason: 'already-edited-today',
+      };
+    }
+
+    const result = validateDailyAllowanceEdit(app.dailyRiskAllowance, nextMinutes, nowMs);
+    if (!result.allowed) {
+      return result;
+    }
+
+    if (!result.consumesDailyEdit) {
+      return result;
+    }
+
+    const todayKey = getLocalDateKey(nowMs);
+    const previousMinutes =
+      app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES;
+
+    const updatedPolicy: DailyRiskAllowancePolicy = {
+      allowanceMinutes: result.nextMinutes,
+      lastEditedDateKey: todayKey,
+    };
+
+    const updatedApps = this.config.apps.map((a) =>
+      a.id === appId ? { ...a, dailyRiskAllowance: updatedPolicy } : a
+    );
+
+    const { storage } = getPlatformServices();
+    await storage.appendHistoryEvent({
+      type: 'daily-allowance-edited',
+      appId,
+      previousMinutes,
+      nextMinutes: result.nextMinutes,
+      timestamp: nowMs,
+    });
+
+    await this.updateConfig({ apps: updatedApps });
+    return result;
   }
 
   /**

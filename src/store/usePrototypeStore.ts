@@ -27,6 +27,10 @@ import {
   WeeklyRhythmSummary,
   getLocalDateKey,
 } from '../domain/insights';
+import {
+  AllowanceEditResult,
+  DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+} from '../domain/rhythm/allowance';
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -80,6 +84,11 @@ interface PrototypeState {
 
   startAccessLease: (groupId: string, durationMinutes?: number) => Promise<void>;
   triggerEmergencyBypass: () => Promise<void>;
+
+  updateDailyRiskAllowance: (
+    appId: string,
+    nextMinutes: number
+  ) => Promise<AllowanceEditResult>;
 
   updateAppClassification: (
     appId: string,
@@ -399,16 +408,34 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
+  updateDailyRiskAllowance: async (appId, nextMinutes) => {
+    const result = await RhythmCoordinator.getInstance().updateDailyRiskAllowance(appId, nextMinutes);
+    if (result.allowed) {
+      const config = RhythmCoordinator.getInstance().getConfig();
+      if (config) {
+        set({ apps: config.apps });
+      }
+    }
+    return result;
+  },
+
   updateAppClassification: (appId, classification, riskGroupId) => {
     set((state) => {
       const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
 
       const updatedApps = state.apps.map((app) => {
         if (app.id === appId) {
+          let dailyRiskAllowance = app.dailyRiskAllowance;
+          if (classification === 'risk' && !dailyRiskAllowance) {
+            dailyRiskAllowance = {
+              allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+            };
+          }
           return {
             ...app,
             classification,
             riskGroupId: targetGroupId,
+            dailyRiskAllowance,
           };
         }
         return app;
