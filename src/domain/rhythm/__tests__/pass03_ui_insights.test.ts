@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   aggregateObservedRiskUsage,
   getLocalDateKey,
+  getSevenDayWindowStart,
 } from '../../insights';
 import {
   hydrateAppsWithDailyUsage,
@@ -401,6 +402,161 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
       assert.equal(app.dailyRiskAllowance?.allowanceMinutes, 30);
       assert.equal(app.dailyRiskAllowance?.lastEditedDateKey, undefined);
     });
+
+    test('Risk app: group change + allowance edit -> both persist', async () => {
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          riskGroupId: 'social',
+          iconName: 'camera',
+          iconColor: '#000',
+          iconBg: '#FFF',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          dailyRiskAllowance: { allowanceMinutes: 30 },
+        },
+      ];
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: new MockUsageProvider(testApps),
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await coordinator.initialize();
+      usePrototypeStore.setState({
+        apps: [...testApps],
+        riskGroups: coordinator.getConfiguration()?.riskGroups ?? [],
+      });
+
+      // Simulate AppEditModal deterministic save flow:
+      // 1. Update allowance (+15 min step)
+      const allowanceRes = await usePrototypeStore.getState().updateDailyRiskAllowance('com.instagram.android', 45);
+      assert.equal(allowanceRes.allowed, true);
+
+      // 2. Update classification / group
+      await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'risk', 'custom-group');
+
+      const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(savedApp.dailyRiskAllowance?.allowanceMinutes, 45);
+      assert.equal(savedApp.riskGroupId, 'custom-group');
+
+      const storeApp = usePrototypeStore.getState().apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(storeApp.dailyRiskAllowance?.allowanceMinutes, 45);
+      assert.equal(storeApp.riskGroupId, 'custom-group');
+    });
+
+    test('rejected allowance edit -> classification/group unchanged', async () => {
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          riskGroupId: 'social',
+          iconName: 'camera',
+          iconColor: '#000',
+          iconBg: '#FFF',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          dailyRiskAllowance: { allowanceMinutes: 30 },
+        },
+      ];
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: new MockUsageProvider(testApps),
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await coordinator.initialize();
+      usePrototypeStore.setState({
+        apps: [...testApps],
+        riskGroups: coordinator.getConfiguration()?.riskGroups ?? [],
+      });
+
+      // Simulate AppEditModal save with invalid allowance change (+30 min)
+      const selectedApp = testApps[0];
+      const classification = 'risk';
+      const persistedMinutes = selectedApp.dailyRiskAllowance?.allowanceMinutes ?? 30;
+      const draftMinutes: number = 60;
+      const targetGroupId = 'news';
+
+      let allowanceError: string | null = null;
+      if (selectedApp.classification === 'risk' && classification === 'risk' && draftMinutes !== persistedMinutes) {
+        const result = await usePrototypeStore.getState().updateDailyRiskAllowance(selectedApp.id, draftMinutes);
+        if (!result.allowed) {
+          allowanceError = result.reason || 'error';
+        }
+      }
+
+      if (!allowanceError) {
+        await usePrototypeStore.getState().updateAppClassification(selectedApp.id, classification, targetGroupId);
+      }
+
+      // Rejection stops flow before classification change:
+      assert.equal(allowanceError, 'increase-too-large');
+
+      // Ensure app in coordinator and store remains untouched:
+      const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(savedApp.dailyRiskAllowance?.allowanceMinutes, 30);
+      assert.equal(savedApp.riskGroupId, 'social');
+
+      const storeApp = usePrototypeStore.getState().apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(storeApp.dailyRiskAllowance?.allowanceMinutes, 30);
+      assert.equal(storeApp.riskGroupId, 'social');
+    });
+
+    test('Risk -> Normal -> no allowance write race and cleanly removes group membership', async () => {
+      const testApps: DeviceApp[] = [
+        {
+          id: 'com.instagram.android',
+          name: 'Instagram',
+          classification: 'risk',
+          riskGroupId: 'social',
+          iconName: 'camera',
+          iconColor: '#000',
+          iconBg: '#FFF',
+          defaultCategory: 'Social',
+          usageTodayMinutes: 0,
+          sessionMinutes: 0,
+          dailyRiskAllowance: { allowanceMinutes: 30 },
+        },
+      ];
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: new MockUsageProvider(testApps),
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await coordinator.initialize();
+
+      // App reclassified from Risk to Normal
+      await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'normal');
+
+      const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
+      assert.equal(savedApp.classification, 'normal');
+      assert.equal(savedApp.riskGroupId, undefined);
+
+      const socialGroup = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.ok(!socialGroup.appIds.includes('com.instagram.android'));
+    });
   });
 
   describe('4. Independence of Risk Group Session Threshold & Daily Allowance', () => {
@@ -535,6 +691,139 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
       assert.equal(state.insightDataState, 'permission-required');
 
       delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    });
+
+    test('Native daily snapshot throws -> dailyUsageError set', async () => {
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
+
+      const failingUsage = new MockUsageProvider();
+      failingUsage.getDailyUsageSnapshot = async () => {
+        throw new Error('Native IPC timeout');
+      };
+      failingUsage.reconcileDailyUsage = async () => {
+        throw new Error('Native IPC timeout');
+      };
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: failingUsage,
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await usePrototypeStore.getState().refreshDailyUsage();
+
+      const state = usePrototypeStore.getState();
+      assert.equal(state.dailyUsageError, 'Usage unavailable');
+      assert.equal(state.dailyUsageLoading, false);
+
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    });
+
+    test('Native 7-day query throws -> insightDataState = error, never show demo or treat as empty real data', async () => {
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
+
+      const failingUsage = new MockUsageProvider();
+      failingUsage.queryActivityEvents = async () => {
+        throw new Error('Binder query failed');
+      };
+
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      configurePlatformServices({
+        usage: failingUsage,
+        storage: new MockStorageProvider(),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+        nativeRhythm: new NoopNativeRhythmSyncProvider(),
+      });
+
+      await usePrototypeStore.getState().refreshInsights();
+
+      const state = usePrototypeStore.getState();
+      assert.equal(state.insightDataState, 'error');
+      // Never fall back to demo preview numbers
+      assert.equal(state.insightMetrics.protectedTimeWeeklyHours, 0);
+      assert.equal(state.insightMetrics.averageRiskSessionMinutes, 0);
+      assert.notEqual(state.insightDataState, 'real');
+      assert.notEqual(state.insightDataState, 'empty');
+
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    });
+  });
+
+  describe('6. Seven-Day Local Calendar Window & DST Invariants', () => {
+    test('getSevenDayWindowStart returns local midnight 6 days ago (exactly 7 distinct local calendar days)', () => {
+      const now = new Date(2026, 8, 3, 15, 30, 0, 0).getTime();
+      const start = getSevenDayWindowStart(now);
+
+      const startDate = new Date(start);
+      assert.equal(startDate.getHours(), 0);
+      assert.equal(startDate.getMinutes(), 0);
+      assert.equal(startDate.getSeconds(), 0);
+      assert.equal(startDate.getMilliseconds(), 0);
+
+      // Collect all local calendar date keys between start and now
+      const dateKeys = new Set<string>();
+      let cursor = start;
+      while (cursor <= now) {
+        dateKeys.add(getLocalDateKey(cursor));
+        cursor += 3600_000; // step 1 hour
+      }
+
+      assert.equal(dateKeys.size, 7, 'Seven-day local window must span exactly 7 local calendar date keys');
+    });
+
+    test('getSevenDayWindowStart remains resilient across calendar boundaries', () => {
+      // Test at boundary of month (e.g. March 3rd -> spans late February)
+      const march3 = new Date(2026, 2, 3, 23, 59, 59, 0).getTime();
+      const windowStart = getSevenDayWindowStart(march3);
+
+      const dateKeys = new Set<string>();
+      let cursor = windowStart;
+      while (cursor <= march3) {
+        dateKeys.add(getLocalDateKey(cursor));
+        cursor += 1800_000; // step 30 min
+      }
+
+      assert.equal(dateKeys.size, 7, 'Month boundary must cleanly yield 7 local calendar date keys');
+    });
+  });
+
+  describe('7. Actual Usage Display After Allowance Exhaustion', () => {
+    test('Preserves actual used time when exceeded via Access Lease (e.g. 38 / 30 min)', () => {
+      const app: DeviceApp = {
+        id: 'com.instagram.android',
+        name: 'Instagram',
+        classification: 'risk',
+        iconName: 'camera',
+        iconColor: '#000',
+        iconBg: '#FFF',
+        defaultCategory: 'Social',
+        usageTodayMinutes: 38,
+        sessionMinutes: 0,
+        dailyRiskAllowance: { allowanceMinutes: 30 },
+      };
+
+      const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
+      const usedTodayMinutes = app.usageTodayMinutes || 0;
+      const isExhausted = true;
+
+      // AppRow logic:
+      let label = '';
+      if (allowanceMinutes === 0) {
+        label = '0 min planned today';
+      } else if (isExhausted || usedTodayMinutes >= allowanceMinutes) {
+        label = `${usedTodayMinutes} / ${allowanceMinutes} min · allowance complete`;
+      } else {
+        label = `${usedTodayMinutes} / ${allowanceMinutes} min today`;
+      }
+
+      assert.equal(label, '38 / 30 min · allowance complete', 'Numerator must truthfully show 38 min used during lease');
+      assert.notEqual(label, '30 / 30 min · allowance complete', 'Must not clamp to allowance minutes');
     });
   });
 });

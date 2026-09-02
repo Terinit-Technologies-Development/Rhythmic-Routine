@@ -27,6 +27,7 @@ import {
   LocalInsightsRepository,
   WeeklyRhythmSummary,
   getLocalDateKey,
+  getSevenDayWindowStart,
   aggregateObservedRiskUsage,
   ObservedRiskUsageAggregation,
 } from '../domain/insights';
@@ -169,7 +170,7 @@ interface PrototypeState {
     appId: string,
     classification: AppClassification,
     riskGroupId?: string
-  ) => void;
+  ) => Promise<void>;
   updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => void;
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
   toggleRoutineDay: (day: number) => void;
@@ -351,18 +352,14 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
       if (platformOS === 'android' && usage.queryActivityEvents) {
         const now = Date.now();
-        const sevenDaysAgo = now - 7 * 86400 * 1000;
-        try {
-          const events = await usage.queryActivityEvents(sevenDaysAgo, now);
-          observedAggregation = aggregateObservedRiskUsage(
-            events,
-            riskApps.map((a) => ({ id: a.id, riskGroupId: a.riskGroupId })),
-            sevenDaysAgo,
-            now
-          );
-        } catch {
-          // Bounded query error handled below
-        }
+        const start = getSevenDayWindowStart(now);
+        const events = await usage.queryActivityEvents(start, now);
+        observedAggregation = aggregateObservedRiskUsage(
+          events,
+          riskApps.map((a) => ({ id: a.id, riskGroupId: a.riskGroupId })),
+          start,
+          now
+        );
       }
 
       const hasHistoryData = !!weeklySummary.hasData;
@@ -620,47 +617,49 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     return result;
   },
 
-  updateAppClassification: (appId, classification, riskGroupId) => {
-    set((state) => {
-      const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
+  updateAppClassification: async (appId, classification, riskGroupId) => {
+    const state = get();
+    const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
 
-      const updatedApps = state.apps.map((app) => {
-        if (app.id === appId) {
-          let dailyRiskAllowance = app.dailyRiskAllowance;
-          if (classification === 'risk' && !dailyRiskAllowance) {
-            dailyRiskAllowance = {
-              allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-            };
-          }
-          return {
-            ...app,
-            classification,
-            riskGroupId: targetGroupId,
-            dailyRiskAllowance,
+    const updatedApps = state.apps.map((app) => {
+      if (app.id === appId) {
+        let dailyRiskAllowance = app.dailyRiskAllowance;
+        if (classification === 'risk' && !dailyRiskAllowance) {
+          dailyRiskAllowance = {
+            allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
           };
         }
-        return app;
-      });
+        return {
+          ...app,
+          classification,
+          riskGroupId: targetGroupId,
+          dailyRiskAllowance,
+        };
+      }
+      return app;
+    });
 
-      // Maintain Invariant: if not 'risk', remove app from all risk groups
-      const updatedRiskGroups = state.riskGroups.map((group) => {
-        const hasApp = group.appIds.includes(appId);
-        const shouldHave = classification === 'risk' && group.id === targetGroupId;
+    // Maintain Invariant: if not 'risk', remove app from all risk groups
+    const updatedRiskGroups = state.riskGroups.map((group) => {
+      const hasApp = group.appIds.includes(appId);
+      const shouldHave = classification === 'risk' && group.id === targetGroupId;
 
-        if (shouldHave && !hasApp) {
-          return { ...group, appIds: [...group.appIds, appId] };
-        } else if (!shouldHave && hasApp) {
-          return { ...group, appIds: group.appIds.filter((id) => id !== appId) };
-        }
-        return group;
-      });
+      if (shouldHave && !hasApp) {
+        return { ...group, appIds: [...group.appIds, appId] };
+      } else if (!shouldHave && hasApp) {
+        return { ...group, appIds: group.appIds.filter((id) => id !== appId) };
+      }
+      return group;
+    });
 
-      RhythmCoordinator.getInstance().updateConfig({
-        apps: updatedApps,
-        riskGroups: updatedRiskGroups,
-      }).catch(() => {});
+    await RhythmCoordinator.getInstance().updateConfig({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+    });
 
-      return { apps: updatedApps, riskGroups: updatedRiskGroups };
+    set({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
     });
   },
 

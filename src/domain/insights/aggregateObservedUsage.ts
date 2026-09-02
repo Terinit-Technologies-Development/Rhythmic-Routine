@@ -15,6 +15,17 @@ export interface ObservedRiskUsageAggregation {
 }
 
 /**
+ * Computes the timestamp for local midnight six days ago (start of 7-day local calendar window).
+ * This represents today + previous 6 local calendar dates and remains correct across DST.
+ */
+export function getSevenDayWindowStart(now: number = Date.now()): number {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - 6);
+  return start.getTime();
+}
+
+/**
  * Aggregates observed Android UsageStats events into foreground time by app, group, and date.
  * Splits intervals crossing local midnight into their respective local days.
  */

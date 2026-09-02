@@ -64,7 +64,7 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
     if (isExhausted || usedTodayMinutes >= allowanceMinutes) {
       return (
         <Text style={[styles.usageSignal, styles.usageExhausted]}>
-          {allowanceMinutes} / {allowanceMinutes} min · allowance complete
+          {usedTodayMinutes} / {allowanceMinutes} min · allowance complete
         </Text>
       );
     }

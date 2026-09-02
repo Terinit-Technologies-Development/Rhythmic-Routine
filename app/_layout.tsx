@@ -38,9 +38,15 @@ export default function RootLayout() {
   React.useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
-        RhythmCoordinator.getInstance()
-          .handleAppResume()
-          .catch(() => {});
+        const resume = async () => {
+          await RhythmCoordinator.getInstance().handleAppResume();
+          const store = usePrototypeStore.getState();
+          await store.checkPermissions();
+          await store.refreshDailyUsage();
+          await store.refreshInsights();
+        };
+
+        resume().catch(() => {});
       }
     });
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import {
   View,
   Text,
@@ -37,15 +37,12 @@ export default function InsightsScreen() {
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
   const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
 
-  useEffect(() => {
-    refreshDailyUsage().catch(() => {});
-    refreshInsights().catch(() => {});
-  }, [refreshDailyUsage, refreshInsights]);
-
   useFocusEffect(
     useCallback(() => {
-      refreshDailyUsage().catch(() => {});
-      refreshInsights().catch(() => {});
+      Promise.all([
+        refreshDailyUsage(),
+        refreshInsights(),
+      ]).catch(() => {});
     }, [refreshDailyUsage, refreshInsights])
   );
 

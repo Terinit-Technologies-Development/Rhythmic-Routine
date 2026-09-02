@@ -49,15 +49,11 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const handleSave = async () => {
     setAllowanceError(null);
 
-    // 1. Classification & group updates
-    updateAppClassification(
-      selectedApp.id,
-      classification,
-      classification === 'risk' ? selectedGroupId : undefined
-    );
-
-    // 2. If already a Risk app and allowance was edited
-    if (selectedApp.classification === 'risk' && draftMinutes !== persistedMinutes) {
+    if (
+      selectedApp.classification === 'risk' &&
+      classification === 'risk' &&
+      draftMinutes !== persistedMinutes
+    ) {
       if (isLocked) {
         setAllowanceError('Allowance already edited today. Editable again tomorrow.');
         return;
@@ -76,10 +72,15 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
         setAllowanceError(errorMessages[result.reason || ''] || 'Unable to update allowance.');
         return;
       }
-
-      await refreshDailyUsage();
     }
 
+    await updateAppClassification(
+      selectedApp.id,
+      classification,
+      classification === 'risk' ? selectedGroupId : undefined
+    );
+
+    await refreshDailyUsage();
     onClose();
   };
 

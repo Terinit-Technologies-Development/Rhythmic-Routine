@@ -48,40 +48,27 @@ export class NativeUsageProvider implements UsageProvider {
   }
 
   async getDailyUsageSnapshot(): Promise<DailyUsageSnapshot> {
-    try {
-      const snapshot = await RhythmDeviceModule.getDailyUsageSnapshot();
-      return snapshot;
-    } catch {
-      return {
-        dateKey: new Date().toISOString().slice(0, 10),
-        apps: [],
-      };
-    }
+    return RhythmDeviceModule.getDailyUsageSnapshot();
   }
 
   async reconcileDailyUsage(): Promise<DailyUsageSnapshot> {
-    try {
-      const snapshot = await RhythmDeviceModule.reconcileDailyUsage();
-      return snapshot;
-    } catch {
+    const snapshot = await RhythmDeviceModule.reconcileDailyUsage();
+    if (!snapshot) {
       return this.getDailyUsageSnapshot();
     }
+    return snapshot;
   }
 
   async queryActivityEvents(from: number, to: number): Promise<UsageActivityEvent[]> {
-    try {
-      const raw = await RhythmDeviceModule.queryUsageEvents(from, to);
-      return raw
-        .filter((e) => e.eventType === 'foreground' || e.eventType === 'background')
-        .map((e) => ({
-          appId: e.packageName,
-          timestamp: e.timestamp,
-          state: e.eventType as 'foreground' | 'background',
-        }))
-        .sort((a, b) => a.timestamp - b.timestamp);
-    } catch {
-      return [];
-    }
+    const raw = await RhythmDeviceModule.queryUsageEvents(from, to);
+    return raw
+      .filter((e) => e.eventType === 'foreground' || e.eventType === 'background')
+      .map((e) => ({
+        appId: e.packageName,
+        timestamp: e.timestamp,
+        state: e.eventType as 'foreground' | 'background',
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   onActivityEvent(callback: (event: UsageActivityEvent) => void): () => void {
