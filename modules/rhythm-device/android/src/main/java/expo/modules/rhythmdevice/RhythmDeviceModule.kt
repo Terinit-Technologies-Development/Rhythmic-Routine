@@ -216,19 +216,24 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction result
     }
 
-    AsyncFunction("setRoutineSchedule") { scheduleList: List<Map<String, Any>> ->
+    AsyncFunction("setRoutineSchedule") { scheduleInput: Any ->
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val parsedWindows = scheduleList.mapNotNull {
-        val id = it["id"] as? String ?: return@mapNotNull null
-        val start = it["startTime"] as? String ?: "00:00"
-        val end = it["endTime"] as? String ?: "00:00"
-        val enabled = it["enabled"] as? Boolean ?: true
-        val daysList = (it["activeDays"] as? List<*>)?.mapNotNull { d -> (d as? Number)?.toInt() }?.toSet() ?: emptySet()
-        val pkgsList = (it["protectedPackages"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
-        NativeRoutineWindow(id, start, end, daysList, pkgsList, enabled)
+      val schedule = RhythmEnforcementService.parseRoutineScheduleInput(scheduleInput)
+      RhythmEnforcementService.saveRoutineSchedule(context, schedule)
+      RhythmEnforcementService.instance?.onRoutineScheduleChanged()
+      return@AsyncFunction true
+    }
+
+    AsyncFunction("setCooldownPolicies") { policiesList: List<Map<String, Any>> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val parsed = policiesList.mapNotNull {
+        val gid = it["groupId"] as? String ?: return@mapNotNull null
+        val endsAt = (it["endsAt"] as? Number)?.toLong() ?: return@mapNotNull null
+        val pkgsList = (it["packageNames"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
+        NativeCooldownPolicy(gid, pkgsList, endsAt)
       }
-      RhythmEnforcementService.saveRoutineWindows(context, parsedWindows)
-      RhythmEnforcementService.instance?.scheduleNextRoutineBoundary()
+      RhythmEnforcementService.saveCooldownPolicies(context, parsed)
+      RhythmEnforcementService.instance?.onCooldownPoliciesChanged()
       return@AsyncFunction true
     }
 
@@ -242,17 +247,19 @@ class RhythmDeviceModule : Module() {
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
       val baseSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet()
       val leases = RhythmEnforcementService.loadActiveLeases(context)
-      val routines = RhythmEnforcementService.loadRoutineWindows(context)
+      val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
+      val schedule = RhythmEnforcementService.loadRoutineSchedule(context)
       val service = RhythmEnforcementService.instance
       val ledger = RhythmEnforcementService.loadDailyUsageLedger(context)
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
-      val lastAccountedAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, 0L)
+      val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
         "baseRestrictedPackageCount" to baseSet.size,
         "activeLeaseCount" to leases.size,
-        "routineWindowCount" to routines.size,
+        "cooldownCount" to cooldowns.size,
+        "routineWindowCount" to schedule.windows.size,
         "overlayVisible" to RhythmOverlayActivity.isVisible,
         "dailyUsageAppCount" to ledger.size
       )
@@ -277,11 +284,14 @@ class RhythmDeviceModule : Module() {
       if (service?.nextRoutineBoundaryAt != null && service.nextRoutineBoundaryAt!! > 0L) {
         result["nextRoutineBoundaryAt"] = service.nextRoutineBoundaryAt!!.toDouble()
       }
+      if (service?.nearestCooldownExpiryAt != null && service.nearestCooldownExpiryAt!! > 0L) {
+        result["nearestCooldownExpiryAt"] = service.nearestCooldownExpiryAt!!.toDouble()
+      }
       if (lastReconciledAt > 0L) {
         result["lastUsageReconciledAt"] = lastReconciledAt.toDouble()
       }
-      if (lastAccountedAt > 0L) {
-        result["lastUsageAccountedAt"] = lastAccountedAt.toDouble()
+      if (watermarks.isNotEmpty()) {
+        result["accountedWatermarkCount"] = watermarks.size
       }
       return@AsyncFunction result
     }

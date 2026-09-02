@@ -1,5 +1,4 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
-import { computeUnsuppressedBaseRestrictedAppIds } from '../domain/rhythm/nativePolicy';
 import RhythmDeviceModule from '../../modules/rhythm-device';
 
 export interface IOSNativeGroupPolicy {
@@ -80,6 +79,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   private lastAndroidBaseRestrictionsSignature?: string;
   private lastAndroidRiskPoliciesSignature?: string;
   private lastAndroidRoutineScheduleSignature?: string;
+  private lastAndroidCooldownsSignature?: string;
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
     try {
@@ -158,17 +158,13 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           }
         }
       } else if (os === 'android') {
-        const baseRestrictedPackageIds = computeUnsuppressedBaseRestrictedAppIds(
-          runtime,
-          config,
-          Date.now()
-        ).sort();
-        const baseSig = JSON.stringify(baseRestrictedPackageIds);
-        if (this.lastAndroidBaseRestrictionsSignature !== baseSig) {
-          await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
-          this.lastAndroidBaseRestrictionsSignature = baseSig;
+        // Clear opaque base restrictions so native solely evaluates routines, cooldowns, and allowances
+        if (this.lastAndroidBaseRestrictionsSignature !== '[]') {
+          await RhythmDeviceModule.setBaseRestrictions([]);
+          this.lastAndroidBaseRestrictionsSignature = '[]';
         }
 
+        // 1. Sync daily allowance policies
         if (RhythmDeviceModule.setDailyAllowancePolicies) {
           const riskPolicies = config.apps
             .filter((app) => app.classification === 'risk')
@@ -184,8 +180,36 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           }
         }
 
+        // 2. Sync explicit active cooldown policies
+        if (RhythmDeviceModule.setCooldownPolicies) {
+          const cooldownPolicies = Object.entries(runtime.activeCooldowns || {})
+            .filter(([, cd]) => cd.endsAt > Date.now())
+            .map(([gid, cd]) => {
+              const grp = config.riskGroups.find((g) => g.id === gid);
+              return {
+                groupId: gid,
+                packageNames: (grp?.appIds || []).slice().sort(),
+                endsAt: cd.endsAt,
+              };
+            })
+            .filter((p) => p.packageNames.length > 0)
+            .sort((a, b) => a.groupId.localeCompare(b.groupId));
+
+          const cdSig = JSON.stringify(cooldownPolicies);
+          if (this.lastAndroidCooldownsSignature !== cdSig) {
+            await RhythmDeviceModule.setCooldownPolicies(cooldownPolicies);
+            this.lastAndroidCooldownsSignature = cdSig;
+          }
+        }
+
+        // 3. Sync native routine schedule with explicit window types and allRiskPackages
         if (RhythmDeviceModule.setRoutineSchedule) {
-          const schedule = config.routineWindows.map((w) => {
+          const allRiskPackages = config.apps
+            .filter((a) => a.classification === 'risk')
+            .map((a) => a.id)
+            .sort();
+
+          const scheduleWindows = config.routineWindows.map((w) => {
             const protectedPackageNames = new Set<string>();
             for (const gid of w.protectedGroupIds) {
               const grp = config.riskGroups.find((g) => g.id === gid);
@@ -195,8 +219,14 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 }
               }
             }
+            const routineType: 'morning-buffer' | 'evening-wind-down' =
+              w.id.includes('morning') || w.name?.toLowerCase().includes('morning')
+                ? 'morning-buffer'
+                : 'evening-wind-down';
+
             return {
               id: w.id,
+              type: routineType,
               startTime: w.startTime,
               endTime: w.endTime ?? '00:00',
               activeDays: [...w.activeDays].sort(),
@@ -204,9 +234,14 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               enabled: w.enabled,
             };
           }).sort((a, b) => a.id.localeCompare(b.id));
-          const schedSig = JSON.stringify(schedule);
+
+          const scheduleInput = {
+            windows: scheduleWindows,
+            allRiskPackages,
+          };
+          const schedSig = JSON.stringify(scheduleInput);
           if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
-            await RhythmDeviceModule.setRoutineSchedule(schedule);
+            await RhythmDeviceModule.setRoutineSchedule(scheduleInput);
             this.lastAndroidRoutineScheduleSignature = schedSig;
           }
         }

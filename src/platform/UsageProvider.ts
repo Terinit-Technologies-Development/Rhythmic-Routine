@@ -26,4 +26,10 @@ export interface UsageProvider {
    * Subscribes to foreground app change events.
    */
   onForegroundAppChange?(callback: (appId: string) => void): () => void;
+
+  /**
+   * Explicitly triggers an immediate bounded activity events refresh (e.g. on app resume)
+   * to update TypeScript Risk Group session continuity without waiting for periodic timers.
+   */
+  refreshActivityEvents?(): Promise<void>;
 }

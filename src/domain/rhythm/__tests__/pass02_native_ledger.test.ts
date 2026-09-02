@@ -47,24 +47,30 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     assert.ok(keysSrc.includes('DAILY_ALLOWANCE_POLICIES_JSON'), 'Must define DAILY_ALLOWANCE_POLICIES_JSON');
     assert.ok(keysSrc.includes('DAILY_USAGE_LEDGER_JSON'), 'Must define DAILY_USAGE_LEDGER_JSON');
     assert.ok(keysSrc.includes('LAST_USAGE_RECONCILED_AT'), 'Must define LAST_USAGE_RECONCILED_AT');
-    assert.ok(keysSrc.includes('LAST_USAGE_ACCOUNTED_AT'), 'Must define LAST_USAGE_ACCOUNTED_AT');
+    assert.ok(keysSrc.includes('LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON'), 'Must define LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON');
     assert.ok(keysSrc.includes('ROUTINE_SCHEDULE_JSON'), 'Must define ROUTINE_SCHEDULE_JSON');
+    assert.ok(keysSrc.includes('COOLDOWN_POLICIES_JSON'), 'Must define COOLDOWN_POLICIES_JSON');
 
     const serviceSrc = fs.readFileSync(servicePath, 'utf8');
     assert.ok(serviceSrc.includes('data class NativeDailyAllowancePolicy'), 'Must define NativeDailyAllowancePolicy');
     assert.ok(serviceSrc.includes('data class NativeDailyUsage'), 'Must define NativeDailyUsage');
     assert.ok(serviceSrc.includes('data class NativeDailyUsageSnapshot'), 'Must define NativeDailyUsageSnapshot');
     assert.ok(serviceSrc.includes('data class NativeRoutineWindow'), 'Must define NativeRoutineWindow');
+    assert.ok(serviceSrc.includes('data class NativeCooldownPolicy'), 'Must define NativeCooldownPolicy');
     assert.ok(serviceSrc.includes('fun isDailyAllowanceExhausted'), 'Must define isDailyAllowanceExhausted');
     assert.ok(serviceSrc.includes('fun isProtectedByRoutine'), 'Must define isProtectedByRoutine');
+    assert.ok(serviceSrc.includes('fun isRestrictedByCooldown'), 'Must define isRestrictedByCooldown');
     assert.ok(serviceSrc.includes('fun scheduleAllowanceDeadline'), 'Must define scheduleAllowanceDeadline');
     assert.ok(serviceSrc.includes('fun scheduleMidnightRollover'), 'Must define scheduleMidnightRollover');
     assert.ok(serviceSrc.includes('fun scheduleNextRoutineBoundary'), 'Must define scheduleNextRoutineBoundary');
+    assert.ok(serviceSrc.includes('fun scheduleNearestCooldownExpiry'), 'Must define scheduleNearestCooldownExpiry');
+    assert.ok(serviceSrc.includes('fun resolveCurrentForegroundPackage'), 'Must define resolveCurrentForegroundPackage');
     assert.ok(serviceSrc.includes('fun reconcileUsage'), 'Must define reconcileUsage');
 
     const moduleSrc = fs.readFileSync(modulePath, 'utf8');
     assert.ok(moduleSrc.includes('setDailyAllowancePolicies'), 'Must expose setDailyAllowancePolicies');
     assert.ok(moduleSrc.includes('setRoutineSchedule'), 'Must expose setRoutineSchedule');
+    assert.ok(moduleSrc.includes('setCooldownPolicies'), 'Must expose setCooldownPolicies');
     assert.ok(moduleSrc.includes('getDailyUsageSnapshot'), 'Must expose getDailyUsageSnapshot');
     assert.ok(moduleSrc.includes('reconcileDailyUsage'), 'Must expose reconcileDailyUsage');
   });
@@ -99,9 +105,18 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
     interface RoutineWindowRecord {
       id: string;
+      type: 'morning-buffer' | 'evening-wind-down';
       startMinutes: number;
       endMinutes: number;
+      activeDays: Set<number>;
       protectedPackages: Set<string>;
+      enabled: boolean;
+    }
+
+    interface CooldownRecord {
+      groupId: string;
+      packageNames: Set<string>;
+      endsAt: number;
     }
 
     class NativeLedgerSimulator {
@@ -110,14 +125,17 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       public baseRestricted: Set<string> = new Set();
       public activeLeases: Map<string, { packageNames: Set<string>; endsAt: number }> = new Map();
       public routineWindows: RoutineWindowRecord[] = [];
+      public allRiskPackages: Set<string> = new Set();
+      public cooldowns: CooldownRecord[] = [];
 
       public lastForegroundPackage?: string;
       public activeUsagePackage?: string;
       public activeUsageStartedAt?: number;
       public allowanceDeadlineAt?: number;
       public midnightRolloverAt?: number;
+      public nearestCooldownExpiryAt?: number;
       public interventionPresentedFor?: string;
-      public lastUsageAccountedAt: number = 0;
+      public accountedWatermarks: Map<string, number> = new Map();
       public lastUsageReconciledAt: number = 0;
 
       public setPolicies(list: NativeDailyPolicy[], now: number) {
@@ -184,8 +202,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         }
       }
 
-      public onWindowStateChanged(packageName: string, now: number) {
-        // Correction 1: Explicitly finalize Risk accounting when Touch Grass overlay or system UI becomes foreground
+      public onWindowStateChanged(packageName: string, now: number, isoToday: number = 3, currentMinutes: number = 720) {
         if (packageName === 'com.terinit.rhythmicroutine' || packageName.startsWith('com.android.systemui')) {
           const prev = this.lastForegroundPackage;
           this.lastForegroundPackage = packageName;
@@ -211,12 +228,12 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         this.allowanceDeadlineAt = undefined;
         this.midnightRolloverAt = undefined;
 
-        const restricted = this.isEffectivelyRestricted(packageName, now);
+        const restricted = this.isEffectivelyRestricted(packageName, now, isoToday, currentMinutes);
         const policy = this.policies.get(packageName);
 
         if (restricted) {
           this.interventionPresentedFor = packageName;
-          if (policy && this.ledger.get(packageName)?.exhaustedAt === undefined) {
+          if (policy && this.ledger.get(packageName)?.exhaustedAt === undefined && this.isDailyAllowanceExhausted(packageName, now)) {
             const existing = this.ledger.get(packageName);
             this.ledger.set(packageName, {
               packageName,
@@ -269,7 +286,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
             this.ledger.get(packageName)!.activeSegmentStartedAt = undefined;
             this.activeUsagePackage = undefined;
             this.activeUsageStartedAt = undefined;
-            this.advanceWatermark(now);
+            this.advancePackageWatermark(packageName, now);
             this.interventionPresentedFor = packageName;
           } else {
             this.ledger.get(packageName)!.exhaustedAt = existing?.exhaustedAt ?? now;
@@ -294,7 +311,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
             activeSegmentStartedAt: undefined,
             exhaustedAt: existing?.exhaustedAt,
           });
-          this.advanceWatermark(now);
+          this.advancePackageWatermark(packageName, now);
         }
         this.activeUsagePackage = undefined;
         this.activeUsageStartedAt = undefined;
@@ -318,13 +335,13 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
             existing.exhaustedAt = now;
             this.activeUsagePackage = undefined;
             this.activeUsageStartedAt = undefined;
-            this.advanceWatermark(now);
+            this.advancePackageWatermark(packageName, now);
             this.interventionPresentedFor = packageName;
           } else {
             existing.usedMillis = totalUsed;
             existing.exhaustedAt = now;
             this.activeUsageStartedAt = now;
-            this.advanceWatermark(now);
+            this.advancePackageWatermark(packageName, now);
           }
         }
       }
@@ -362,13 +379,13 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         });
 
         this.activeUsageStartedAt = midnightTime;
-        this.advanceWatermark(midnightTime);
+        this.advancePackageWatermark(packageName, midnightTime);
         this.allowanceDeadlineAt = midnightTime + policy.allowanceMinutes * 60_000;
         this.scheduleMidnightRollover(packageName, midnightTime);
       }
 
-      public advanceWatermark(timestamp: number) {
-        this.lastUsageAccountedAt = Math.max(this.lastUsageAccountedAt, timestamp);
+      public advancePackageWatermark(packageName: string, timestamp: number) {
+        this.accountedWatermarks.set(packageName, Math.max(this.accountedWatermarks.get(packageName) ?? 0, timestamp));
       }
 
       public hasActiveLease(packageName: string, now: number): boolean {
@@ -380,22 +397,80 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         return false;
       }
 
-      public isProtectedByRoutine(packageName: string, currentMinutesOfDay: number): boolean {
-        if (this.routineWindows.length === 0) return false;
-        const matching = this.routineWindows.filter((r) => r.protectedPackages.has(packageName));
-        if (matching.length === 0) return false;
+      public isRestrictedByCooldown(packageName: string, now: number): boolean {
+        return this.cooldowns.some((c) => c.packageNames.has(packageName) && c.endsAt > now);
+      }
 
-        const morning = matching.find((r) => r.id.includes('morning') || r.startMinutes < 720);
-        const evening = matching.find((r) => r.id.includes('evening') || r.startMinutes >= 720);
+      public isProtectedByRoutine(
+        packageName: string,
+        _now: number,
+        isoToday: number,
+        currentMinutes: number
+      ): boolean {
+        const morning = this.routineWindows.find((w) => w.type === 'morning-buffer');
+        const evening = this.routineWindows.find((w) => w.type === 'evening-wind-down');
 
-        const morningStart = morning?.startMinutes ?? 360; // 06:00
-        const morningEnd = morning?.endMinutes ?? 540;     // 09:00
-        const eveningStart = evening?.startMinutes ?? 1260; // 21:00
-        const eveningEnd = evening?.endMinutes ?? 1380;     // 23:00
+        // 1. Morning Buffer window
+        if (morning && morning.enabled && morning.activeDays.has(isoToday)) {
+          if (currentMinutes >= morning.startMinutes && currentMinutes < morning.endMinutes) {
+            if (morning.protectedPackages.has(packageName)) return true;
+          }
+        }
 
-        if (currentMinutesOfDay >= morningStart && currentMinutesOfDay < morningEnd) return true;
-        if (currentMinutesOfDay >= eveningStart && currentMinutesOfDay < eveningEnd) return true;
-        if (currentMinutesOfDay >= eveningEnd || currentMinutesOfDay < morningStart) return true;
+        // 2. Evening Wind-Down window
+        if (evening && evening.enabled) {
+          const eStart = evening.startMinutes;
+          const eEnd = evening.endMinutes;
+          if (eStart < eEnd) {
+            if (evening.activeDays.has(isoToday) && currentMinutes >= eStart && currentMinutes < eEnd) {
+              if (evening.protectedPackages.has(packageName)) return true;
+            }
+          } else {
+            const isoYesterday = isoToday === 1 ? 7 : isoToday - 1;
+            if (evening.activeDays.has(isoYesterday) && currentMinutes < eEnd) {
+              if (evening.protectedPackages.has(packageName)) return true;
+            }
+            if (evening.activeDays.has(isoToday) && currentMinutes >= eStart) {
+              if (evening.protectedPackages.has(packageName)) return true;
+            }
+          }
+        }
+
+        // 3. Derived Overnight Protection
+        const isRisk = this.allRiskPackages.has(packageName) ||
+          (morning?.protectedPackages.has(packageName) ?? false) ||
+          (evening?.protectedPackages.has(packageName) ?? false);
+
+        if (isRisk) {
+          const isPreMidnight = currentMinutes >= 720;
+          if (isPreMidnight) {
+            const isoTomorrow = isoToday === 7 ? 1 : isoToday + 1;
+            const eveningActiveToday = evening ? evening.enabled && evening.activeDays.has(isoToday) : false;
+            const morningActiveTomorrow = morning ? morning.enabled && morning.activeDays.has(isoTomorrow) : false;
+
+            if (eveningActiveToday && morningActiveTomorrow) {
+              const eEnd = evening ? evening.endMinutes : 1380;
+              if (currentMinutes >= eEnd) {
+                return true;
+              }
+            }
+          } else {
+            const isoYesterday = isoToday === 1 ? 7 : isoToday - 1;
+            const eveningActiveYesterday = evening ? evening.enabled && evening.activeDays.has(isoYesterday) : false;
+            const morningActiveToday = morning ? morning.enabled && morning.activeDays.has(isoToday) : false;
+
+            if (eveningActiveYesterday && morningActiveToday) {
+              const mStart = morning ? morning.startMinutes : 360;
+              const eStart = evening ? evening.startMinutes : 1260;
+              const eEnd = evening ? evening.endMinutes : 1380;
+              const pastCrossMidnightEvening = eStart >= eEnd ? currentMinutes >= eEnd : true;
+
+              if (currentMinutes < mStart && pastCrossMidnightEvening) {
+                return true;
+              }
+            }
+          }
+        }
 
         return false;
       }
@@ -414,24 +489,30 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         return usage.usedMillis + elapsed >= policy.allowanceMinutes * 60_000;
       }
 
-      public isEffectivelyRestricted(packageName: string, now: number, currentMinutes?: number): boolean {
+      public isEffectivelyRestricted(
+        packageName: string,
+        now: number,
+        isoToday: number = 3,
+        currentMinutes: number = 720
+      ): boolean {
         const isBase = this.baseRestricted.has(packageName);
         const isExhausted = this.isDailyAllowanceExhausted(packageName, now);
-        const isRoutine = currentMinutes !== undefined ? this.isProtectedByRoutine(packageName, currentMinutes) : false;
+        const isRoutine = this.isProtectedByRoutine(packageName, now, isoToday, currentMinutes);
+        const isCooldown = this.isRestrictedByCooldown(packageName, now);
 
-        if (!isBase && !isExhausted && !isRoutine) return false;
+        if (!isBase && !isExhausted && !isRoutine && !isCooldown) return false;
 
         if (this.hasActiveLease(packageName, now)) return false;
         return true;
       }
 
-      public onLeaseExpired(now: number) {
-        if (this.lastForegroundPackage && this.isEffectivelyRestricted(this.lastForegroundPackage, now)) {
+      public onLeaseExpired(now: number, isoToday: number = 3, currentMinutes: number = 720) {
+        if (this.lastForegroundPackage && this.isEffectivelyRestricted(this.lastForegroundPackage, now, isoToday, currentMinutes)) {
           this.interventionPresentedFor = this.lastForegroundPackage;
         }
       }
 
-      public restoreForegroundStateAfterReconnect(events: { packageName: string; timestamp: number; isForeground: boolean }[], now: number) {
+      public resolveCurrentForegroundPackage(events: { packageName: string; timestamp: number; isForeground: boolean }[]): string | null {
         const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
         let currentFg: string | null = null;
 
@@ -444,6 +525,15 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         }
 
         if (currentFg && currentFg !== 'com.terinit.rhythmicroutine' && !currentFg.startsWith('com.android.systemui')) {
+          return currentFg;
+        }
+        return null;
+      }
+
+      public restoreForegroundStateAfterReconnect(events: { packageName: string; timestamp: number; isForeground: boolean }[], now: number) {
+        const currentFg = this.resolveCurrentForegroundPackage(events);
+
+        if (currentFg) {
           this.lastForegroundPackage = currentFg;
           const policy = this.policies.get(currentFg);
           if (this.isEffectivelyRestricted(currentFg, now)) {
@@ -459,6 +549,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
         for (const [pkg, policy] of this.policies.entries()) {
           const pkgEvents = sorted.filter((e) => e.packageName === pkg);
+          const pkgWatermark = this.accountedWatermarks.get(pkg) ?? 0;
           let segStart: number | null = null;
           let delta = 0;
 
@@ -470,11 +561,11 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
               const tBg = ev.timestamp;
               segStart = null;
 
-              if (tBg <= this.lastUsageAccountedAt) {
+              if (tBg <= pkgWatermark) {
                 continue;
               }
 
-              const effectiveStart = Math.max(tFg, this.lastUsageAccountedAt);
+              const effectiveStart = Math.max(tFg, pkgWatermark);
               if (tBg > effectiveStart) {
                 delta += (tBg - effectiveStart);
               }
@@ -482,7 +573,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
           }
 
           if (segStart !== null && this.activeUsagePackage !== pkg) {
-            const effectiveStart = Math.max(segStart, this.lastUsageAccountedAt);
+            const effectiveStart = Math.max(segStart, pkgWatermark);
             if (toTime > effectiveStart) {
               delta += (toTime - effectiveStart);
             }
@@ -502,9 +593,10 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
               exhaustedAt: isExhausted ? (existing?.exhaustedAt ?? toTime) : existing?.exhaustedAt,
             });
           }
+
+          this.accountedWatermarks.set(pkg, Math.max(pkgWatermark, toTime));
         }
 
-        this.lastUsageAccountedAt = Math.max(this.lastUsageAccountedAt, toTime);
         this.lastUsageReconciledAt = toTime;
       }
     }
@@ -781,7 +873,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       sim.onWindowStateChanged('com.android.launcher', tEnd10m);
 
       assert.equal(sim.ledger.get('com.instagram.android')?.usedMillis, 600_000);
-      assert.equal(sim.lastUsageAccountedAt, tEnd10m);
+      assert.equal(sim.accountedWatermarks.get('com.instagram.android'), tEnd10m);
 
       const eventsLive = [
         { packageName: 'com.instagram.android', timestamp: t0, isForeground: true },
@@ -809,7 +901,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       ];
       sim.reconcileUsage(spanningEvents, tBgAfter);
       assert.equal(sim.ledger.get('com.instagram.android')?.usedMillis, 780_000, 'Only post-watermark delta counted');
-      assert.equal(sim.lastUsageAccountedAt, tBgAfter);
+      assert.equal(sim.accountedWatermarks.get('com.instagram.android'), tBgAfter);
     });
 
     it('Correction 3: Two overlapping reconciliations = no increase after first correct result', () => {
@@ -827,6 +919,47 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
       sim.reconcileUsage(events, 10000);
       assert.equal(sim.ledger.get('com.instagram.android')?.usedMillis, 6000, 'Must not increase on repeated reconciliation');
+    });
+
+    it('Correction 3: Missed B interval repaired after later A live watermark', () => {
+      const sim = new NativeLedgerSimulator();
+      const t1000 = 1000;
+      sim.setPolicies([
+        { packageName: 'com.app.a', allowanceMinutes: 30 },
+        { packageName: 'com.app.b', allowanceMinutes: 30 },
+      ], t1000);
+
+      // App A commits live segment up to 10:20 (timestamp 37_200_000)
+      sim.accountedWatermarks.set('com.app.a', 37_200_000);
+      sim.ledger.set('com.app.a', {
+        packageName: 'com.app.a',
+        dateKey: '2026-09-02',
+        usedMillis: 1_200_000,
+      });
+
+      // App B watermark is 10:00 (timestamp 36_000_000)
+      sim.accountedWatermarks.set('com.app.b', 36_000_000);
+      sim.ledger.set('com.app.b', {
+        packageName: 'com.app.b',
+        dateKey: '2026-09-02',
+        usedMillis: 0,
+      });
+
+      // Events stream contains missed B interval 10:05–10:10 (36_300_000 to 36_600_000 = 5 min = 300_000 ms)
+      // and A interval up to 10:20 (36_000_000 to 37_200_000)
+      const events = [
+        { packageName: 'com.app.b', timestamp: 36_300_000, isForeground: true },
+        { packageName: 'com.app.b', timestamp: 36_600_000, isForeground: false },
+        { packageName: 'com.app.a', timestamp: 36_000_000, isForeground: true },
+        { packageName: 'com.app.a', timestamp: 37_200_000, isForeground: false },
+      ];
+
+      sim.reconcileUsage(events, 37_200_000);
+
+      // A was already committed at 10:20 so delta is 0
+      assert.equal(sim.ledger.get('com.app.a')?.usedMillis, 1_200_000, 'A must not be double counted');
+      // B was at 10:00, so missed 5 minutes (300,000 ms) is accurately repaired!
+      assert.equal(sim.ledger.get('com.app.b')?.usedMillis, 300_000, 'B missed interval must be repaired');
     });
 
     it('Correction 4: Restore current Risk foreground tracking after service reconnect', () => {
@@ -854,6 +987,32 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       assert.equal(simB.activeUsagePackage, undefined, 'Must not restore package if later background event exists');
     });
 
+    it('Correction 4: Risk app foreground >5 minutes survives service reconnect', () => {
+      const sim = new NativeLedgerSimulator();
+      sim.setPolicies([{ packageName: 'com.instagram.android', allowanceMinutes: 30 }], 1000);
+
+      // Event from 20 minutes ago, still active
+      const now = 20 * 60_000 + 1000;
+      const events = [
+        { packageName: 'com.instagram.android', timestamp: 1000, isForeground: true },
+      ];
+      const resolved = sim.resolveCurrentForegroundPackage(events);
+      assert.equal(resolved, 'com.instagram.android');
+
+      sim.restoreForegroundStateAfterReconnect(events, now);
+      assert.equal(sim.activeUsagePackage, 'com.instagram.android', 'Foreground active >5 minutes survives reconnect');
+    });
+
+    it('Correction 4: Foreground followed by background resolves to no current app', () => {
+      const sim = new NativeLedgerSimulator();
+      const events = [
+        { packageName: 'com.instagram.android', timestamp: 1000, isForeground: true },
+        { packageName: 'com.instagram.android', timestamp: 5000, isForeground: false },
+      ];
+      const resolved = sim.resolveCurrentForegroundPackage(events);
+      assert.equal(resolved, null, 'Foreground followed by background resolves to null');
+    });
+
     it('Correction 5: Event-driven local-midnight rollover closes Day 1 and resets Day 2', () => {
       const sim = new NativeLedgerSimulator();
       const t0 = 86_300_000;
@@ -872,28 +1031,187 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       assert.equal(sim.allowanceDeadlineAt, 86_400_000 + 30 * 60_000, 'Fresh deadline scheduled');
     });
 
-    it('Correction 9: Background-resilient native routine schedule evaluation', () => {
+    it('Correction 5: DST-safe next-midnight calculation', () => {
+      // Simulates getNextLocalMidnight using calendar addition rather than raw 86_400_000
+      const now = new Date('2026-10-31T22:30:00').getTime();
+      const calDate = new Date(now);
+      calDate.setDate(calDate.getDate() + 1);
+      calDate.setHours(0, 0, 0, 0);
+
+      assert.equal(calDate.getHours(), 0);
+      assert.equal(calDate.getMinutes(), 0);
+      assert.equal(calDate.getSeconds(), 0);
+      assert.equal(calDate.getMilliseconds(), 0);
+      assert.ok(calDate.getTime() > now);
+    });
+
+    it('Correction 1 & 9: Stale Morning base state cannot survive into Open Day', () => {
       const sim = new NativeLedgerSimulator();
+      sim.allRiskPackages.add('com.instagram.android');
       sim.routineWindows = [
         {
           id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer',
           startMinutes: 360, // 06:00
           endMinutes: 540,   // 09:00
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
           protectedPackages: new Set(['com.instagram.android']),
-        },
-        {
-          id: 'routine|evening-wind-down|daily',
-          startMinutes: 1260, // 21:00
-          endMinutes: 1380,   // 23:00
-          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
         },
       ];
 
-      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 420), true, 'Protected in morning buffer');
-      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 840), false, 'Clear in open day');
-      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 1320), true, 'Protected in evening wind-down');
-      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 1410), true, 'Protected in overnight after evening');
-      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 240), true, 'Protected in overnight before morning');
+      // Base restrictions from JS cleared
+      sim.baseRestricted.clear();
+
+      // At 08:30 (510 mins): in Morning Buffer -> restricted
+      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 3, 510), true);
+
+      // At 09:05 (545 mins): in Open Day -> routine restriction clears!
+      assert.equal(sim.isEffectivelyRestricted('com.instagram.android', 1000, 3, 545), false, 'Morning end releases restriction');
+    });
+
+    it('Correction 2: Evening active Sunday + Morning active Monday -> overnight true', () => {
+      const sim = new NativeLedgerSimulator();
+      sim.allRiskPackages.add('com.instagram.android');
+      sim.routineWindows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer',
+          startMinutes: 360,
+          endMinutes: 540,
+          activeDays: new Set([1]), // Monday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down',
+          startMinutes: 1260,
+          endMinutes: 1380,
+          activeDays: new Set([7]), // Sunday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+      ];
+
+      // Sunday 23:30 (pre-midnight, isoToday = 7)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 7, 1410), true, 'Sunday evening -> Monday morning overnight true');
+
+      // Monday 04:00 (post-midnight, isoToday = 1, isoYesterday = 7)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 1, 240), true, 'Sunday evening -> Monday morning overnight true post-midnight');
+    });
+
+    it('Correction 2: Evening Sunday inactive + Morning Monday active -> overnight false', () => {
+      const sim = new NativeLedgerSimulator();
+      sim.allRiskPackages.add('com.instagram.android');
+      sim.routineWindows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer',
+          startMinutes: 360,
+          endMinutes: 540,
+          activeDays: new Set([1]), // Monday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down',
+          startMinutes: 1260,
+          endMinutes: 1380,
+          activeDays: new Set([2, 3, 4, 5, 6]), // Sunday inactive
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+      ];
+
+      // Sunday 23:30 (isoToday = 7)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 7, 1410), false, 'No lock when Sunday evening inactive');
+      // Monday 04:00 (isoToday = 1, isoYesterday = 7)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 1, 240), false, 'No lock when Sunday evening inactive');
+    });
+
+    it('Correction 2: Evening Sunday active + Morning Monday inactive -> overnight false', () => {
+      const sim = new NativeLedgerSimulator();
+      sim.allRiskPackages.add('com.instagram.android');
+      sim.routineWindows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer',
+          startMinutes: 360,
+          endMinutes: 540,
+          activeDays: new Set([2, 3, 4, 5, 6, 7]), // Monday inactive
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down',
+          startMinutes: 1260,
+          endMinutes: 1380,
+          activeDays: new Set([7]), // Sunday active
+          protectedPackages: new Set(['com.instagram.android']),
+          enabled: true,
+        },
+      ];
+
+      // Sunday 23:30 (isoToday = 7)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 7, 1410), false, 'No lock when Monday morning inactive');
+      // Monday 04:00 (isoToday = 1)
+      assert.equal(sim.isProtectedByRoutine('com.instagram.android', 1000, 1, 240), false, 'No lock when Monday morning inactive');
+    });
+
+    it('Correction 2: Overnight locks Risk app outside routine protectedGroupIds', () => {
+      const sim = new NativeLedgerSimulator();
+      // App is in allRiskPackages, but NOT in morning or evening protectedPackages
+      sim.allRiskPackages.add('com.game.android');
+      sim.routineWindows = [
+        {
+          id: 'routine|morning-buffer|daily',
+          type: 'morning-buffer',
+          startMinutes: 360,
+          endMinutes: 540,
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.social.android']),
+          enabled: true,
+        },
+        {
+          id: 'routine|evening-wind-down|daily',
+          type: 'evening-wind-down',
+          startMinutes: 1260,
+          endMinutes: 1380,
+          activeDays: new Set([1, 2, 3, 4, 5, 6, 7]),
+          protectedPackages: new Set(['com.social.android']),
+          enabled: true,
+        },
+      ];
+
+      // Overnight pre-midnight (23:30 -> 1410 mins)
+      assert.equal(sim.isProtectedByRoutine('com.game.android', 1000, 3, 1410), true, 'All risk apps locked during overnight gap');
+      // But during Morning Buffer (08:00 -> 480 mins), game is NOT in morning protectedPackages
+      assert.equal(sim.isProtectedByRoutine('com.game.android', 1000, 3, 480), false, 'Morning only protects configured packages');
+    });
+
+    it('Correction 1: Cooldown remains while active and releases at endsAt without JS', () => {
+      const sim = new NativeLedgerSimulator();
+      const t0 = 1000;
+      const tEnds = t0 + 15 * 60_000; // 15 min cooldown
+
+      sim.cooldowns = [
+        {
+          groupId: 'gaming',
+          packageNames: new Set(['com.game.android']),
+          endsAt: tEnds,
+        },
+      ];
+
+      // Active cooldown
+      assert.equal(sim.isRestrictedByCooldown('com.game.android', t0 + 5 * 60_000), true);
+      assert.equal(sim.isEffectivelyRestricted('com.game.android', t0 + 5 * 60_000), true);
+
+      // At expiry (tEnds + 1)
+      assert.equal(sim.isRestrictedByCooldown('com.game.android', tEnds + 1), false);
+      assert.equal(sim.isEffectivelyRestricted('com.game.android', tEnds + 1), false, 'Cooldown releases at endsAt without JS');
     });
   });
 
@@ -903,6 +1221,11 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         { packageName: 'com.instagram.android', allowanceMinutes: 30 },
       ]);
       assert.equal(ok, true);
+
+      const okCd = await FallbackModule.setCooldownPolicies([
+        { groupId: 'social', packageNames: ['com.instagram.android'], endsAt: Date.now() + 60000 },
+      ]);
+      assert.equal(okCd, true);
 
       const snapshot = await FallbackModule.getDailyUsageSnapshot();
       assert.ok(Array.isArray(snapshot.apps));

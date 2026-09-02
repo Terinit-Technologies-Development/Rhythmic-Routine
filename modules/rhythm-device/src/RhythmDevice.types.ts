@@ -71,8 +71,15 @@ export interface NativeDailyAllowancePolicyInput {
   allowanceMinutes: number;
 }
 
+export interface NativeCooldownPolicyInput {
+  groupId: string;
+  packageNames: string[];
+  endsAt: number;
+}
+
 export interface NativeRoutineWindowInput {
   id: string;
+  type?: 'morning-buffer' | 'evening-wind-down';
   startTime: string;
   endTime?: string;
   activeDays: number[];
@@ -80,10 +87,17 @@ export interface NativeRoutineWindowInput {
   enabled: boolean;
 }
 
+export interface NativeRoutineScheduleInput {
+  windows: NativeRoutineWindowInput[];
+  allRiskPackages: string[];
+}
+
 export interface NativeEnforcementDiagnostics {
   serviceRunning: boolean;
   baseRestrictedPackageCount: number;
   activeLeaseCount: number;
+  cooldownCount?: number;
+  nearestCooldownExpiryAt?: number;
   routineWindowCount?: number;
   lastForegroundPackage?: string;
   lastInterventionPackage?: string;

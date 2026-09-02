@@ -311,6 +311,17 @@ export class RhythmCoordinator {
       return;
     }
 
+    // Explicitly trigger an immediate bounded activity events refresh to update
+    // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
+    const { usage } = getPlatformServices();
+    if (usage.refreshActivityEvents) {
+      try {
+        await usage.refreshActivityEvents();
+      } catch {
+        // Platform usage refresh boundary
+      }
+    }
+
     await this.reconcilePlatformActivation(Date.now(), {
       importNativeState: true,
       finalSync: true,

@@ -22,6 +22,12 @@ data class NativeAccessLease(
     val endsAt: Long
 )
 
+data class NativeCooldownPolicy(
+    val groupId: String,
+    val packageNames: Set<String>,
+    val endsAt: Long
+)
+
 data class NativeDailyAllowancePolicy(
     val packageName: String,
     val allowanceMinutes: Int
@@ -52,11 +58,17 @@ data class NativeDailyUsageSnapshot(
 
 data class NativeRoutineWindow(
     val id: String,
+    val type: String, // "morning-buffer" or "evening-wind-down"
     val startTime: String,
     val endTime: String,
     val activeDays: Set<Int>,
     val protectedPackages: Set<String>,
     val enabled: Boolean
+)
+
+data class NativeRoutineSchedule(
+    val windows: List<NativeRoutineWindow>,
+    val allRiskPackages: Set<String>
 )
 
 private data class UsageTransition(
@@ -72,6 +84,7 @@ class RhythmEnforcementService : AccessibilityService() {
     private var allowanceDeadlineRunnable: Runnable? = null
     private var midnightRolloverRunnable: Runnable? = null
     private var routineBoundaryRunnable: Runnable? = null
+    private var cooldownExpiryRunnable: Runnable? = null
 
     var lastForegroundPackage: String? = null
         private set
@@ -94,10 +107,10 @@ class RhythmEnforcementService : AccessibilityService() {
     var nextRoutineBoundaryAt: Long? = null
         private set
 
-    var lastUsageReconciledAt: Long = 0L
+    var nearestCooldownExpiryAt: Long? = null
         private set
 
-    var lastUsageAccountedAt: Long = 0L
+    var lastUsageReconciledAt: Long = 0L
         private set
 
     override fun onServiceConnected() {
@@ -107,7 +120,6 @@ class RhythmEnforcementService : AccessibilityService() {
         Log.i(TAG, "RhythmEnforcementService connected")
 
         val prefs = applicationContext.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-        lastUsageAccountedAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, 0L)
         lastUsageReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
 
         val activeLeases = loadActiveLeases(applicationContext, System.currentTimeMillis())
@@ -118,10 +130,13 @@ class RhythmEnforcementService : AccessibilityService() {
         // 1. Bounded UsageStats reconciliation on service connect
         reconcileUsage()
 
-        // 2. Schedule next routine boundary callback
+        // 2. Schedule nearest cooldown expiry callback
+        scheduleNearestCooldownExpiry()
+
+        // 3. Schedule next routine boundary callback
         scheduleNextRoutineBoundary()
 
-        // 3. Restore actual foreground Risk app tracking if present
+        // 4. Authoritative current foreground recovery across local day
         restoreForegroundStateAfterReconnect()
     }
 
@@ -135,6 +150,7 @@ class RhythmEnforcementService : AccessibilityService() {
         cancelAllowanceDeadline()
         cancelMidnightRollover()
         cancelRoutineBoundary()
+        cancelCooldownExpiry()
 
         val activePkg = activeUsagePackage
         if (activePkg != null) {
@@ -166,8 +182,7 @@ class RhythmEnforcementService : AccessibilityService() {
             return
         }
 
-        // Duplicate foreground protection:
-        // If the same package is reported again while already active, preserve existing segment start.
+        // Duplicate foreground protection: preserve segment start if same package re-emits
         if (packageName == lastForegroundPackage) {
             return
         }
@@ -187,7 +202,7 @@ class RhythmEnforcementService : AccessibilityService() {
         // 3. Prune expired leases
         pruneExpiredLeases(applicationContext, now)
 
-        // 4. Evaluate restrictions for new package
+        // 4. Evaluate explicit restriction sources for new package
         val restricted = isEffectivelyRestricted(applicationContext, packageName, now)
         val policies = loadDailyAllowancePolicies(applicationContext)
         val policy = policies.find { it.packageName == packageName }
@@ -205,14 +220,12 @@ class RhythmEnforcementService : AccessibilityService() {
         val ledger = loadDailyUsageLedger(applicationContext).toMutableMap()
         val existing = ledger[packageName]
 
-        // Handle day rollover if existing is from previous day
         val currentUsed = if (existing != null && existing.dateKey == todayKey) existing.usedMillis else 0L
         val isAlreadyExhausted = existing != null && existing.dateKey == todayKey && existing.exhaustedAt != null
 
         activeUsagePackage = packageName
         activeUsageStartedAt = now
 
-        // Persist active segment start
         ledger[packageName] = NativeDailyUsage(
             packageName = packageName,
             dateKey = todayKey,
@@ -230,8 +243,6 @@ class RhythmEnforcementService : AccessibilityService() {
             val exhaustedTimestamp = existing?.exhaustedAt ?: now
 
             if (!isLeaseActive) {
-                // Allowance expired and no lease active:
-                // Commit allowance usage, mark exhausted, terminate active segment, present Touch Grass
                 ledger[packageName] = ledger[packageName]!!.copy(
                     usedMillis = maxOf(allowanceMillis, currentUsed),
                     activeSegmentStartedAt = null,
@@ -241,11 +252,10 @@ class RhythmEnforcementService : AccessibilityService() {
 
                 activeUsagePackage = null
                 activeUsageStartedAt = null
-                advanceWatermark(now)
+                advancePackageWatermark(applicationContext, packageName, now)
 
                 presentIntervention(packageName)
             } else {
-                // Lease is active: mark exhausted, continue counting, do not overlay until lease expiry
                 ledger[packageName] = ledger[packageName]!!.copy(
                     usedMillis = currentUsed,
                     activeSegmentStartedAt = now,
@@ -281,7 +291,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 exhaustedAt = existing?.exhaustedAt
             )
             saveDailyUsageLedger(applicationContext, ledger)
-            advanceWatermark(now)
+            advancePackageWatermark(applicationContext, packageName, now)
         }
 
         if (activeUsagePackage == packageName) {
@@ -311,7 +321,6 @@ class RhythmEnforcementService : AccessibilityService() {
 
     private fun onAllowanceDeadlineFired(packageName: String, scheduledDeadline: Long) {
         if (lastForegroundPackage != packageName || activeUsagePackage != packageName) {
-            Log.d(TAG, "Deadline skipped: package no longer foreground ($packageName vs $lastForegroundPackage)")
             return
         }
 
@@ -321,7 +330,6 @@ class RhythmEnforcementService : AccessibilityService() {
         val ledger = loadDailyUsageLedger(applicationContext).toMutableMap()
         val currentUsage = ledger[packageName]
         if (currentUsage == null || currentUsage.dateKey != todayKey) {
-            Log.d(TAG, "Deadline skipped: usage dateKey mismatch")
             return
         }
 
@@ -337,8 +345,6 @@ class RhythmEnforcementService : AccessibilityService() {
             val isLeaseActive = hasActiveAccessLease(applicationContext, packageName, now)
 
             if (!isLeaseActive) {
-                // Allowance expired and no lease active:
-                // Commit allowance usage, mark exhausted, terminate active Risk usage segment, present Touch Grass
                 val updatedUsage = currentUsage.copy(
                     usedMillis = maxOf(allowanceMillis, totalUsed),
                     activeSegmentStartedAt = null,
@@ -349,12 +355,11 @@ class RhythmEnforcementService : AccessibilityService() {
 
                 activeUsagePackage = null
                 activeUsageStartedAt = null
-                advanceWatermark(now)
+                advancePackageWatermark(applicationContext, packageName, now)
 
                 Log.i(TAG, "Daily allowance exhausted for $packageName (used=$totalUsed ms, allowance=$allowanceMillis ms)")
                 presentIntervention(packageName)
             } else {
-                // If a lease is active: mark exhausted, continue counting, do not overlay until lease expiry
                 val updatedUsage = currentUsage.copy(
                     usedMillis = totalUsed,
                     activeSegmentStartedAt = now,
@@ -363,7 +368,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 ledger[packageName] = updatedUsage
                 saveDailyUsageLedger(applicationContext, ledger)
                 activeUsageStartedAt = now
-                advanceWatermark(now)
+                advancePackageWatermark(applicationContext, packageName, now)
 
                 Log.i(TAG, "Daily allowance reached during active lease for $packageName; continuing usage accounting until lease expiry")
             }
@@ -372,7 +377,7 @@ class RhythmEnforcementService : AccessibilityService() {
 
     fun scheduleMidnightRollover(packageName: String, now: Long) {
         cancelMidnightRollover()
-        val nextMidnight = getLocalMidnight(now) + 86_400_000L
+        val nextMidnight = getNextLocalMidnight(now)
         val delay = maxOf(0L, nextMidnight - now)
         val runnable = Runnable {
             onMidnightRolloverFired(packageName, nextMidnight)
@@ -424,7 +429,7 @@ class RhythmEnforcementService : AccessibilityService() {
         saveDailyUsageLedger(applicationContext, ledger)
 
         activeUsageStartedAt = midnightTime
-        advanceWatermark(midnightTime)
+        advancePackageWatermark(applicationContext, packageName, midnightTime)
 
         if (policy.allowanceMinutes == 0) {
             ledger[packageName] = ledger[packageName]!!.copy(exhaustedAt = midnightTime)
@@ -441,33 +446,39 @@ class RhythmEnforcementService : AccessibilityService() {
 
     fun scheduleNextRoutineBoundary(now: Long = System.currentTimeMillis()) {
         cancelRoutineBoundary()
-        val routines = loadRoutineWindows(applicationContext)
-        if (routines.isEmpty()) return
+        val schedule = loadRoutineSchedule(applicationContext)
+        val windows = schedule.windows.filter { it.enabled }
+        if (windows.isEmpty()) return
 
         val cal = Calendar.getInstance()
         cal.timeInMillis = now
         val currentMins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
 
-        val morning = routines.find { it.id.contains("morning") || it.startTime < "12:00" }
-        val evening = routines.find { it.id.contains("evening") || it.startTime >= "12:00" }
+        val targetMinutes = mutableSetOf<Int>()
+        targetMinutes.add(1440) // Midnight
 
-        val morningStart = morning?.let { parseTimeToMinutes(it.startTime) } ?: 360
-        val morningEnd = morning?.let { parseTimeToMinutes(it.endTime) } ?: 540
-        val eveningStart = evening?.let { parseTimeToMinutes(it.startTime) } ?: 1260
-        val eveningEnd = evening?.let { parseTimeToMinutes(it.endTime) } ?: 1380
-
-        val nextMins = when {
-            currentMins < morningStart -> morningStart
-            currentMins < morningEnd -> morningEnd
-            currentMins < eveningStart -> eveningStart
-            currentMins < eveningEnd -> eveningEnd
-            else -> 1440
+        for (w in windows) {
+            val s = parseTimeToMinutes(w.startTime)
+            val e = parseTimeToMinutes(w.endTime)
+            if (s > currentMins) targetMinutes.add(s)
+            if (e > currentMins) targetMinutes.add(e)
         }
 
-        val todayMidnight = getLocalMidnight(now)
-        val boundaryTime = todayMidnight + nextMins * 60_000L
-        val delay = maxOf(0L, boundaryTime - now)
+        val nextMins = targetMinutes.filter { it > currentMins }.minOrNull() ?: 1440
+        val boundaryTime: Long
+        if (nextMins >= 1440) {
+            boundaryTime = getNextLocalMidnight(now)
+        } else {
+            val targetCal = Calendar.getInstance()
+            targetCal.timeInMillis = now
+            targetCal.set(Calendar.HOUR_OF_DAY, nextMins / 60)
+            targetCal.set(Calendar.MINUTE, nextMins % 60)
+            targetCal.set(Calendar.SECOND, 0)
+            targetCal.set(Calendar.MILLISECOND, 0)
+            boundaryTime = targetCal.timeInMillis
+        }
 
+        val delay = maxOf(0L, boundaryTime - now)
         nextRoutineBoundaryAt = boundaryTime
         val runnable = Runnable {
             onRoutineBoundaryFired()
@@ -486,13 +497,53 @@ class RhythmEnforcementService : AccessibilityService() {
 
     fun onRoutineBoundaryFired() {
         val now = System.currentTimeMillis()
-        val foreground = lastForegroundPackage ?: resolveRecentForegroundPackage()
+        val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
         if (foreground != null) {
+            lastForegroundPackage = foreground
             if (isEffectivelyRestricted(applicationContext, foreground, now)) {
                 presentIntervention(foreground)
             }
         }
         scheduleNextRoutineBoundary(now + 1000L)
+    }
+
+    fun scheduleNearestCooldownExpiry(now: Long = System.currentTimeMillis()) {
+        cancelCooldownExpiry()
+        val cooldowns = loadCooldownPolicies(applicationContext)
+        val active = cooldowns.filter { it.endsAt > now }
+        if (active.isEmpty()) {
+            nearestCooldownExpiryAt = null
+            return
+        }
+
+        val nearest = active.minOf { it.endsAt }
+        nearestCooldownExpiryAt = nearest
+        val delay = maxOf(0L, nearest - now)
+        val runnable = Runnable {
+            onCooldownExpiryFired(nearest)
+        }
+        cooldownExpiryRunnable = runnable
+        mainHandler.postDelayed(runnable, delay)
+    }
+
+    fun cancelCooldownExpiry() {
+        cooldownExpiryRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            cooldownExpiryRunnable = null
+        }
+        nearestCooldownExpiryAt = null
+    }
+
+    fun onCooldownExpiryFired(scheduledExpiry: Long) {
+        val now = System.currentTimeMillis()
+        val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
+        if (foreground != null) {
+            lastForegroundPackage = foreground
+            if (isEffectivelyRestricted(applicationContext, foreground, now)) {
+                presentIntervention(foreground)
+            }
+        }
+        scheduleNearestCooldownExpiry(now)
     }
 
     fun presentIntervention(packageName: String) {
@@ -523,11 +574,39 @@ class RhythmEnforcementService : AccessibilityService() {
     }
 
     fun onBaseRestrictionsChanged() {
-        val packageName = lastForegroundPackage ?: resolveRecentForegroundPackage() ?: return
         val now = System.currentTimeMillis()
+        val packageName = lastForegroundPackage ?: resolveRecentForegroundPackage() ?: return
         Log.d(TAG, "onBaseRestrictionsChanged: rechecking package=$packageName")
         if (isEffectivelyRestricted(applicationContext, packageName, now)) {
             presentIntervention(packageName)
+        }
+    }
+
+    fun resolveRecentForegroundPackage(): String? {
+        return resolveCurrentForegroundPackage(applicationContext)
+    }
+
+    fun onCooldownPoliciesChanged() {
+        val now = System.currentTimeMillis()
+        scheduleNearestCooldownExpiry(now)
+        val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
+        if (foreground != null) {
+            lastForegroundPackage = foreground
+            if (isEffectivelyRestricted(applicationContext, foreground, now)) {
+                presentIntervention(foreground)
+            }
+        }
+    }
+
+    fun onRoutineScheduleChanged() {
+        val now = System.currentTimeMillis()
+        scheduleNextRoutineBoundary(now)
+        val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
+        if (foreground != null) {
+            lastForegroundPackage = foreground
+            if (isEffectivelyRestricted(applicationContext, foreground, now)) {
+                presentIntervention(foreground)
+            }
         }
     }
 
@@ -538,7 +617,6 @@ class RhythmEnforcementService : AccessibilityService() {
         val ledger = loadDailyUsageLedger(applicationContext).toMutableMap()
         var ledgerMutated = false
 
-        // Correction 2: Clear stale exhaustion after a valid allowance increase
         for (policy in policies) {
             val usage = ledger[policy.packageName]
             if (usage != null && usage.dateKey == todayKey && usage.exhaustedAt != null) {
@@ -565,13 +643,12 @@ class RhythmEnforcementService : AccessibilityService() {
             saveDailyUsageLedger(applicationContext, ledger)
         }
 
-        val foreground = lastForegroundPackage ?: resolveRecentForegroundPackage()
+        val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
         if (foreground != null) {
+            lastForegroundPackage = foreground
             val policy = policies.find { it.packageName == foreground }
 
             if (policy == null) {
-                // Reclassified to Normal or Essential:
-                // Cancel deadline, finalize active segment, clear daily exhaustion enforcement
                 if (activeUsagePackage == foreground) {
                     finalizeActiveSegment(foreground, now)
                 }
@@ -602,7 +679,7 @@ class RhythmEnforcementService : AccessibilityService() {
                         saveDailyUsageLedger(applicationContext, updatedLedger)
                         activeUsagePackage = null
                         activeUsageStartedAt = null
-                        advanceWatermark(now)
+                        advancePackageWatermark(applicationContext, foreground, now)
 
                         if (isEffectivelyRestricted(applicationContext, foreground, now)) {
                             presentIntervention(foreground)
@@ -617,7 +694,7 @@ class RhythmEnforcementService : AccessibilityService() {
                         )
                         saveDailyUsageLedger(applicationContext, updatedLedger)
                         activeUsageStartedAt = now
-                        advanceWatermark(now)
+                        advancePackageWatermark(applicationContext, foreground, now)
                     }
                 } else {
                     if (activeUsagePackage == foreground) {
@@ -633,23 +710,18 @@ class RhythmEnforcementService : AccessibilityService() {
         try {
             val manager = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return
             val prefs = applicationContext.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-            val lastAccounted = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, 0L)
+            val lastReconciled = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
             val todayStart = getLocalMidnight(toTime)
 
-            val from = fromTime ?: maxOf(lastAccounted - 60_000L, todayStart)
+            val from = fromTime ?: maxOf(lastReconciled - 60_000L, todayStart)
             if (from >= toTime) return
 
             val events = manager.queryEvents(from, toTime)
             val policies = loadDailyAllowancePolicies(applicationContext)
             val riskPackages = policies.map { it.packageName }.toSet()
             if (riskPackages.isEmpty()) {
-                val newWatermark = maxOf(lastAccounted, toTime)
-                prefs.edit()
-                    .putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime)
-                    .putLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, newWatermark)
-                    .apply()
+                prefs.edit().putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime).apply()
                 lastUsageReconciledAt = toTime
-                lastUsageAccountedAt = newWatermark
                 return
             }
 
@@ -678,11 +750,12 @@ class RhythmEnforcementService : AccessibilityService() {
 
             val todayKey = getLocalDateKey(toTime)
             val ledger = loadDailyUsageLedger(applicationContext).toMutableMap()
+            val watermarks = loadAccountedWatermarks(applicationContext).toMutableMap()
             var mutated = false
 
             for (pkg in riskPackages) {
                 val pkgEvents = riskTransitions.filter { it.packageName == pkg }
-                if (pkgEvents.isEmpty()) continue
+                val pkgWatermark = watermarks[pkg] ?: 0L
 
                 var segStart: Long? = null
                 var deltaUsed = 0L
@@ -695,26 +768,21 @@ class RhythmEnforcementService : AccessibilityService() {
                         val tBg = ev.timestamp
                         segStart = null
 
-                        if (tBg <= lastAccounted) {
-                            // Entire interval occurred before or at watermark: already accounted!
+                        if (tBg <= pkgWatermark) {
                             continue
                         }
 
-                        // Interval ends after watermark: only count the delta strictly after watermark
-                        val effectiveStart = maxOf(tFg, lastAccounted, todayStart)
+                        val effectiveStart = maxOf(tFg, pkgWatermark, todayStart)
                         if (tBg > effectiveStart) {
                             deltaUsed += (tBg - effectiveStart)
                         }
                     }
                 }
 
-                // If an unclosed foreground segment remains at toTime
-                if (segStart != null) {
-                    if (activeUsagePackage != pkg) {
-                        val effectiveStart = maxOf(segStart, lastAccounted, todayStart)
-                        if (toTime > effectiveStart) {
-                            deltaUsed += (toTime - effectiveStart)
-                        }
+                if (segStart != null && activeUsagePackage != pkg) {
+                    val effectiveStart = maxOf(segStart, pkgWatermark, todayStart)
+                    if (toTime > effectiveStart) {
+                        deltaUsed += (toTime - effectiveStart)
                     }
                 }
 
@@ -734,67 +802,28 @@ class RhythmEnforcementService : AccessibilityService() {
                     )
                     mutated = true
                 }
+
+                watermarks[pkg] = maxOf(pkgWatermark, toTime)
             }
 
             if (mutated) {
                 saveDailyUsageLedger(applicationContext, ledger)
             }
+            saveAccountedWatermarks(applicationContext, watermarks)
 
-            val newWatermark = maxOf(lastAccounted, toTime)
-            prefs.edit()
-                .putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime)
-                .putLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, newWatermark)
-                .apply()
+            prefs.edit().putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime).apply()
             lastUsageReconciledAt = toTime
-            lastUsageAccountedAt = newWatermark
         } catch (e: Exception) {
             Log.w(TAG, "reconcileUsage failed (non-fatal)", e)
         }
     }
 
-    private fun advanceWatermark(timestamp: Long) {
-        lastUsageAccountedAt = maxOf(lastUsageAccountedAt, timestamp)
-        val prefs = applicationContext.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, lastUsageAccountedAt).apply()
-    }
-
     private fun restoreForegroundStateAfterReconnect() {
         val now = System.currentTimeMillis()
         try {
-            val manager = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return
-            val events = manager.queryEvents(now - 300_000L, now)
-            val event = UsageEvents.Event()
-            val eventList = mutableListOf<UsageEvents.Event>()
+            val currentFgPkg = resolveCurrentForegroundPackage(applicationContext, fromTime = getLocalMidnight(now), toTime = now)
 
-            while (events.hasNextEvent()) {
-                val ev = UsageEvents.Event()
-                events.getNextEvent(ev)
-                eventList.add(ev)
-            }
-
-            eventList.sortBy { it.timeStamp }
-
-            var currentFgPkg: String? = null
-
-            for (ev in eventList) {
-                val pkg = ev.packageName ?: continue
-                val isFg = ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
-                    ev.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
-                val isBg = ev.eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
-                    ev.eventType == UsageEvents.Event.ACTIVITY_STOPPED ||
-                    ev.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
-
-                if (isFg) {
-                    currentFgPkg = pkg
-                } else if (isBg && pkg == currentFgPkg) {
-                    currentFgPkg = null
-                }
-            }
-
-            if (currentFgPkg != null &&
-                currentFgPkg != applicationContext.packageName &&
-                !currentFgPkg.startsWith("com.android.systemui")
-            ) {
+            if (currentFgPkg != null) {
                 lastForegroundPackage = currentFgPkg
                 val policies = loadDailyAllowancePolicies(applicationContext)
                 val policy = policies.find { it.packageName == currentFgPkg }
@@ -811,38 +840,6 @@ class RhythmEnforcementService : AccessibilityService() {
         }
     }
 
-    private fun resolveRecentForegroundPackage(): String? {
-        try {
-            val manager = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
-            val now = System.currentTimeMillis()
-            val events = manager.queryEvents(now - 60_000L, now)
-            val event = UsageEvents.Event()
-            var recentPackage: String? = null
-            var recentTime = 0L
-
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-                val isForeground = event.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
-                    event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
-                if (isForeground && event.timeStamp >= recentTime) {
-                    recentTime = event.timeStamp
-                    recentPackage = event.packageName
-                }
-            }
-
-            if (recentPackage != null &&
-                recentPackage != applicationContext.packageName &&
-                !recentPackage.startsWith("com.android.systemui")
-            ) {
-                lastForegroundPackage = recentPackage
-                return recentPackage
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "resolveRecentForegroundPackage failed (non-fatal)", e)
-        }
-        return null
-    }
-
     fun scheduleLeaseExpiry(lease: NativeAccessLease) {
         cancelLeaseExpiry(lease.groupId)
 
@@ -853,10 +850,13 @@ class RhythmEnforcementService : AccessibilityService() {
             val currentLeases = loadActiveLeases(applicationContext, System.currentTimeMillis())
             val currentLease = currentLeases.find { it.groupId == lease.groupId }
             if (currentLease == null || currentLease.endsAt <= scheduledEndsAt) {
-                val foreground = lastForegroundPackage ?: resolveRecentForegroundPackage()
                 val now = System.currentTimeMillis()
-                if (foreground != null && isEffectivelyRestricted(applicationContext, foreground, now)) {
-                    presentIntervention(foreground)
+                val foreground = resolveCurrentForegroundPackage(applicationContext, now = now)
+                if (foreground != null) {
+                    lastForegroundPackage = foreground
+                    if (isEffectivelyRestricted(applicationContext, foreground, now)) {
+                        presentIntervention(foreground)
+                    }
                 }
             }
 
@@ -903,6 +903,74 @@ class RhythmEnforcementService : AccessibilityService() {
             return cal.timeInMillis
         }
 
+        fun getNextLocalMidnight(now: Long = System.currentTimeMillis()): Long {
+            val cal = Calendar.getInstance()
+            cal.timeInMillis = now
+            cal.add(Calendar.DAY_OF_YEAR, 1)
+            cal.set(Calendar.HOUR_OF_DAY, 0)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
+
+        fun parseTimeToMinutes(timeStr: String): Int {
+            return try {
+                val parts = timeStr.split(":")
+                parts[0].toInt() * 60 + parts[1].toInt()
+            } catch (_: Exception) {
+                0
+            }
+        }
+
+        fun resolveCurrentForegroundPackage(
+            context: Context,
+            fromTime: Long = getLocalMidnight(System.currentTimeMillis()),
+            toTime: Long = System.currentTimeMillis()
+        ): String? {
+            try {
+                val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
+                if (fromTime >= toTime) return null
+                val events = manager.queryEvents(fromTime, toTime)
+                val eventList = mutableListOf<UsageEvents.Event>()
+
+                while (events.hasNextEvent()) {
+                    val ev = UsageEvents.Event()
+                    events.getNextEvent(ev)
+                    eventList.add(ev)
+                }
+
+                eventList.sortBy { it.timeStamp }
+
+                var currentFg: String? = null
+
+                for (ev in eventList) {
+                    val pkg = ev.packageName ?: continue
+                    val isFg = ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
+                        ev.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
+                    val isBg = ev.eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+                        ev.eventType == UsageEvents.Event.ACTIVITY_STOPPED ||
+                        ev.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
+
+                    if (isFg) {
+                        currentFg = pkg
+                    } else if (isBg && pkg == currentFg) {
+                        currentFg = null
+                    }
+                }
+
+                if (currentFg != null &&
+                    currentFg != context.packageName &&
+                    !currentFg.startsWith("com.android.systemui")
+                ) {
+                    return currentFg
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "resolveCurrentForegroundPackage failed", e)
+            }
+            return null
+        }
+
         fun hasActiveAccessLease(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
             val leases = loadActiveLeases(context, now)
             return leases.any { it.packageNames.contains(packageName) && it.endsAt > now }
@@ -916,6 +984,53 @@ class RhythmEnforcementService : AccessibilityService() {
                 saveLeases(context, activeLeases)
             }
             return activeLeases
+        }
+
+        fun loadCooldownPolicies(context: Context): List<NativeCooldownPolicy> {
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            val json = prefs.getString(RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON, null) ?: return emptyList()
+            val list = mutableListOf<NativeCooldownPolicy>()
+            try {
+                val array = JSONArray(json)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val gid = obj.optString("groupId", "")
+                    val endsAt = obj.optLong("endsAt", 0L)
+                    val pkgsArray = obj.optJSONArray("packageNames")
+                    val pkgSet = mutableSetOf<String>()
+                    if (pkgsArray != null) {
+                        for (j in 0 until pkgsArray.length()) {
+                            pkgSet.add(pkgsArray.getString(j))
+                        }
+                    }
+                    if (gid.isNotEmpty() && endsAt > 0L) {
+                        list.add(NativeCooldownPolicy(gid, pkgSet, endsAt))
+                    }
+                }
+            } catch (_: Exception) {
+                // Ignore malformed
+            }
+            return list
+        }
+
+        fun saveCooldownPolicies(context: Context, policies: List<NativeCooldownPolicy>) {
+            val array = JSONArray()
+            for (p in policies) {
+                val obj = JSONObject()
+                obj.put("groupId", p.groupId)
+                obj.put("endsAt", p.endsAt)
+                val pkgs = JSONArray()
+                for (pkg in p.packageNames) pkgs.put(pkg)
+                obj.put("packageNames", pkgs)
+                array.put(obj)
+            }
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            prefs.edit().putString(RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON, array.toString()).apply()
+        }
+
+        fun isRestrictedByCooldown(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
+            val cooldowns = loadCooldownPolicies(context)
+            return cooldowns.any { it.packageNames.contains(packageName) && it.endsAt > now }
         }
 
         fun isDailyAllowanceExhausted(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
@@ -951,67 +1066,101 @@ class RhythmEnforcementService : AccessibilityService() {
         }
 
         fun isProtectedByRoutine(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
-            val routines = loadRoutineWindows(context)
-            if (routines.isEmpty()) return false
-
-            val matching = routines.filter { it.enabled && it.protectedPackages.contains(packageName) }
-            if (matching.isEmpty()) return false
+            val schedule = loadRoutineSchedule(context)
+            val windows = schedule.windows.filter { it.enabled }
+            if (windows.isEmpty()) return false
 
             val cal = Calendar.getInstance()
             cal.timeInMillis = now
             val dow = cal.get(Calendar.DAY_OF_WEEK)
-            val isoDay = if (dow == Calendar.SUNDAY) 7 else dow - 1
+            val isoToday = if (dow == Calendar.SUNDAY) 7 else dow - 1
+            val isoTomorrow = if (isoToday == 7) 1 else isoToday + 1
+            val isoYesterday = if (isoToday == 1) 7 else isoToday - 1
             val currentMins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
 
-            val morning = matching.find { it.id.contains("morning") || it.startTime < "12:00" }
-            val evening = matching.find { it.id.contains("evening") || it.startTime >= "12:00" }
+            val morning = windows.find { it.type == "morning-buffer" || it.id.contains("morning") }
+            val evening = windows.find { it.type == "evening-wind-down" || it.id.contains("evening") }
 
-            val morningActiveToday = morning != null && morning.activeDays.contains(isoDay)
-            val eveningActiveToday = evening != null && evening.activeDays.contains(isoDay)
-
-            val morningStart = morning?.let { parseTimeToMinutes(it.startTime) } ?: 360
-            val morningEnd = morning?.let { parseTimeToMinutes(it.endTime) } ?: 540
-            val eveningStart = evening?.let { parseTimeToMinutes(it.startTime) } ?: 1260
-            val eveningEnd = evening?.let { parseTimeToMinutes(it.endTime) } ?: 1380
-
-            // 1. Morning Buffer
-            if (morningActiveToday && currentMins in morningStart until morningEnd) {
-                return true
+            // 1. Morning Buffer window
+            if (morning != null && morning.enabled && morning.activeDays.contains(isoToday)) {
+                val mStart = parseTimeToMinutes(morning.startTime)
+                val mEnd = parseTimeToMinutes(morning.endTime)
+                if (currentMins in mStart until mEnd && morning.protectedPackages.contains(packageName)) {
+                    return true
+                }
             }
 
-            // 2. Evening Wind-Down
-            if (eveningActiveToday && currentMins in eveningStart until eveningEnd) {
-                return true
+            // 2. Evening Wind-Down window
+            if (evening != null && evening.enabled) {
+                val eStart = parseTimeToMinutes(evening.startTime)
+                val eEnd = parseTimeToMinutes(evening.endTime)
+
+                if (eStart < eEnd) {
+                    // Same-day evening window
+                    if (evening.activeDays.contains(isoToday) && currentMins in eStart until eEnd) {
+                        if (evening.protectedPackages.contains(packageName)) return true
+                    }
+                } else {
+                    // Cross-midnight evening window
+                    if (evening.activeDays.contains(isoYesterday) && currentMins < eEnd) {
+                        if (evening.protectedPackages.contains(packageName)) return true
+                    }
+                    if (evening.activeDays.contains(isoToday) && currentMins >= eStart) {
+                        if (evening.protectedPackages.contains(packageName)) return true
+                    }
+                }
             }
 
-            // 3. Overnight protection continuity (no unlock gap)
-            if (eveningActiveToday && currentMins >= eveningEnd) {
-                return true
-            }
-            if (morningActiveToday && currentMins < morningStart) {
-                return true
+            // 3. Overnight Protection Continuity (exact Pass 01 semantics)
+            // Evaluated strictly for all Risk apps
+            val isRiskApp = schedule.allRiskPackages.contains(packageName) ||
+                (morning?.protectedPackages?.contains(packageName) == true) ||
+                (evening?.protectedPackages?.contains(packageName) == true)
+
+            if (isRiskApp) {
+                val isPreMidnight = currentMins >= 720
+                if (isPreMidnight) {
+                    val eveningActiveToday = evening != null && evening.enabled && evening.activeDays.contains(isoToday)
+                    val morningActiveTomorrow = morning != null && morning.enabled && morning.activeDays.contains(isoTomorrow)
+
+                    if (eveningActiveToday && morningActiveTomorrow) {
+                        val eStart = evening?.let { parseTimeToMinutes(it.startTime) } ?: 1260
+                        val eEnd = evening?.let { parseTimeToMinutes(it.endTime) } ?: 1380
+                        val eveningWindowEnded = if (eStart < eEnd) currentMins >= eEnd else false
+                        if (eveningWindowEnded) {
+                            return true
+                        }
+                    }
+                } else {
+                    val eveningActiveYesterday = evening != null && evening.enabled && evening.activeDays.contains(isoYesterday)
+                    val morningActiveToday = morning != null && morning.enabled && morning.activeDays.contains(isoToday)
+
+                    if (eveningActiveYesterday && morningActiveToday) {
+                        val mStart = morning?.let { parseTimeToMinutes(it.startTime) } ?: 360
+                        val eStart = evening?.let { parseTimeToMinutes(it.startTime) } ?: 1260
+                        val eEnd = evening?.let { parseTimeToMinutes(it.endTime) } ?: 1380
+                        val pastCrossMidnightEvening = if (eStart >= eEnd) currentMins >= eEnd else true
+
+                        if (currentMins < mStart && pastCrossMidnightEvening) {
+                            return true
+                        }
+                    }
+                }
             }
 
             return false
         }
 
-        private fun parseTimeToMinutes(timeStr: String): Int {
-            return try {
-                val parts = timeStr.split(":")
-                parts[0].toInt() * 60 + parts[1].toInt()
-            } catch (_: Exception) {
-                0
-            }
-        }
-
         fun isEffectivelyRestricted(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {
+            val isAllowanceExhausted = isDailyAllowanceExhausted(context, packageName, now)
+            val isRoutineProtected = isProtectedByRoutine(context, packageName, now)
+            val isCooldownRestricted = isRestrictedByCooldown(context, packageName, now)
+
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
             val baseSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet()
             val isBaseRestricted = baseSet.contains(packageName)
-            val isAllowanceExhausted = isDailyAllowanceExhausted(context, packageName, now)
-            val isRoutineProtected = isProtectedByRoutine(context, packageName, now)
 
-            if (!isBaseRestricted && !isAllowanceExhausted && !isRoutineProtected) {
+            if (!isAllowanceExhausted && !isRoutineProtected && !isCooldownRestricted && !isBaseRestricted) {
                 return false
             }
 
@@ -1083,6 +1232,38 @@ class RhythmEnforcementService : AccessibilityService() {
             prefs.edit().putString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, array.toString()).apply()
         }
 
+        fun loadAccountedWatermarks(context: Context): Map<String, Long> {
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            val json = prefs.getString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, null) ?: return emptyMap()
+            val map = mutableMapOf<String, Long>()
+            try {
+                val obj = JSONObject(json)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val pkg = keys.next()
+                    map[pkg] = obj.optLong(pkg, 0L)
+                }
+            } catch (_: Exception) {
+                // Ignore malformed
+            }
+            return map
+        }
+
+        fun saveAccountedWatermarks(context: Context, watermarks: Map<String, Long>) {
+            val obj = JSONObject()
+            for ((pkg, ts) in watermarks) {
+                obj.put(pkg, ts)
+            }
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            prefs.edit().putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, obj.toString()).apply()
+        }
+
+        fun advancePackageWatermark(context: Context, packageName: String, timestamp: Long) {
+            val map = loadAccountedWatermarks(context).toMutableMap()
+            map[packageName] = maxOf(map[packageName] ?: 0L, timestamp)
+            saveAccountedWatermarks(context, map)
+        }
+
         fun loadDailyAllowancePolicies(context: Context): List<NativeDailyAllowancePolicy> {
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
             val json = prefs.getString(RhythmNativePolicyKeys.DAILY_ALLOWANCE_POLICIES_JSON, null) ?: return emptyList()
@@ -1115,45 +1296,119 @@ class RhythmEnforcementService : AccessibilityService() {
             prefs.edit().putString(RhythmNativePolicyKeys.DAILY_ALLOWANCE_POLICIES_JSON, array.toString()).apply()
         }
 
-        fun loadRoutineWindows(context: Context): List<NativeRoutineWindow> {
+        fun parseRoutineScheduleInput(input: Any): NativeRoutineSchedule {
+            val windows = mutableListOf<NativeRoutineWindow>()
+            val allRiskPackages = mutableSetOf<String>()
+
+            if (input is Map<*, *>) {
+                val rawWindows = input["windows"] as? List<*> ?: emptyList<Any>()
+                val rawRisk = input["allRiskPackages"] as? List<*> ?: emptyList<Any>()
+                for (p in rawRisk) {
+                    if (p is String) allRiskPackages.add(p)
+                }
+                for (item in rawWindows) {
+                    if (item is Map<*, *>) {
+                        val id = item["id"] as? String ?: continue
+                        val type = item["type"] as? String ?: if (id.contains("morning")) "morning-buffer" else "evening-wind-down"
+                        val start = item["startTime"] as? String ?: "00:00"
+                        val end = item["endTime"] as? String ?: "00:00"
+                        val enabled = item["enabled"] as? Boolean ?: true
+                        val days = (item["activeDays"] as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet() ?: emptySet()
+                        val pkgs = (item["protectedPackages"] as? List<*>)?.mapNotNull { it as? String }?.toSet() ?: emptySet()
+                        windows.add(NativeRoutineWindow(id, type, start, end, days, pkgs, enabled))
+                    }
+                }
+            } else if (input is List<*>) {
+                for (item in input) {
+                    if (item is Map<*, *>) {
+                        val id = item["id"] as? String ?: continue
+                        val type = item["type"] as? String ?: if (id.contains("morning")) "morning-buffer" else "evening-wind-down"
+                        val start = item["startTime"] as? String ?: "00:00"
+                        val end = item["endTime"] as? String ?: "00:00"
+                        val enabled = item["enabled"] as? Boolean ?: true
+                        val days = (item["activeDays"] as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet() ?: emptySet()
+                        val pkgs = (item["protectedPackages"] as? List<*>)?.mapNotNull { it as? String }?.toSet() ?: emptySet()
+                        windows.add(NativeRoutineWindow(id, type, start, end, days, pkgs, enabled))
+                        allRiskPackages.addAll(pkgs)
+                    }
+                }
+            }
+            return NativeRoutineSchedule(windows, allRiskPackages)
+        }
+
+        fun loadRoutineSchedule(context: Context): NativeRoutineSchedule {
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-            val json = prefs.getString(RhythmNativePolicyKeys.ROUTINE_SCHEDULE_JSON, null) ?: return emptyList()
-            val list = mutableListOf<NativeRoutineWindow>()
+            val json = prefs.getString(RhythmNativePolicyKeys.ROUTINE_SCHEDULE_JSON, null) ?: return NativeRoutineSchedule(emptyList(), emptySet())
+            val windows = mutableListOf<NativeRoutineWindow>()
+            val allRiskPackages = mutableSetOf<String>()
+
             try {
-                val array = JSONArray(json)
-                for (i in 0 until array.length()) {
-                    val obj = array.getJSONObject(i)
-                    val id = obj.optString("id", "")
-                    val start = obj.optString("startTime", "00:00")
-                    val end = obj.optString("endTime", "00:00")
-                    val enabled = obj.optBoolean("enabled", true)
-                    val daysArray = obj.optJSONArray("activeDays")
-                    val daysSet = mutableSetOf<Int>()
-                    if (daysArray != null) {
-                        for (j in 0 until daysArray.length()) {
-                            daysSet.add(daysArray.getInt(j))
+                if (json.startsWith("{")) {
+                    val root = JSONObject(json)
+                    val rawWindows = root.optJSONArray("windows")
+                    val rawRisk = root.optJSONArray("allRiskPackages")
+                    if (rawRisk != null) {
+                        for (i in 0 until rawRisk.length()) {
+                            allRiskPackages.add(rawRisk.getString(i))
                         }
                     }
-                    val pkgsArray = obj.optJSONArray("protectedPackages")
-                    val pkgsSet = mutableSetOf<String>()
-                    if (pkgsArray != null) {
-                        for (j in 0 until pkgsArray.length()) {
-                            pkgsSet.add(pkgsArray.getString(j))
+                    if (rawWindows != null) {
+                        for (i in 0 until rawWindows.length()) {
+                            val obj = rawWindows.getJSONObject(i)
+                            val id = obj.optString("id", "")
+                            val type = obj.optString("type", if (id.contains("morning")) "morning-buffer" else "evening-wind-down")
+                            val start = obj.optString("startTime", "00:00")
+                            val end = obj.optString("endTime", "00:00")
+                            val enabled = obj.optBoolean("enabled", true)
+                            val daysArray = obj.optJSONArray("activeDays")
+                            val daysSet = mutableSetOf<Int>()
+                            if (daysArray != null) {
+                                for (j in 0 until daysArray.length()) daysSet.add(daysArray.getInt(j))
+                            }
+                            val pkgsArray = obj.optJSONArray("protectedPackages")
+                            val pkgsSet = mutableSetOf<String>()
+                            if (pkgsArray != null) {
+                                for (j in 0 until pkgsArray.length()) pkgsSet.add(pkgsArray.getString(j))
+                            }
+                            windows.add(NativeRoutineWindow(id, type, start, end, daysSet, pkgsSet, enabled))
                         }
                     }
-                    list.add(NativeRoutineWindow(id, start, end, daysSet, pkgsSet, enabled))
+                } else if (json.startsWith("[")) {
+                    val array = JSONArray(json)
+                    for (i in 0 until array.length()) {
+                        val obj = array.getJSONObject(i)
+                        val id = obj.optString("id", "")
+                        val type = obj.optString("type", if (id.contains("morning")) "morning-buffer" else "evening-wind-down")
+                        val start = obj.optString("startTime", "00:00")
+                        val end = obj.optString("endTime", "00:00")
+                        val enabled = obj.optBoolean("enabled", true)
+                        val daysArray = obj.optJSONArray("activeDays")
+                        val daysSet = mutableSetOf<Int>()
+                        if (daysArray != null) {
+                            for (j in 0 until daysArray.length()) daysSet.add(daysArray.getInt(j))
+                        }
+                        val pkgsArray = obj.optJSONArray("protectedPackages")
+                        val pkgsSet = mutableSetOf<String>()
+                        if (pkgsArray != null) {
+                            for (j in 0 until pkgsArray.length()) pkgsSet.add(pkgsArray.getString(j))
+                        }
+                        windows.add(NativeRoutineWindow(id, type, start, end, daysSet, pkgsSet, enabled))
+                        allRiskPackages.addAll(pkgsSet)
+                    }
                 }
             } catch (_: Exception) {
                 // Ignore malformed
             }
-            return list
+            return NativeRoutineSchedule(windows, allRiskPackages)
         }
 
-        fun saveRoutineWindows(context: Context, windows: List<NativeRoutineWindow>) {
-            val array = JSONArray()
-            for (w in windows) {
+        fun saveRoutineSchedule(context: Context, schedule: NativeRoutineSchedule) {
+            val root = JSONObject()
+            val windowsArray = JSONArray()
+            for (w in schedule.windows) {
                 val obj = JSONObject()
                 obj.put("id", w.id)
+                obj.put("type", w.type)
                 obj.put("startTime", w.startTime)
                 obj.put("endTime", w.endTime)
                 obj.put("enabled", w.enabled)
@@ -1163,10 +1418,15 @@ class RhythmEnforcementService : AccessibilityService() {
                 val pkgs = JSONArray()
                 for (p in w.protectedPackages) pkgs.put(p)
                 obj.put("protectedPackages", pkgs)
-                array.put(obj)
+                windowsArray.put(obj)
             }
+            root.put("windows", windowsArray)
+            val riskArray = JSONArray()
+            for (p in schedule.allRiskPackages) riskArray.put(p)
+            root.put("allRiskPackages", riskArray)
+
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-            prefs.edit().putString(RhythmNativePolicyKeys.ROUTINE_SCHEDULE_JSON, array.toString()).apply()
+            prefs.edit().putString(RhythmNativePolicyKeys.ROUTINE_SCHEDULE_JSON, root.toString()).apply()
         }
 
         fun loadDailyUsageLedger(context: Context): Map<String, NativeDailyUsage> {

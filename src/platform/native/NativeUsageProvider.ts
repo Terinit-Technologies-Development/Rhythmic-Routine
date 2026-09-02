@@ -125,6 +125,14 @@ export class NativeUsageProvider implements UsageProvider {
     }
   }
 
+  /**
+   * Explicitly triggers an immediate bounded activity events refresh (e.g. on app resume)
+   * to update TypeScript Risk Group session continuity without waiting for periodic timers.
+   */
+  public async refreshActivityEvents(): Promise<void> {
+    await this.refreshUsageEvents();
+  }
+
   private ensureObservationStarted(): void {
     if (this.pollingTimer) return;
 

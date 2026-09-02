@@ -9,6 +9,8 @@ object RhythmNativePolicyKeys {
     const val DAILY_USAGE_LEDGER_JSON = "daily_usage_ledger_json"
     const val LAST_USAGE_RECONCILED_AT = "last_usage_reconciled_at"
     const val LAST_USAGE_ACCOUNTED_AT = "last_usage_accounted_at"
+    const val LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON = "last_usage_accounted_by_package_json"
     const val ROUTINE_SCHEDULE_JSON = "routine_schedule_json"
+    const val COOLDOWN_POLICIES_JSON = "cooldown_policies_json"
 }
 
