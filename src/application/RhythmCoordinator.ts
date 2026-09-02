@@ -20,7 +20,7 @@ import {
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
-const ENGINE_RECONCILE_INTERVAL_MS = 15_000;
+const ENGINE_RECONCILE_INTERVAL_MS = 60_000;
 
 export class RhythmCoordinator {
   private static instance: RhythmCoordinator | null = null;
@@ -203,6 +203,35 @@ export class RhythmCoordinator {
 
       await this.executeEffects(effects);
     }
+
+    // Reconcile Android native daily usage snapshot if available
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+      if (RhythmDeviceModule?.getDailyUsageSnapshot) {
+        const usageSnapshot = await RhythmDeviceModule.getDailyUsageSnapshot();
+        if (usageSnapshot?.apps?.length > 0) {
+          const currentDailyUsage = { ...this.engine.getDailyAppUsage() };
+          for (const app of usageSnapshot.apps) {
+            currentDailyUsage[app.packageName] = {
+              appId: app.packageName,
+              dateKey: usageSnapshot.dateKey,
+              usedSeconds: app.usedSeconds,
+              activeSegmentStartedAt: app.activeSegmentStartedAt,
+              exhaustedAt: app.exhausted ? now : undefined,
+            };
+          }
+          const effects = this.engine.dispatch({
+            type: 'SYNC_DAILY_APP_USAGE',
+            dailyAppUsage: currentDailyUsage,
+            timestamp: now,
+          });
+          await this.executeEffects(effects);
+        }
+      }
+    } catch {
+      // Native snapshot import boundary (non-fatal)
+    }
   }
 
   /**
@@ -280,6 +309,17 @@ export class RhythmCoordinator {
     if (!this.engine || !this.config) {
       await this.initialize();
       return;
+    }
+
+    // Explicitly trigger an immediate bounded activity events refresh to update
+    // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
+    const { usage } = getPlatformServices();
+    if (usage.refreshActivityEvents) {
+      try {
+        await usage.refreshActivityEvents();
+      } catch {
+        // Platform usage refresh boundary
+      }
     }
 
     await this.reconcilePlatformActivation(Date.now(), {
@@ -443,6 +483,7 @@ export class RhythmCoordinator {
           ...discovered,
           classification: existing.classification,
           riskGroupId: existing.riskGroupId,
+          dailyRiskAllowance: existing.dailyRiskAllowance,
         };
       }
       return {

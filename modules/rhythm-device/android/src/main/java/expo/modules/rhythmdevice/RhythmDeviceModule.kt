@@ -147,6 +147,96 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
+    AsyncFunction("setDailyAllowancePolicies") { policiesList: List<Map<String, Any>> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val parsedPolicies = policiesList.mapNotNull {
+        val pkg = it["packageName"] as? String ?: return@mapNotNull null
+        val mins = (it["allowanceMinutes"] as? Number)?.toInt() ?: 30
+        NativeDailyAllowancePolicy(pkg, mins)
+      }
+      RhythmEnforcementService.saveDailyAllowancePolicies(context, parsedPolicies)
+      RhythmEnforcementService.instance?.onDailyAllowancePoliciesChanged()
+      return@AsyncFunction true
+    }
+
+    AsyncFunction("getDailyUsageSnapshot") {
+      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
+        "dateKey" to "",
+        "apps" to emptyList<Map<String, Any>>()
+      )
+      val snapshot = RhythmEnforcementService.getDailyUsageSnapshot(context)
+      val result = mutableMapOf<String, Any?>(
+        "dateKey" to snapshot.dateKey,
+        "apps" to snapshot.apps.map { app ->
+          val appMap = mutableMapOf<String, Any?>(
+            "packageName" to app.packageName,
+            "usedSeconds" to app.usedSeconds,
+            "allowanceMinutes" to app.allowanceMinutes,
+            "remainingSeconds" to app.remainingSeconds,
+            "exhausted" to app.exhausted
+          )
+          if (app.activeSegmentStartedAt != null) {
+            appMap["activeSegmentStartedAt"] = app.activeSegmentStartedAt.toDouble()
+          }
+          appMap
+        }
+      )
+      if (snapshot.lastReconciledAt != null) {
+        result["lastReconciledAt"] = snapshot.lastReconciledAt.toDouble()
+      }
+      return@AsyncFunction result
+    }
+
+    AsyncFunction("reconcileDailyUsage") {
+      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
+        "dateKey" to "",
+        "apps" to emptyList<Map<String, Any>>()
+      )
+      RhythmEnforcementService.instance?.reconcileUsage()
+      val snapshot = RhythmEnforcementService.getDailyUsageSnapshot(context)
+      val result = mutableMapOf<String, Any?>(
+        "dateKey" to snapshot.dateKey,
+        "apps" to snapshot.apps.map { app ->
+          val appMap = mutableMapOf<String, Any?>(
+            "packageName" to app.packageName,
+            "usedSeconds" to app.usedSeconds,
+            "allowanceMinutes" to app.allowanceMinutes,
+            "remainingSeconds" to app.remainingSeconds,
+            "exhausted" to app.exhausted
+          )
+          if (app.activeSegmentStartedAt != null) {
+            appMap["activeSegmentStartedAt"] = app.activeSegmentStartedAt.toDouble()
+          }
+          appMap
+        }
+      )
+      if (snapshot.lastReconciledAt != null) {
+        result["lastReconciledAt"] = snapshot.lastReconciledAt.toDouble()
+      }
+      return@AsyncFunction result
+    }
+
+    AsyncFunction("setRoutineSchedule") { scheduleInput: Any ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val schedule = RhythmEnforcementService.parseRoutineScheduleInput(scheduleInput)
+      RhythmEnforcementService.saveRoutineSchedule(context, schedule)
+      RhythmEnforcementService.instance?.onRoutineScheduleChanged()
+      return@AsyncFunction true
+    }
+
+    AsyncFunction("setCooldownPolicies") { policiesList: List<Map<String, Any>> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val parsed = policiesList.mapNotNull {
+        val gid = it["groupId"] as? String ?: return@mapNotNull null
+        val endsAt = (it["endsAt"] as? Number)?.toLong() ?: return@mapNotNull null
+        val pkgsList = (it["packageNames"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
+        NativeCooldownPolicy(gid, pkgsList, endsAt)
+      }
+      RhythmEnforcementService.saveCooldownPolicies(context, parsed)
+      RhythmEnforcementService.instance?.onCooldownPoliciesChanged()
+      return@AsyncFunction true
+    }
+
     AsyncFunction("getEnforcementDiagnostics") {
       val context = appContext.reactContext ?: return@AsyncFunction mapOf(
         "serviceRunning" to false,
@@ -157,13 +247,21 @@ class RhythmDeviceModule : Module() {
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
       val baseSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet()
       val leases = RhythmEnforcementService.loadActiveLeases(context)
+      val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
+      val schedule = RhythmEnforcementService.loadRoutineSchedule(context)
       val service = RhythmEnforcementService.instance
+      val ledger = RhythmEnforcementService.loadDailyUsageLedger(context)
+      val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
+      val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
         "baseRestrictedPackageCount" to baseSet.size,
         "activeLeaseCount" to leases.size,
-        "overlayVisible" to RhythmOverlayActivity.isVisible
+        "cooldownCount" to cooldowns.size,
+        "routineWindowCount" to schedule.windows.size,
+        "overlayVisible" to RhythmOverlayActivity.isVisible,
+        "dailyUsageAppCount" to ledger.size
       )
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
@@ -173,6 +271,27 @@ class RhythmDeviceModule : Module() {
       }
       if (service?.lastInterventionAt != null && service.lastInterventionAt > 0L) {
         result["lastInterventionAt"] = service.lastInterventionAt.toDouble()
+      }
+      if (service?.activeUsagePackage != null) {
+        result["activeUsagePackage"] = service.activeUsagePackage
+      }
+      if (service?.activeUsageStartedAt != null && service.activeUsageStartedAt!! > 0L) {
+        result["activeUsageStartedAt"] = service.activeUsageStartedAt!!.toDouble()
+      }
+      if (service?.allowanceDeadlineAt != null && service.allowanceDeadlineAt!! > 0L) {
+        result["allowanceDeadlineAt"] = service.allowanceDeadlineAt!!.toDouble()
+      }
+      if (service?.nextRoutineBoundaryAt != null && service.nextRoutineBoundaryAt!! > 0L) {
+        result["nextRoutineBoundaryAt"] = service.nextRoutineBoundaryAt!!.toDouble()
+      }
+      if (service?.nearestCooldownExpiryAt != null && service.nearestCooldownExpiryAt!! > 0L) {
+        result["nearestCooldownExpiryAt"] = service.nearestCooldownExpiryAt!!.toDouble()
+      }
+      if (lastReconciledAt > 0L) {
+        result["lastUsageReconciledAt"] = lastReconciledAt.toDouble()
+      }
+      if (watermarks.isNotEmpty()) {
+        result["accountedWatermarkCount"] = watermarks.size
       }
       return@AsyncFunction result
     }
