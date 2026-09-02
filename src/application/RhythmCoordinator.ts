@@ -203,6 +203,35 @@ export class RhythmCoordinator {
 
       await this.executeEffects(effects);
     }
+
+    // Reconcile Android native daily usage snapshot if available
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+      if (RhythmDeviceModule?.getDailyUsageSnapshot) {
+        const usageSnapshot = await RhythmDeviceModule.getDailyUsageSnapshot();
+        if (usageSnapshot?.apps?.length > 0) {
+          const currentDailyUsage = { ...this.engine.getDailyAppUsage() };
+          for (const app of usageSnapshot.apps) {
+            currentDailyUsage[app.packageName] = {
+              appId: app.packageName,
+              dateKey: usageSnapshot.dateKey,
+              usedSeconds: app.usedSeconds,
+              activeSegmentStartedAt: app.activeSegmentStartedAt,
+              exhaustedAt: app.exhausted ? now : undefined,
+            };
+          }
+          const effects = this.engine.dispatch({
+            type: 'SYNC_DAILY_APP_USAGE',
+            dailyAppUsage: currentDailyUsage,
+            timestamp: now,
+          });
+          await this.executeEffects(effects);
+        }
+      }
+    } catch {
+      // Native snapshot import boundary (non-fatal)
+    }
   }
 
   /**

@@ -161,6 +161,16 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           Date.now()
         );
         await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
+
+        if (RhythmDeviceModule.setDailyAllowancePolicies) {
+          const riskPolicies = config.apps
+            .filter((app) => app.classification === 'risk')
+            .map((app) => ({
+              packageName: app.id,
+              allowanceMinutes: app.dailyRiskAllowance?.allowanceMinutes ?? 30,
+            }));
+          await RhythmDeviceModule.setDailyAllowancePolicies(riskPolicies);
+        }
       }
     } catch {
       // Platform sync boundary

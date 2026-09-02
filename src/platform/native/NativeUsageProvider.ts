@@ -110,30 +110,30 @@ export class NativeUsageProvider implements UsageProvider {
     return emitted;
   }
 
-  private ensureObservationStarted(): void {
-    if (this.pollingTimer) return;
-
-    // Bounded 15-second OS event querying (battery discipline)
-    this.pollingTimer = setInterval(async () => {
-      const now = Date.now();
-      try {
-        const events = await RhythmDeviceModule.queryUsageEvents(this.lastQueryTime, now);
-        this.lastQueryTime = now;
-        this.processRawUsageEvents(events);
-      } catch {
-        // Ignored
-      }
-    }, 15000);
-
-    if (this.pollingTimer && typeof (this.pollingTimer as any).unref === 'function') {
-      (this.pollingTimer as any).unref();
+  /**
+   * Refreshes usage events on-demand (e.g. on app resume or UI focus)
+   * without running a permanent battery-draining background polling loop.
+   */
+  public async refreshUsageEvents(): Promise<UsageActivityEvent[]> {
+    const now = Date.now();
+    try {
+      const events = await RhythmDeviceModule.queryUsageEvents(this.lastQueryTime, now);
+      this.lastQueryTime = now;
+      return this.processRawUsageEvents(events);
+    } catch {
+      return [];
     }
   }
 
+  private ensureObservationStarted(): void {
+    // Permanent 15-second UsageStats polling removed per Pass 02 architecture.
+    // In Android V1.0.1, the native RhythmEnforcementService observes Accessibility
+    // TYPE_WINDOW_STATE_CHANGED, maintains an authoritative daily usage ledger,
+    // and schedules exact allowance deadlines. UsageStats is queried boundedly
+    // for on-demand reconciliation during app resume and recovery, eliminating battery drain.
+  }
+
   private stopObservation(): void {
-    if (this.pollingTimer) {
-      clearInterval(this.pollingTimer);
-      this.pollingTimer = undefined;
-    }
+    // No permanent timer to clear
   }
 }

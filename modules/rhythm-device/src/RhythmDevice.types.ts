@@ -51,6 +51,26 @@ export interface MonitoringDiagnostics {
   lastError: string;
 }
 
+export interface NativeDailyAppSnapshot {
+  packageName: string;
+  usedSeconds: number;
+  allowanceMinutes: number;
+  remainingSeconds: number;
+  exhausted: boolean;
+  activeSegmentStartedAt?: number;
+}
+
+export interface NativeDailyUsageSnapshot {
+  dateKey: string;
+  apps: NativeDailyAppSnapshot[];
+  lastReconciledAt?: number;
+}
+
+export interface NativeDailyAllowancePolicyInput {
+  packageName: string;
+  allowanceMinutes: number;
+}
+
 export interface NativeEnforcementDiagnostics {
   serviceRunning: boolean;
   baseRestrictedPackageCount: number;
@@ -59,4 +79,9 @@ export interface NativeEnforcementDiagnostics {
   lastInterventionPackage?: string;
   lastInterventionAt?: number;
   overlayVisible: boolean;
+  activeUsagePackage?: string;
+  activeUsageStartedAt?: number;
+  allowanceDeadlineAt?: number;
+  dailyUsageAppCount?: number;
+  lastUsageReconciledAt?: number;
 }

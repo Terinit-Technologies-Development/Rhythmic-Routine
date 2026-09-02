@@ -29,7 +29,17 @@ On Android, Rhythmic-Routine implements a two-tier architecture separating quant
 * **Auto-Close On Window Expiry:** While visible, the overlay polls `isEffectivelyRestricted` every second and automatically closes if the protection window has elapsed.
 * **Read-Only Technical Diagnostics:** Exposes `getEnforcementDiagnostics()` for local technical state inspection (service running, restricted count, active leases, overlay visible).
 
-## 5. Verification Status
-* **Classification:** **`V1_CANDIDATE`** (Experimental V1)
-* **Testing:** Android physical device qualification completed in Pass 04C; Pass 04D app discovery and overlay hardening source-verified and ready for owner manual runbook test.
+## 5. Pass 02 Android Native Daily Usage Ledger & Exact Deadline
+* **Native Per-App Daily Ledger:** `RhythmEnforcementService` maintains a compact per-app daily usage ledger in `SharedPreferences` (`DAILY_USAGE_LEDGER_JSON`).
+* **Package Foreground Transitions:** On Accessibility `TYPE_WINDOW_STATE_CHANGED`, transitions finalize the prior Risk app segment, commit elapsed milliseconds into `usedMillis`, and start a new segment for the incoming Risk app.
+* **Duplicate Event Protection:** Successive window state change events for the currently active package never reset `activeSegmentStartedAt`, eliminating time truncation bugs.
+* **Single Active Allowance Deadline:** Only ONE deadline callback exists at a time via `Handler.postDelayed`. When a Risk app enters foreground, the exact remaining allowance is scheduled. When remaining reaches 0, the app is marked exhausted and Touch Grass appears immediately.
+* **Access Lease Accounting:** Usage accumulates continuously during active Access Leases without alteration. If daily allowance is exhausted during a lease, the exhaustion state is preserved and Touch Grass triggers immediately upon lease expiration.
+* **Zero-Minute Allowance:** Apps configured with 0 minutes allowance are immediately marked exhausted and restricted upon launch during Open Day.
+* **Bounded UsageStats Reconciliation:** Bounded query triggered on service connect, app resume, and process recovery with watermark tracking (`LAST_USAGE_RECONCILED_AT`). Deduplicates events and eliminates permanent 15-second polling loops from JavaScript.
+* **Native Snapshot API:** Exposes `getDailyUsageSnapshot()` and `reconcileDailyUsage()` bridging native ledger state to TypeScript application layers.
+
+## 6. Verification Status
+* **Classification:** **`V1.0.1_PATCH_CANDIDATE`**
+* **Testing:** Pass 01/01A domain foundation merged; Pass 02 native usage ledger, exact allowance deadline, and bounded reconciliation implemented with 0 battery polling overhead.
 * **iOS Status:** Experimental, source-implemented foundation. Untested on physical Apple hardware.
