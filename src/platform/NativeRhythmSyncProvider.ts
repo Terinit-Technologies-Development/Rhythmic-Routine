@@ -77,6 +77,9 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
   private lastSnapshot?: IOSSharedRhythmSnapshot;
   private lastConfigSignature?: string;
+  private lastAndroidBaseRestrictionsSignature?: string;
+  private lastAndroidRiskPoliciesSignature?: string;
+  private lastAndroidRoutineScheduleSignature?: string;
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
     try {
@@ -159,8 +162,12 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           runtime,
           config,
           Date.now()
-        );
-        await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
+        ).sort();
+        const baseSig = JSON.stringify(baseRestrictedPackageIds);
+        if (this.lastAndroidBaseRestrictionsSignature !== baseSig) {
+          await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
+          this.lastAndroidBaseRestrictionsSignature = baseSig;
+        }
 
         if (RhythmDeviceModule.setDailyAllowancePolicies) {
           const riskPolicies = config.apps
@@ -168,8 +175,40 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             .map((app) => ({
               packageName: app.id,
               allowanceMinutes: app.dailyRiskAllowance?.allowanceMinutes ?? 30,
-            }));
-          await RhythmDeviceModule.setDailyAllowancePolicies(riskPolicies);
+            }))
+            .sort((a, b) => a.packageName.localeCompare(b.packageName));
+          const policySig = JSON.stringify(riskPolicies);
+          if (this.lastAndroidRiskPoliciesSignature !== policySig) {
+            await RhythmDeviceModule.setDailyAllowancePolicies(riskPolicies);
+            this.lastAndroidRiskPoliciesSignature = policySig;
+          }
+        }
+
+        if (RhythmDeviceModule.setRoutineSchedule) {
+          const schedule = config.routineWindows.map((w) => {
+            const protectedPackageNames = new Set<string>();
+            for (const gid of w.protectedGroupIds) {
+              const grp = config.riskGroups.find((g) => g.id === gid);
+              if (grp) {
+                for (const pkg of grp.appIds) {
+                  protectedPackageNames.add(pkg);
+                }
+              }
+            }
+            return {
+              id: w.id,
+              startTime: w.startTime,
+              endTime: w.endTime ?? '00:00',
+              activeDays: [...w.activeDays].sort(),
+              protectedPackages: Array.from(protectedPackageNames).sort(),
+              enabled: w.enabled,
+            };
+          }).sort((a, b) => a.id.localeCompare(b.id));
+          const schedSig = JSON.stringify(schedule);
+          if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
+            await RhythmDeviceModule.setRoutineSchedule(schedule);
+            this.lastAndroidRoutineScheduleSignature = schedSig;
+          }
         }
       }
     } catch {

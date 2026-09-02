@@ -126,14 +126,29 @@ export class NativeUsageProvider implements UsageProvider {
   }
 
   private ensureObservationStarted(): void {
-    // Permanent 15-second UsageStats polling removed per Pass 02 architecture.
-    // In Android V1.0.1, the native RhythmEnforcementService observes Accessibility
-    // TYPE_WINDOW_STATE_CHANGED, maintains an authoritative daily usage ledger,
-    // and schedules exact allowance deadlines. UsageStats is queried boundedly
-    // for on-demand reconciliation during app resume and recovery, eliminating battery drain.
+    if (this.pollingTimer) return;
+
+    // Immediately query on observation start to feed active state
+    this.refreshUsageEvents().catch(() => {});
+
+    // Bounded 60-second query to preserve Risk Group continuous session
+    // and inactive-gap tracking in the TypeScript domain engine.
+    // NOTE: Daily allowance enforcement is handled natively and event-driven by
+    // RhythmEnforcementService (Accessibility TYPE_WINDOW_STATE_CHANGED + exact Handler deadline).
+    // This 60s query strictly maintains Risk Group session transitions without heavy battery drain.
+    this.pollingTimer = setInterval(async () => {
+      await this.refreshUsageEvents();
+    }, 60000);
+
+    if (this.pollingTimer && typeof (this.pollingTimer as any).unref === 'function') {
+      (this.pollingTimer as any).unref();
+    }
   }
 
   private stopObservation(): void {
-    // No permanent timer to clear
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this.pollingTimer = undefined;
+    }
   }
 }

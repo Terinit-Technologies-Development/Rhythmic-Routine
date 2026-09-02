@@ -71,10 +71,20 @@ export interface NativeDailyAllowancePolicyInput {
   allowanceMinutes: number;
 }
 
+export interface NativeRoutineWindowInput {
+  id: string;
+  startTime: string;
+  endTime?: string;
+  activeDays: number[];
+  protectedPackages: string[];
+  enabled: boolean;
+}
+
 export interface NativeEnforcementDiagnostics {
   serviceRunning: boolean;
   baseRestrictedPackageCount: number;
   activeLeaseCount: number;
+  routineWindowCount?: number;
   lastForegroundPackage?: string;
   lastInterventionPackage?: string;
   lastInterventionAt?: number;
@@ -82,6 +92,8 @@ export interface NativeEnforcementDiagnostics {
   activeUsagePackage?: string;
   activeUsageStartedAt?: number;
   allowanceDeadlineAt?: number;
+  nextRoutineBoundaryAt?: number;
   dailyUsageAppCount?: number;
   lastUsageReconciledAt?: number;
+  lastUsageAccountedAt?: number;
 }

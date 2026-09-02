@@ -29,17 +29,22 @@ On Android, Rhythmic-Routine implements a two-tier architecture separating quant
 * **Auto-Close On Window Expiry:** While visible, the overlay polls `isEffectivelyRestricted` every second and automatically closes if the protection window has elapsed.
 * **Read-Only Technical Diagnostics:** Exposes `getEnforcementDiagnostics()` for local technical state inspection (service running, restricted count, active leases, overlay visible).
 
-## 5. Pass 02 Android Native Daily Usage Ledger & Exact Deadline
+## 5. Pass 02 Android Native Daily Usage Ledger, Watermarked Reconciliation & Resilient Boundaries
 * **Native Per-App Daily Ledger:** `RhythmEnforcementService` maintains a compact per-app daily usage ledger in `SharedPreferences` (`DAILY_USAGE_LEDGER_JSON`).
-* **Package Foreground Transitions:** On Accessibility `TYPE_WINDOW_STATE_CHANGED`, transitions finalize the prior Risk app segment, commit elapsed milliseconds into `usedMillis`, and start a new segment for the incoming Risk app.
-* **Duplicate Event Protection:** Successive window state change events for the currently active package never reset `activeSegmentStartedAt`, eliminating time truncation bugs.
-* **Single Active Allowance Deadline:** Only ONE deadline callback exists at a time via `Handler.postDelayed`. When a Risk app enters foreground, the exact remaining allowance is scheduled. When remaining reaches 0, the app is marked exhausted and Touch Grass appears immediately.
-* **Access Lease Accounting:** Usage accumulates continuously during active Access Leases without alteration. If daily allowance is exhausted during a lease, the exhaustion state is preserved and Touch Grass triggers immediately upon lease expiration.
-* **Zero-Minute Allowance:** Apps configured with 0 minutes allowance are immediately marked exhausted and restricted upon launch during Open Day.
-* **Bounded UsageStats Reconciliation:** Bounded query triggered on service connect, app resume, and process recovery with watermark tracking (`LAST_USAGE_RECONCILED_AT`). Deduplicates events and eliminates permanent 15-second polling loops from JavaScript.
-* **Native Snapshot API:** Exposes `getDailyUsageSnapshot()` and `reconcileDailyUsage()` bridging native ledger state to TypeScript application layers.
+* **Touch Grass Time Exclusion:** When Rhythm's overlay (`context.packageName`) or system UI becomes foreground, any active Risk app segment is finalized, deadline is cancelled, and active segment is stopped. Staring at Touch Grass never accumulates Risk usage.
+* **Stale Exhaustion Clearing:** When an allowance is increased (such that `totalUsed < newAllowance`), `exhaustedAt` is immediately cleared, elapsed active usage is committed once, and the remaining allowance deadline is rescheduled. Base restrictions (routines/cooldowns) remain untouched.
+* **Watermarked Idempotent Reconciliation:** Authoritative `LAST_USAGE_ACCOUNTED_AT` watermark tracks committed usage. UsageStats reconciliation queries bounded historical transitions, reconstructing pre-watermark state and adding only the delta strictly following the watermark. Prevents double-counting with live Accessibility tracking.
+* **Ordered Reconnect Recovery:** On service reconnection, ordered foreground/background transitions determine the true active package (rejecting foreground apps with subsequent background events), restores active segments, and schedules exact allowance deadlines.
+* **Event-Driven Local-Midnight Rollover:** A single `Handler` callback schedules the next local midnight. At midnight, Day 1 accounting closes, Day 2 starts fresh at `usedMillis = 0`, and the full allowance deadline is rescheduled without process polling.
+* **Background-Resilient Routine Boundaries:** Routine schedule (`ROUTINE_SCHEDULE_JSON`) is evaluated natively on foreground events. Scheduled boundary callbacks (`scheduleNextRoutineBoundary`) trigger exact transitions:
+  - *Evening → Overnight:* Continues protection with zero unlock gap.
+  - *Overnight → Morning:* Remains protected.
+  - *Morning → Open Day:* Routine restriction clears automatically even while React Native JS is suspended.
+* **Reduced JS Cadence & Signature Caching:** JS reconciliation interval relaxed to 60 seconds. `PlatformNativeRhythmSyncProvider` caches signatures for base restrictions, daily policies, and routine schedules, eliminating redundant IPC and native writes.
+* **Continuous Risk Group Session Tracking:** `NativeUsageProvider` executes a bounded 60-second query to emit `APP_FOREGROUND` and `APP_BACKGROUND` events into the TypeScript engine, preserving multi-app session thresholds and inactivity gaps.
+* **App Discovery Refresh Policy Guard:** `RhythmCoordinator.refreshInstalledApps()` explicitly preserves `dailyRiskAllowance` (including `lastEditedDateKey`), preventing installed app scans from resetting once-daily allowance edit guards.
 
 ## 6. Verification Status
 * **Classification:** **`V1.0.1_PATCH_CANDIDATE`**
-* **Testing:** Pass 01/01A domain foundation merged; Pass 02 native usage ledger, exact allowance deadline, and bounded reconciliation implemented with 0 battery polling overhead.
+* **Testing:** Pass 01/01A domain foundation merged; Pass 02 native usage ledger, exact allowance deadline, watermarked reconciliation, midnight rollover, and routine boundaries fully verified (149 passing tests across 25 suites).
 * **iOS Status:** Experimental, source-implemented foundation. Untested on physical Apple hardware.

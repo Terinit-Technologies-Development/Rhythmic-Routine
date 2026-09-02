@@ -216,6 +216,22 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction result
     }
 
+    AsyncFunction("setRoutineSchedule") { scheduleList: List<Map<String, Any>> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val parsedWindows = scheduleList.mapNotNull {
+        val id = it["id"] as? String ?: return@mapNotNull null
+        val start = it["startTime"] as? String ?: "00:00"
+        val end = it["endTime"] as? String ?: "00:00"
+        val enabled = it["enabled"] as? Boolean ?: true
+        val daysList = (it["activeDays"] as? List<*>)?.mapNotNull { d -> (d as? Number)?.toInt() }?.toSet() ?: emptySet()
+        val pkgsList = (it["protectedPackages"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
+        NativeRoutineWindow(id, start, end, daysList, pkgsList, enabled)
+      }
+      RhythmEnforcementService.saveRoutineWindows(context, parsedWindows)
+      RhythmEnforcementService.instance?.scheduleNextRoutineBoundary()
+      return@AsyncFunction true
+    }
+
     AsyncFunction("getEnforcementDiagnostics") {
       val context = appContext.reactContext ?: return@AsyncFunction mapOf(
         "serviceRunning" to false,
@@ -226,14 +242,17 @@ class RhythmDeviceModule : Module() {
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
       val baseSet = prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet()
       val leases = RhythmEnforcementService.loadActiveLeases(context)
+      val routines = RhythmEnforcementService.loadRoutineWindows(context)
       val service = RhythmEnforcementService.instance
       val ledger = RhythmEnforcementService.loadDailyUsageLedger(context)
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
+      val lastAccountedAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_AT, 0L)
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
         "baseRestrictedPackageCount" to baseSet.size,
         "activeLeaseCount" to leases.size,
+        "routineWindowCount" to routines.size,
         "overlayVisible" to RhythmOverlayActivity.isVisible,
         "dailyUsageAppCount" to ledger.size
       )
@@ -255,8 +274,14 @@ class RhythmDeviceModule : Module() {
       if (service?.allowanceDeadlineAt != null && service.allowanceDeadlineAt!! > 0L) {
         result["allowanceDeadlineAt"] = service.allowanceDeadlineAt!!.toDouble()
       }
+      if (service?.nextRoutineBoundaryAt != null && service.nextRoutineBoundaryAt!! > 0L) {
+        result["nextRoutineBoundaryAt"] = service.nextRoutineBoundaryAt!!.toDouble()
+      }
       if (lastReconciledAt > 0L) {
         result["lastUsageReconciledAt"] = lastReconciledAt.toDouble()
+      }
+      if (lastAccountedAt > 0L) {
+        result["lastUsageAccountedAt"] = lastAccountedAt.toDouble()
       }
       return@AsyncFunction result
     }

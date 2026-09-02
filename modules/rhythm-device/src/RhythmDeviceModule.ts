@@ -7,6 +7,7 @@ import {
   NativeDailyUsageSnapshot,
   NativeEnforcementDiagnostics,
   NativePermissionStatus,
+  NativeRoutineWindowInput,
   NativeUsageEvent,
 } from './RhythmDevice.types';
 
@@ -48,6 +49,7 @@ export const FallbackModule = {
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   setDailyAllowancePolicies: async (_policies: NativeDailyAllowancePolicyInput[]): Promise<boolean> => true,
+  setRoutineSchedule: async (_windows: NativeRoutineWindowInput[]): Promise<boolean> => true,
   getDailyUsageSnapshot: async (): Promise<NativeDailyUsageSnapshot> => ({
     dateKey: '',
     apps: [],

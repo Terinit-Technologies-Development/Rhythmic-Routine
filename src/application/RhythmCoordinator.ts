@@ -20,7 +20,7 @@ import {
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
-const ENGINE_RECONCILE_INTERVAL_MS = 15_000;
+const ENGINE_RECONCILE_INTERVAL_MS = 60_000;
 
 export class RhythmCoordinator {
   private static instance: RhythmCoordinator | null = null;
@@ -472,6 +472,7 @@ export class RhythmCoordinator {
           ...discovered,
           classification: existing.classification,
           riskGroupId: existing.riskGroupId,
+          dailyRiskAllowance: existing.dailyRiskAllowance,
         };
       }
       return {
