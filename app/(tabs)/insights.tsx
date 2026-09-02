@@ -1,12 +1,15 @@
-import React from 'react';
+import React, { useCallback, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Platform,
+  ActivityIndicator,
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import {
   ShieldCheck,
   Award,
@@ -15,6 +18,8 @@ import {
   Flame,
   Sparkles,
   Layers,
+  Clock,
+  ShieldAlert,
 } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
@@ -25,11 +30,24 @@ export default function InsightsScreen() {
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);
   const weeklySummary = usePrototypeStore((s) => s.weeklySummary);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const apps = usePrototypeStore((s) => s.apps);
+  const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const insightDataState = usePrototypeStore((s) => s.insightDataState);
   const refreshInsights = usePrototypeStore((s) => s.refreshInsights);
+  const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
+  const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
 
-  React.useEffect(() => {
-    refreshInsights();
-  }, [refreshInsights]);
+  useEffect(() => {
+    refreshDailyUsage().catch(() => {});
+    refreshInsights().catch(() => {});
+  }, [refreshDailyUsage, refreshInsights]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshDailyUsage().catch(() => {});
+      refreshInsights().catch(() => {});
+    }, [refreshDailyUsage, refreshInsights])
+  );
 
   const source = getInsightSource(Platform.OS);
   const sourceLabel =
@@ -60,6 +78,118 @@ export default function InsightsScreen() {
     ...insightMetrics.weeklyTrend.map((t) => t.protectedMinutes + t.riskMinutes)
   );
 
+  // Today's Risk Allowances: strictly for Risk apps, sorted exhausted first, then most-used
+  const riskApps = apps.filter((a) => a.classification === 'risk');
+  const riskAppsWithAllowance = riskApps
+    .map((app) => {
+      const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
+      const snap = dailyUsageSnapshot?.apps.find((a) => a.packageName === app.id);
+      const usedSeconds = snap?.usedSeconds ?? app.usageTodayMinutes * 60;
+      const usedMinutes = Math.floor(usedSeconds / 60);
+      const remainingSeconds =
+        snap?.remainingSeconds ?? Math.max(0, allowanceMinutes * 60 - usedSeconds);
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      const isExhausted =
+        snap?.exhausted ?? (allowanceMinutes > 0 && usedMinutes >= allowanceMinutes);
+
+      let statusText = '';
+      if (allowanceMinutes === 0) {
+        statusText = '0 min planned';
+      } else if (isExhausted || remainingMinutes <= 0) {
+        statusText = 'Allowance complete';
+      } else {
+        statusText = `${remainingMinutes} min remaining`;
+      }
+
+      return {
+        id: app.id,
+        name: app.name,
+        allowanceMinutes,
+        usedMinutes,
+        remainingMinutes,
+        isExhausted,
+        statusText,
+      };
+    })
+    .sort((a, b) => {
+      if (a.isExhausted && !b.isExhausted) return -1;
+      if (!a.isExhausted && b.isExhausted) return 1;
+      return b.usedMinutes - a.usedMinutes;
+    });
+
+  if (insightDataState === 'permission-required') {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ScreenHeader
+          title="Insights"
+          showWaveLogo={true}
+          subtitle="Understand your digital rhythm and time returned to life."
+        />
+        <View style={styles.stateCenterContainer}>
+          <View style={[styles.stateIconCircle, { backgroundColor: colors.coralLight }]}>
+            <ShieldAlert size={36} color={colors.coralDark} />
+          </View>
+          <Text style={styles.stateTitle}>Usage Access needed</Text>
+          <Text style={styles.stateSubtitle}>
+            Rhythm can still protect your routine, but usage Insights need Android Usage Access.
+          </Text>
+          <TouchableOpacity
+            style={styles.statePrimaryBtn}
+            onPress={() => requestUsagePermission()}
+          >
+            <Text style={styles.statePrimaryBtnText}>Grant Usage Access</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (insightDataState === 'error') {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ScreenHeader
+          title="Insights"
+          showWaveLogo={true}
+          subtitle="Understand your digital rhythm and time returned to life."
+        />
+        <View style={styles.stateCenterContainer}>
+          <View style={[styles.stateIconCircle, { backgroundColor: colors.coralLight }]}>
+            <ShieldAlert size={36} color={colors.coralDark} />
+          </View>
+          <Text style={styles.stateTitle}>Insights temporarily unavailable</Text>
+          <Text style={styles.stateSubtitle}>
+            Unable to read local device telemetry right now.
+          </Text>
+          <TouchableOpacity
+            style={styles.statePrimaryBtn}
+            onPress={() => {
+              refreshDailyUsage().catch(() => {});
+              refreshInsights().catch(() => {});
+            }}
+          >
+            <Text style={styles.statePrimaryBtnText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (insightDataState === 'loading') {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ScreenHeader
+          title="Insights"
+          showWaveLogo={true}
+          subtitle="Understand your digital rhythm and time returned to life."
+        />
+        <View style={styles.stateCenterContainer}>
+          <ActivityIndicator size="large" color={colors.forest} style={{ marginBottom: 16 }} />
+          <Text style={styles.stateSubtitle}>Reading your local rhythm…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScreenHeader
@@ -77,6 +207,38 @@ export default function InsightsScreen() {
           <View style={styles.sourceDot} />
           <Text style={styles.sourceText}>Telemetry Source: {sourceLabel}</Text>
         </View>
+
+        {/* Today's Risk Allowances Section */}
+        {riskAppsWithAllowance.length > 0 && (
+          <View style={styles.allowanceCard}>
+            <View style={styles.allowanceCardHeader}>
+              <Clock size={18} color={colors.forest} />
+              <Text style={styles.allowanceCardTitle}>Today&apos;s Risk Allowances</Text>
+            </View>
+            {riskAppsWithAllowance.map((item) => (
+              <View key={item.id} style={styles.allowanceRow}>
+                <View style={styles.allowanceRowInfo}>
+                  <Text style={styles.allowanceRowName}>{item.name}</Text>
+                  <Text style={styles.allowanceRowSub}>
+                    {item.allowanceMinutes === 0
+                      ? '0 min planned today'
+                      : `${item.usedMinutes} / ${item.allowanceMinutes} min`}
+                  </Text>
+                </View>
+                <View style={styles.allowanceRowBadge}>
+                  <Text
+                    style={[
+                      styles.allowanceStatusText,
+                      item.isExhausted && styles.allowanceStatusExhausted,
+                    ]}
+                  >
+                    {item.statusText}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Highlight Banner */}
         <View style={styles.highlightCard}>
@@ -100,7 +262,7 @@ export default function InsightsScreen() {
           </Text>
         </View>
 
-        {/* 2x2 Metrics Grid */}
+        {/* 2x2 Metrics Grid (Factual copy) */}
         <View style={styles.metricsGrid}>
           {/* Card 1: Avg Risk Session */}
           <View style={styles.metricCard}>
@@ -109,7 +271,9 @@ export default function InsightsScreen() {
             </View>
             <Text style={styles.metricVal}>{insightMetrics.averageRiskSessionMinutes} min</Text>
             <Text style={styles.metricLabel}>Avg Risk Session</Text>
-            <Text style={styles.metricSub}>Well under limits</Text>
+            <Text style={styles.metricSub}>
+              {hasRealData ? 'Observed this week' : showDemo ? 'Demo preview' : 'No observed data yet'}
+            </Text>
           </View>
 
           {/* Card 2: Cooldown Triggers */}
@@ -119,7 +283,9 @@ export default function InsightsScreen() {
             </View>
             <Text style={styles.metricVal}>{insightMetrics.cooldownTriggersCount}</Text>
             <Text style={styles.metricLabel}>Recovery Breaks</Text>
-            <Text style={styles.metricSub}>Completed this week</Text>
+            <Text style={styles.metricSub}>
+              {hasRealData ? 'Triggered this week' : showDemo ? 'Completed this week' : 'None triggered yet'}
+            </Text>
           </View>
 
           {/* Card 3: Routine Consistency */}
@@ -138,8 +304,10 @@ export default function InsightsScreen() {
               <Sunset size={18} color={colors.lavenderDark} />
             </View>
             <Text style={styles.metricVal}>{insightMetrics.finalRiskAppUseTime}</Text>
-            <Text style={styles.metricLabel}>Evening Threshold</Text>
-            <Text style={styles.metricSub}>Wind-Down respected</Text>
+            <Text style={styles.metricLabel}>Final Risk App Use</Text>
+            <Text style={styles.metricSub}>
+              {hasRealData ? 'Latest observed today' : showDemo ? 'Wind-Down respected' : 'No evening use observed'}
+            </Text>
           </View>
         </View>
 
@@ -199,7 +367,7 @@ export default function InsightsScreen() {
           </View>
         </View>
 
-        {/* Risk Groups Breakdown */}
+        {/* Risk Groups Breakdown (Factual observed breakdown) */}
         {riskGroups.length > 0 && (
           <View style={styles.groupBreakdownCard}>
             <View style={styles.groupHeader}>
@@ -207,16 +375,23 @@ export default function InsightsScreen() {
               <Text style={styles.groupBreakdownTitle}>Risk Group Activity</Text>
             </View>
             {riskGroups.map((group) => {
-              const mins = weeklySummary?.groupUsageMinutes[group.id] ?? group.currentSessionMinutes;
+              const mins = weeklySummary?.groupUsageMinutes?.[group.id];
+              const displayMins =
+                mins != null && mins > 0
+                  ? formatMinutesToHumanReadable(mins)
+                  : mins === 0
+                  ? '0m'
+                  : '—';
+
               return (
                 <View key={group.id} style={styles.groupRow}>
                   <View style={styles.groupInfo}>
                     <Text style={styles.groupName}>{group.name}</Text>
                     <Text style={styles.groupSub}>
-                      {group.appIds.length} app{group.appIds.length === 1 ? '' : 's'} · {group.sessionThresholdMinutes}m limit
+                      {group.appIds.length} app{group.appIds.length === 1 ? '' : 's'} · {group.sessionThresholdMinutes}m session threshold
                     </Text>
                   </View>
-                  <Text style={styles.groupUsageVal}>{formatMinutesToHumanReadable(mins)}</Text>
+                  <Text style={styles.groupUsageVal}>{displayMins}</Text>
                 </View>
               );
             })}
@@ -494,4 +669,98 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     lineHeight: 19,
   },
+  allowanceCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: radii.xxl,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#EFEAE0',
+    marginBottom: 16,
+    ...shadows.card,
+  },
+  allowanceCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  allowanceCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  allowanceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3EFE6',
+  },
+  allowanceRowInfo: {
+    gap: 2,
+    flex: 1,
+  },
+  allowanceRowName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  allowanceRowSub: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  allowanceRowBadge: {
+    alignItems: 'flex-end',
+  },
+  allowanceStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.forest,
+  },
+  allowanceStatusExhausted: {
+    color: colors.coralDark,
+    fontWeight: '700',
+  },
+  stateCenterContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  stateIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.amberLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  stateTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  stateSubtitle: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  statePrimaryBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: radii.full,
+    backgroundColor: colors.forest,
+  },
+  statePrimaryBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
 });
+

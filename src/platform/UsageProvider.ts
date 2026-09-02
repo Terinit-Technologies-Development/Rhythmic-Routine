@@ -1,4 +1,6 @@
-import { DeviceApp, AppUsageSnapshot } from '../types/domain';
+import { DeviceApp, AppUsageSnapshot, DailyUsageSnapshot, DailyUsageAppSnapshot } from '../types/domain';
+
+export type { DailyUsageSnapshot, DailyUsageAppSnapshot };
 
 export type UsageActivityEvent = {
   appId: string;
@@ -32,4 +34,19 @@ export interface UsageProvider {
    * to update TypeScript Risk Group session continuity without waiting for periodic timers.
    */
   refreshActivityEvents?(): Promise<void>;
+
+  /**
+   * Retrieves live daily usage snapshot from native ledger.
+   */
+  getDailyUsageSnapshot?(): Promise<DailyUsageSnapshot>;
+
+  /**
+   * Reconciles daily usage from native UsageEvents and returns updated snapshot.
+   */
+  reconcileDailyUsage?(): Promise<DailyUsageSnapshot>;
+
+  /**
+   * Queries activity events in the specified timestamp range [from, to].
+   */
+  queryActivityEvents?(from: number, to: number): Promise<UsageActivityEvent[]>;
 }

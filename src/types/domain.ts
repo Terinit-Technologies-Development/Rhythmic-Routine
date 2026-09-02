@@ -29,6 +29,21 @@ export interface DailyAppUsage {
   exhaustedAt?: number;
 }
 
+export interface DailyUsageAppSnapshot {
+  packageName: string;
+  usedSeconds: number;
+  allowanceMinutes: number;
+  remainingSeconds: number;
+  exhausted: boolean;
+  activeSegmentStartedAt?: number;
+}
+
+export interface DailyUsageSnapshot {
+  dateKey: string;
+  apps: DailyUsageAppSnapshot[];
+  lastReconciledAt?: number;
+}
+
 export interface NativeSelectionReference {
   id: string;
   platform: 'ios';
