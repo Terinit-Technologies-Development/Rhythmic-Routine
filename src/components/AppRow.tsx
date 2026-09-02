@@ -40,10 +40,48 @@ interface Props {
 export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
   const openAppEdit = usePrototypeStore((s) => s.openAppEdit);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
 
   const groupName = app.riskGroupId
     ? riskGroups.find((g) => g.id === app.riskGroupId)?.name
     : null;
+
+  const isRisk = app.classification === 'risk';
+  const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
+  const snapshotApp = dailyUsageSnapshot?.apps.find((a) => a.packageName === app.id);
+  const usedTodayMinutes = snapshotApp
+    ? Math.floor(snapshotApp.usedSeconds / 60)
+    : (app.usageTodayMinutes || 0);
+  const isExhausted = snapshotApp
+    ? snapshotApp.exhausted
+    : (allowanceMinutes > 0 && usedTodayMinutes >= allowanceMinutes);
+
+  const renderUsageSignal = () => {
+    if (!isRisk) return null;
+    if (dailyUsageError) {
+      return (
+        <Text style={[styles.usageSignal, styles.usageUnavailable]}>
+          Usage unavailable
+        </Text>
+      );
+    }
+    if (allowanceMinutes === 0) {
+      return <Text style={styles.usageSignal}>0 min planned today</Text>;
+    }
+    if (isExhausted || usedTodayMinutes >= allowanceMinutes) {
+      return (
+        <Text style={[styles.usageSignal, styles.usageExhausted]}>
+          {usedTodayMinutes} / {allowanceMinutes} min · allowance complete
+        </Text>
+      );
+    }
+    return (
+      <Text style={styles.usageSignal}>
+        {usedTodayMinutes} / {allowanceMinutes} min today
+      </Text>
+    );
+  };
 
   const renderIcon = () => {
     const iconProps = { size: 22, color: app.iconColor || colors.forest };
@@ -119,6 +157,7 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
           ) : (
             <Text style={styles.categorySubtitle}>{app.defaultCategory}</Text>
           )}
+          {renderUsageSignal()}
         </View>
 
         {/* Classification Badge & Chevron */}
@@ -167,6 +206,19 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
+  usageSignal: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  usageExhausted: {
+    color: colors.coralDark,
+    fontWeight: '600',
+  },
+  usageUnavailable: {
+    color: colors.textMuted,
+    fontStyle: 'italic',
+  },
   rightCol: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -177,3 +229,4 @@ const styles = StyleSheet.create({
     marginLeft: 74,
   },
 });
+

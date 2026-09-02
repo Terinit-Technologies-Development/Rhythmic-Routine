@@ -1,4 +1,4 @@
-import { AppUsageSnapshot, DeviceApp } from '../../types/domain';
+import { AppUsageSnapshot, DeviceApp, DailyUsageSnapshot } from '../../types/domain';
 import { UsageActivityEvent, UsageProvider } from '../UsageProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 import { initialApps } from '../../data/mockData';
@@ -45,6 +45,30 @@ export class NativeUsageProvider implements UsageProvider {
     } catch {
       return [];
     }
+  }
+
+  async getDailyUsageSnapshot(): Promise<DailyUsageSnapshot> {
+    return RhythmDeviceModule.getDailyUsageSnapshot();
+  }
+
+  async reconcileDailyUsage(): Promise<DailyUsageSnapshot> {
+    const snapshot = await RhythmDeviceModule.reconcileDailyUsage();
+    if (!snapshot) {
+      return this.getDailyUsageSnapshot();
+    }
+    return snapshot;
+  }
+
+  async queryActivityEvents(from: number, to: number): Promise<UsageActivityEvent[]> {
+    const raw = await RhythmDeviceModule.queryUsageEvents(from, to);
+    return raw
+      .filter((e) => e.eventType === 'foreground' || e.eventType === 'background')
+      .map((e) => ({
+        appId: e.packageName,
+        timestamp: e.timestamp,
+        state: e.eventType as 'foreground' | 'background',
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   onActivityEvent(callback: (event: UsageActivityEvent) => void): () => void {

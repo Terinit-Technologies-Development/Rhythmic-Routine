@@ -241,9 +241,9 @@ export default function RiskGroupDetailScreen() {
 
         {/* Section 2: Session Threshold */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Session threshold</Text>
+          <Text style={styles.cardTitle}>Continuous session threshold</Text>
           <Text style={styles.cardSubtitle}>
-            Time online in this group before a break is triggered.
+            Time spent continuously across apps in this Risk Group before a recovery break begins.
           </Text>
 
           <View style={styles.stepperRow}>
