@@ -6,10 +6,43 @@ export type AppClassification =
 
 export type RhythmState =
   | 'morning-buffer'
+  | 'overnight-protected'
   | 'available'
   | 'risk-session'
   | 'cooldown'
   | 'evening-wind-down';
+
+export const DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES = 30;
+export const DAILY_ALLOWANCE_STEP_MINUTES = 15;
+export const MIN_DAILY_RISK_ALLOWANCE_MINUTES = 0;
+
+export interface DailyRiskAllowancePolicy {
+  allowanceMinutes: number;
+  lastEditedDateKey?: string;
+}
+
+export interface DailyAppUsage {
+  appId: string;
+  dateKey: string;
+  usedSeconds: number;
+  activeSegmentStartedAt?: number;
+  exhaustedAt?: number;
+}
+
+export interface DailyUsageAppSnapshot {
+  packageName: string;
+  usedSeconds: number;
+  allowanceMinutes: number;
+  remainingSeconds: number;
+  exhausted: boolean;
+  activeSegmentStartedAt?: number;
+}
+
+export interface DailyUsageSnapshot {
+  dateKey: string;
+  apps: DailyUsageAppSnapshot[];
+  lastReconciledAt?: number;
+}
 
 export interface NativeSelectionReference {
   id: string;
@@ -23,6 +56,7 @@ export interface DeviceApp {
   name: string;
   classification: AppClassification;
   riskGroupId?: string;
+  dailyRiskAllowance?: DailyRiskAllowancePolicy;
   iconName: string;
   iconColor: string;
   iconBg: string;

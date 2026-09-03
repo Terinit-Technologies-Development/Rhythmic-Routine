@@ -8,6 +8,7 @@ import {
   RhythmState,
   RiskGroup,
   RoutineWindow,
+  DailyUsageSnapshot,
 } from '../types/domain';
 import {
   initialApps,
@@ -26,7 +27,79 @@ import {
   LocalInsightsRepository,
   WeeklyRhythmSummary,
   getLocalDateKey,
+  getSevenDayWindowStart,
+  aggregateObservedRiskUsage,
+  ObservedRiskUsageAggregation,
 } from '../domain/insights';
+import {
+  AllowanceEditResult,
+  DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+} from '../domain/rhythm/allowance';
+
+function getPlatformOS(): string {
+  if (typeof process !== 'undefined' && process.env?.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
+  if (typeof window !== 'undefined' && (typeof navigator === 'undefined' || (navigator as any).product !== 'ReactNative')) {
+    return 'web';
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const rn = require('react-native');
+    return rn?.Platform?.OS || 'web';
+  } catch {
+    return 'web';
+  }
+}
+
+export type InsightDataState =
+  | 'loading'
+  | 'real'
+  | 'empty'
+  | 'demo-web'
+  | 'permission-required'
+  | 'error';
+
+export function hydrateAppsWithDailyUsage(
+  apps: DeviceApp[],
+  snapshot?: DailyUsageSnapshot
+): DeviceApp[] {
+  const usageMap = new Map(
+    snapshot?.apps.map((item) => [
+      item.packageName,
+      item,
+    ]) ?? []
+  );
+
+  return apps.map((app) => {
+    const usage = usageMap.get(app.id);
+
+    return {
+      ...app,
+      usageTodayMinutes: usage
+        ? Math.floor(usage.usedSeconds / 60)
+        : 0,
+    };
+  });
+}
+
+const emptyInsightMetrics: InsightMetrics = {
+  protectedTimeTodayMinutes: 0,
+  protectedTimeWeeklyHours: 0,
+  averageRiskSessionMinutes: 0,
+  cooldownTriggersCount: 0,
+  firstRiskAppUseTime: '—',
+  finalRiskAppUseTime: '—',
+  weeklyTrend: [
+    { day: 'Mon', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Tue', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Wed', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Thu', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Fri', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Sat', protectedMinutes: 0, riskMinutes: 0 },
+    { day: 'Sun', protectedMinutes: 0, riskMinutes: 0 },
+  ],
+};
 
 export interface TimeSelectorConfig {
   visible: boolean;
@@ -56,6 +129,12 @@ interface PrototypeState {
   hasCompletedOnboarding: boolean;
   permissionState: PermissionState;
 
+  // Daily usage & Insights State
+  dailyUsageSnapshot?: DailyUsageSnapshot;
+  dailyUsageLoading: boolean;
+  dailyUsageError?: string;
+  insightDataState: InsightDataState;
+
   // Search & Filters
   searchQuery: string;
   filterClassification: AppClassification | 'all';
@@ -69,6 +148,7 @@ interface PrototypeState {
   // Core Actions
   initializeApps: () => Promise<void>;
   refreshInstalledApps: () => Promise<void>;
+  refreshDailyUsage: () => Promise<void>;
   refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
@@ -81,11 +161,16 @@ interface PrototypeState {
   startAccessLease: (groupId: string, durationMinutes?: number) => Promise<void>;
   triggerEmergencyBypass: () => Promise<void>;
 
+  updateDailyRiskAllowance: (
+    appId: string,
+    nextMinutes: number
+  ) => Promise<AllowanceEditResult>;
+
   updateAppClassification: (
     appId: string,
     classification: AppClassification,
     riskGroupId?: string
-  ) => void;
+  ) => Promise<void>;
   updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => void;
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
   toggleRoutineDay: (day: number) => void;
@@ -119,9 +204,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   riskGroups: [...initialRiskGroups],
   routineWindows: [...initialRoutineWindows],
   offlineActivities: [...defaultOfflineActivities],
-  insightMetrics: { ...initialInsightMetrics },
+  insightMetrics: getPlatformOS() === 'web' ? { ...initialInsightMetrics } : { ...emptyInsightMetrics },
   weeklySummary: undefined,
   todaySummary: undefined,
+  dailyUsageSnapshot: undefined,
+  dailyUsageLoading: false,
+  dailyUsageError: undefined,
+  insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',
   hasCompletedOnboarding: true,
   permissionState: {
     usageAccess: 'unknown',
@@ -167,7 +256,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         permissionState: permStatus,
       });
 
-      // Load real local insights
+      // Load real local daily usage and insights
+      await get().refreshDailyUsage();
       await get().refreshInsights();
     } catch {
       // Fallback
@@ -179,8 +269,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       const coordinator = RhythmCoordinator.getInstance();
       const result = await coordinator.refreshInstalledApps();
       if (result.apps && result.apps.length > 0) {
+        const snapshot = get().dailyUsageSnapshot;
         set({
-          apps: result.apps,
+          apps: hydrateAppsWithDailyUsage(result.apps, snapshot),
           riskGroups: result.riskGroups,
         });
       }
@@ -189,9 +280,66 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
   },
 
-  refreshInsights: async () => {
+  refreshDailyUsage: async () => {
+    const { usage } = getPlatformServices();
+
+    set({
+      dailyUsageLoading: true,
+      dailyUsageError: undefined,
+    });
+
     try {
-      const { storage } = getPlatformServices();
+      const snapshot =
+        (await usage.reconcileDailyUsage?.()) ??
+        (await usage.getDailyUsageSnapshot?.());
+
+      if (!snapshot) {
+        set({
+          dailyUsageSnapshot: undefined,
+          dailyUsageLoading: false,
+        });
+        return;
+      }
+
+      const currentApps = get().apps;
+      const hydratedApps = hydrateAppsWithDailyUsage(currentApps, snapshot);
+
+      set({
+        apps: hydratedApps,
+        dailyUsageSnapshot: snapshot,
+        dailyUsageLoading: false,
+        dailyUsageError: undefined,
+      });
+    } catch {
+      set({
+        dailyUsageLoading: false,
+        dailyUsageError: 'Usage unavailable',
+        dailyUsageSnapshot: undefined,
+      });
+    }
+  },
+
+  refreshInsights: async () => {
+    const platformOS = getPlatformOS();
+    const isWeb = platformOS === 'web';
+
+    if (!isWeb) {
+      set({ insightDataState: 'loading' });
+    }
+
+    try {
+      const { storage, permissions, usage } = getPlatformServices();
+      const permStatus = await permissions.getStatus();
+
+      if (platformOS === 'android' && permStatus.usageAccess !== 'granted') {
+        set({
+          insightDataState: 'permission-required',
+          permissionState: permStatus,
+          insightMetrics: { ...emptyInsightMetrics },
+        });
+        return;
+      }
+
       const windows = get().routineWindows;
       const repo = new LocalInsightsRepository(storage, windows);
 
@@ -199,54 +347,111 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       const todaySummary = await repo.getDailySummary(todayKey);
       const weeklySummary = await repo.getWeeklySummary(todayKey);
 
-      const isWeb = typeof window !== 'undefined';
-      const showDemoInsights = isWeb && !weeklySummary.hasData;
+      const apps = get().apps;
+      const riskApps = apps.filter((a) => a.classification === 'risk');
 
-      if (weeklySummary.hasData) {
+      let observedAggregation: ObservedRiskUsageAggregation | undefined;
+
+      if (platformOS === 'android' && usage.queryActivityEvents) {
+        const now = Date.now();
+        const start = getSevenDayWindowStart(now);
+        const events = await usage.queryActivityEvents(start, now);
+        observedAggregation = aggregateObservedRiskUsage(
+          events,
+          riskApps.map((a) => ({ id: a.id, riskGroupId: a.riskGroupId })),
+          start,
+          now
+        );
+      }
+
+      const hasHistoryData = !!weeklySummary.hasData;
+      const hasObservedData =
+        !!observedAggregation &&
+        (Object.values(observedAggregation.secondsByApp).some((s) => s > 0) ||
+          Object.values(observedAggregation.secondsByDate).some((s) => s > 0));
+      const hasRealData = hasHistoryData || hasObservedData;
+
+      if (hasRealData) {
+        // Double-count prevention:
+        // On Android, observed UsageStats replaces engine Risk usage!
+        // Engine history is retained for routine protection, cooldown count, access lease count.
+        const weeklyTrend = weeklySummary.dailyTrend.map((t) => {
+          const riskMins = observedAggregation
+            ? Math.round((observedAggregation.secondsByDate[t.dateKey] || 0) / 60)
+            : t.riskMinutes;
+
+          return {
+            day: t.day,
+            protectedMinutes: t.protectedMinutes,
+            riskMinutes: riskMins,
+          };
+        });
+
+        // Group usage: On Android, use sum(observed usage for Risk apps belonging to group)
+        const groupUsageMinutes: Record<string, number> = {};
+        if (observedAggregation) {
+          for (const [groupId, sec] of Object.entries(observedAggregation.secondsByGroup)) {
+            groupUsageMinutes[groupId] = Math.round(sec / 60);
+          }
+        } else {
+          Object.assign(groupUsageMinutes, weeklySummary.groupUsageMinutes);
+        }
+
+        const firstRiskTime = observedAggregation
+          ? (observedAggregation.firstRiskUseTime ?? '—')
+          : (todaySummary?.firstRiskAppUseTime || '—');
+        const finalRiskTime = observedAggregation
+          ? (observedAggregation.finalRiskUseTime ?? '—')
+          : (todaySummary?.finalRiskAppUseTime || '—');
+
+        const updatedWeeklySummary: WeeklyRhythmSummary = {
+          ...weeklySummary,
+          groupUsageMinutes,
+          hasData: true,
+        };
+
         set({
           todaySummary: todaySummary || undefined,
-          weeklySummary,
+          weeklySummary: updatedWeeklySummary,
+          insightDataState: 'real',
           insightMetrics: {
             protectedTimeTodayMinutes: todaySummary?.observedProtectedMinutes || 0,
             protectedTimeWeeklyHours: Math.round((weeklySummary.totalProtectedMinutes / 60) * 10) / 10,
             averageRiskSessionMinutes: weeklySummary.averageRiskSessionMinutes,
             cooldownTriggersCount: weeklySummary.totalCooldownCount,
-            firstRiskAppUseTime: todaySummary?.firstRiskAppUseTime || '—',
-            finalRiskAppUseTime: todaySummary?.finalRiskAppUseTime || '—',
-            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
-              day: t.day,
-              protectedMinutes: t.protectedMinutes,
-              riskMinutes: t.riskMinutes,
-            })),
+            firstRiskAppUseTime: firstRiskTime,
+            finalRiskAppUseTime: finalRiskTime,
+            weeklyTrend,
           },
         });
-      } else if (showDemoInsights) {
+      } else if (isWeb) {
         set({
           todaySummary: todaySummary || undefined,
           weeklySummary,
-          insightMetrics: get().insightMetrics,
+          insightDataState: 'demo-web',
+          insightMetrics: { ...initialInsightMetrics },
         });
       } else {
+        // Native empty state
         set({
           todaySummary: todaySummary || undefined,
           weeklySummary,
-          insightMetrics: {
-            protectedTimeTodayMinutes: 0,
-            protectedTimeWeeklyHours: 0,
-            averageRiskSessionMinutes: 0,
-            cooldownTriggersCount: 0,
-            firstRiskAppUseTime: '—',
-            finalRiskAppUseTime: '—',
-            weeklyTrend: weeklySummary.dailyTrend.map((t) => ({
-              day: t.day,
-              protectedMinutes: 0,
-              riskMinutes: 0,
-            })),
-          },
+          insightDataState: 'empty',
+          insightMetrics: { ...emptyInsightMetrics },
         });
       }
     } catch {
-      // Keep existing metrics on error
+      if (isWeb) {
+        set({
+          insightDataState: 'demo-web',
+          insightMetrics: { ...initialInsightMetrics },
+        });
+      } else {
+        set({
+          insightDataState: 'error',
+          insightMetrics: { ...emptyInsightMetrics },
+        });
+      }
     }
   },
 
@@ -387,9 +592,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       riskGroups: config?.riskGroups ?? [...initialRiskGroups],
       routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
-      insightMetrics: { ...initialInsightMetrics },
+      insightMetrics: getPlatformOS() === 'web' ? { ...initialInsightMetrics } : { ...emptyInsightMetrics },
       weeklySummary: undefined,
       todaySummary: undefined,
+      dailyUsageSnapshot: undefined,
+      dailyUsageLoading: false,
+      dailyUsageError: undefined,
+      insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',
       searchQuery: '',
       filterClassification: 'all',
       demoSwitcherVisible: false,
@@ -399,40 +608,62 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
-  updateAppClassification: (appId, classification, riskGroupId) => {
-    set((state) => {
-      const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
+  updateDailyRiskAllowance: async (appId, nextMinutes) => {
+    const result = await RhythmCoordinator.getInstance().updateDailyRiskAllowance(appId, nextMinutes);
+    if (result.allowed) {
+      const config = RhythmCoordinator.getInstance().getConfig();
+      if (config) {
+        const snapshot = get().dailyUsageSnapshot;
+        set({ apps: hydrateAppsWithDailyUsage(config.apps, snapshot) });
+      }
+      await get().refreshDailyUsage();
+    }
+    return result;
+  },
 
-      const updatedApps = state.apps.map((app) => {
-        if (app.id === appId) {
-          return {
-            ...app,
-            classification,
-            riskGroupId: targetGroupId,
+  updateAppClassification: async (appId, classification, riskGroupId) => {
+    const state = get();
+    const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
+
+    const updatedApps = state.apps.map((app) => {
+      if (app.id === appId) {
+        let dailyRiskAllowance = app.dailyRiskAllowance;
+        if (classification === 'risk' && !dailyRiskAllowance) {
+          dailyRiskAllowance = {
+            allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
           };
         }
-        return app;
-      });
+        return {
+          ...app,
+          classification,
+          riskGroupId: targetGroupId,
+          dailyRiskAllowance,
+        };
+      }
+      return app;
+    });
 
-      // Maintain Invariant: if not 'risk', remove app from all risk groups
-      const updatedRiskGroups = state.riskGroups.map((group) => {
-        const hasApp = group.appIds.includes(appId);
-        const shouldHave = classification === 'risk' && group.id === targetGroupId;
+    // Maintain Invariant: if not 'risk', remove app from all risk groups
+    const updatedRiskGroups = state.riskGroups.map((group) => {
+      const hasApp = group.appIds.includes(appId);
+      const shouldHave = classification === 'risk' && group.id === targetGroupId;
 
-        if (shouldHave && !hasApp) {
-          return { ...group, appIds: [...group.appIds, appId] };
-        } else if (!shouldHave && hasApp) {
-          return { ...group, appIds: group.appIds.filter((id) => id !== appId) };
-        }
-        return group;
-      });
+      if (shouldHave && !hasApp) {
+        return { ...group, appIds: [...group.appIds, appId] };
+      } else if (!shouldHave && hasApp) {
+        return { ...group, appIds: group.appIds.filter((id) => id !== appId) };
+      }
+      return group;
+    });
 
-      RhythmCoordinator.getInstance().updateConfig({
-        apps: updatedApps,
-        riskGroups: updatedRiskGroups,
-      }).catch(() => {});
+    await RhythmCoordinator.getInstance().updateConfig({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+    });
 
-      return { apps: updatedApps, riskGroups: updatedRiskGroups };
+    set({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
     });
   },
 

@@ -23,17 +23,20 @@ export default function AppsScreen() {
   const filterClassification = usePrototypeStore((s) => s.filterClassification);
   const setFilterClassification = usePrototypeStore((s) => s.setFilterClassification);
   const refreshInstalledApps = usePrototypeStore((s) => s.refreshInstalledApps);
+  const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
 
   const [expanded, setExpanded] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       refreshInstalledApps();
-    }, [refreshInstalledApps])
+      refreshDailyUsage();
+    }, [refreshInstalledApps, refreshDailyUsage])
   );
 
   const handleManualRefresh = () => {
     refreshInstalledApps().catch(() => {});
+    refreshDailyUsage().catch(() => {});
   };
 
   const filterChips: { id: AppClassification | 'all'; label: string }[] = [

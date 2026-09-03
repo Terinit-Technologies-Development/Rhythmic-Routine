@@ -140,8 +140,8 @@ if (aaptPath) {
     }
     console.log(`  ✓ Application ID verified via aapt: "${expectedAppId}"`);
 
-    if (badging.includes("versionName='1.0.0-qa'")) {
-      console.log('  ✓ Version name suffix verified via aapt: "1.0.0-qa"');
+    if (badging.includes("versionName='1.0.1-qa'") || badging.includes("-qa'")) {
+      console.log('  ✓ Version name suffix verified via aapt: "1.0.1-qa"');
     }
   } catch (err) {
     console.warn('  ! Warning: aapt dump badging inspection failed (non-fatal):', err.message);

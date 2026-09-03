@@ -1,5 +1,4 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
-import { computeUnsuppressedBaseRestrictedAppIds } from '../domain/rhythm/nativePolicy';
 import RhythmDeviceModule from '../../modules/rhythm-device';
 
 export interface IOSNativeGroupPolicy {
@@ -44,6 +43,9 @@ export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
 }
 
 function getPlatformOS(): string {
+  if (process.env.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Platform } = require('react-native');
@@ -77,6 +79,10 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
   private lastSnapshot?: IOSSharedRhythmSnapshot;
   private lastConfigSignature?: string;
+  private lastAndroidBaseRestrictionsSignature?: string;
+  private lastAndroidRiskPoliciesSignature?: string;
+  private lastAndroidRoutineScheduleSignature?: string;
+  private lastAndroidCooldownsSignature?: string;
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
     try {
@@ -155,12 +161,96 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           }
         }
       } else if (os === 'android') {
-        const baseRestrictedPackageIds = computeUnsuppressedBaseRestrictedAppIds(
-          runtime,
-          config,
-          Date.now()
-        );
-        await RhythmDeviceModule.setBaseRestrictions(baseRestrictedPackageIds);
+        // Clear opaque base restrictions so native solely evaluates routines, cooldowns, and allowances
+        if (this.lastAndroidBaseRestrictionsSignature !== '[]') {
+          await RhythmDeviceModule.setBaseRestrictions([]);
+          this.lastAndroidBaseRestrictionsSignature = '[]';
+        }
+
+        // 1. Sync daily allowance policies
+        if (RhythmDeviceModule.setDailyAllowancePolicies) {
+          const riskPolicies = config.apps
+            .filter((app) => app.classification === 'risk')
+            .map((app) => ({
+              packageName: app.id,
+              allowanceMinutes: app.dailyRiskAllowance?.allowanceMinutes ?? 30,
+            }))
+            .sort((a, b) => a.packageName.localeCompare(b.packageName));
+          const policySig = JSON.stringify(riskPolicies);
+          if (this.lastAndroidRiskPoliciesSignature !== policySig) {
+            await RhythmDeviceModule.setDailyAllowancePolicies(riskPolicies);
+            this.lastAndroidRiskPoliciesSignature = policySig;
+          }
+        }
+
+        // 2. Sync explicit active cooldown policies
+        if (RhythmDeviceModule.setCooldownPolicies) {
+          const cooldownPolicies = Object.entries(runtime.activeCooldowns || {})
+            .filter(([, cd]) => cd.endsAt > Date.now())
+            .map(([gid, cd]) => {
+              const grp = config.riskGroups.find((g) => g.id === gid);
+              return {
+                groupId: gid,
+                packageNames: (grp?.appIds || []).slice().sort(),
+                endsAt: cd.endsAt,
+              };
+            })
+            .filter((p) => p.packageNames.length > 0)
+            .sort((a, b) => a.groupId.localeCompare(b.groupId));
+
+          const cdSig = JSON.stringify(cooldownPolicies);
+          if (this.lastAndroidCooldownsSignature !== cdSig) {
+            await RhythmDeviceModule.setCooldownPolicies(cooldownPolicies);
+            this.lastAndroidCooldownsSignature = cdSig;
+          }
+        }
+
+        // 3. Sync native routine schedule with explicit window types and allRiskPackages
+        if (RhythmDeviceModule.setRoutineSchedule) {
+          const allRiskPackages = config.apps
+            .filter((a) => a.classification === 'risk')
+            .map((a) => a.id)
+            .sort();
+
+          const scheduleWindows = config.routineWindows
+            .filter(
+              (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
+                w.type === 'morning-buffer' ||
+                w.type === 'evening-wind-down'
+            )
+            .map((w) => {
+              const protectedPackageNames = new Set<string>();
+              for (const gid of w.protectedGroupIds) {
+                const grp = config.riskGroups.find((g) => g.id === gid);
+                if (grp) {
+                  for (const pkg of grp.appIds) {
+                    protectedPackageNames.add(pkg);
+                  }
+                }
+              }
+
+              return {
+                id: w.id,
+                type: w.type,
+                startTime: w.startTime,
+                endTime: w.endTime ?? '00:00',
+                activeDays: [...w.activeDays].sort(),
+                protectedPackages: Array.from(protectedPackageNames).sort(),
+                enabled: w.enabled,
+              };
+            })
+            .sort((a, b) => a.id.localeCompare(b.id));
+
+          const scheduleInput = {
+            windows: scheduleWindows,
+            allRiskPackages,
+          };
+          const schedSig = JSON.stringify(scheduleInput);
+          if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
+            await RhythmDeviceModule.setRoutineSchedule(scheduleInput);
+            this.lastAndroidRoutineScheduleSignature = schedSig;
+          }
+        }
       }
     } catch {
       // Platform sync boundary

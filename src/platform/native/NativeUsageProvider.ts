@@ -1,4 +1,4 @@
-import { AppUsageSnapshot, DeviceApp } from '../../types/domain';
+import { AppUsageSnapshot, DeviceApp, DailyUsageSnapshot } from '../../types/domain';
 import { UsageActivityEvent, UsageProvider } from '../UsageProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 import { initialApps } from '../../data/mockData';
@@ -45,6 +45,30 @@ export class NativeUsageProvider implements UsageProvider {
     } catch {
       return [];
     }
+  }
+
+  async getDailyUsageSnapshot(): Promise<DailyUsageSnapshot> {
+    return RhythmDeviceModule.getDailyUsageSnapshot();
+  }
+
+  async reconcileDailyUsage(): Promise<DailyUsageSnapshot> {
+    const snapshot = await RhythmDeviceModule.reconcileDailyUsage();
+    if (!snapshot) {
+      return this.getDailyUsageSnapshot();
+    }
+    return snapshot;
+  }
+
+  async queryActivityEvents(from: number, to: number): Promise<UsageActivityEvent[]> {
+    const raw = await RhythmDeviceModule.queryUsageEvents(from, to);
+    return raw
+      .filter((e) => e.eventType === 'foreground' || e.eventType === 'background')
+      .map((e) => ({
+        appId: e.packageName,
+        timestamp: e.timestamp,
+        state: e.eventType as 'foreground' | 'background',
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   onActivityEvent(callback: (event: UsageActivityEvent) => void): () => void {
@@ -110,20 +134,43 @@ export class NativeUsageProvider implements UsageProvider {
     return emitted;
   }
 
+  /**
+   * Refreshes usage events on-demand (e.g. on app resume or UI focus)
+   * without running a permanent battery-draining background polling loop.
+   */
+  public async refreshUsageEvents(): Promise<UsageActivityEvent[]> {
+    const now = Date.now();
+    try {
+      const events = await RhythmDeviceModule.queryUsageEvents(this.lastQueryTime, now);
+      this.lastQueryTime = now;
+      return this.processRawUsageEvents(events);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Explicitly triggers an immediate bounded activity events refresh (e.g. on app resume)
+   * to update TypeScript Risk Group session continuity without waiting for periodic timers.
+   */
+  public async refreshActivityEvents(): Promise<void> {
+    await this.refreshUsageEvents();
+  }
+
   private ensureObservationStarted(): void {
     if (this.pollingTimer) return;
 
-    // Bounded 15-second OS event querying (battery discipline)
+    // Immediately query on observation start to feed active state
+    this.refreshUsageEvents().catch(() => {});
+
+    // Bounded 60-second query to preserve Risk Group continuous session
+    // and inactive-gap tracking in the TypeScript domain engine.
+    // NOTE: Daily allowance enforcement is handled natively and event-driven by
+    // RhythmEnforcementService (Accessibility TYPE_WINDOW_STATE_CHANGED + exact Handler deadline).
+    // This 60s query strictly maintains Risk Group session transitions without heavy battery drain.
     this.pollingTimer = setInterval(async () => {
-      const now = Date.now();
-      try {
-        const events = await RhythmDeviceModule.queryUsageEvents(this.lastQueryTime, now);
-        this.lastQueryTime = now;
-        this.processRawUsageEvents(events);
-      } catch {
-        // Ignored
-      }
-    }, 15000);
+      await this.refreshUsageEvents();
+    }, 60000);
 
     if (this.pollingTimer && typeof (this.pollingTimer as any).unref === 'function') {
       (this.pollingTimer as any).unref();

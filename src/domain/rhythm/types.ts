@@ -1,6 +1,8 @@
 import {
   AccessLease,
   AppClassification,
+  DailyAppUsage,
+  DailyRiskAllowancePolicy,
   DeviceApp,
   EMERGENCY_ACCESS_MINUTES,
   RhythmState,
@@ -8,7 +10,7 @@ import {
   RoutineWindow,
 } from '../../types/domain';
 
-export { AccessLease, EMERGENCY_ACCESS_MINUTES };
+export { AccessLease, EMERGENCY_ACCESS_MINUTES, DailyAppUsage, DailyRiskAllowancePolicy };
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -26,9 +28,17 @@ export interface ActiveCooldown {
   endsAt: number;
 }
 
+export type RestrictionReasonType =
+  | 'routine'
+  | 'routine-morning'
+  | 'routine-evening'
+  | 'routine-overnight'
+  | 'daily-allowance'
+  | 'cooldown';
+
 export interface RestrictionReason {
-  type: 'routine' | 'cooldown';
-  sourceId: string; // RoutineWindow ID or RiskGroup ID
+  type: RestrictionReasonType;
+  sourceId: string; // RoutineWindow ID, RiskGroup ID, or App ID
 }
 
 export interface AppRestriction {
@@ -43,6 +53,7 @@ export interface RhythmRuntime {
   activeAccessLeases: Record<string, AccessLease>; // Multi-group temporary override leases
   activeRoutineWindowIds: string[];
   activeRestrictions: AppRestriction[]; // Desired restrictions
+  dailyAppUsage?: Record<string, DailyAppUsage>;
 }
 
 export interface PersistedRuntime {
@@ -51,6 +62,7 @@ export interface PersistedRuntime {
   activeAccessLeases?: Record<string, AccessLease>;
   activeSession?: ActiveRiskSession;
   activeRoutineWindowIds: string[];
+  dailyAppUsage?: Record<string, DailyAppUsage>;
   lastReconciledAt: number;
 }
 
@@ -64,7 +76,14 @@ export interface RhythmConfiguration {
 export interface RhythmPreferences {
   routineWindows: RoutineWindow[];
   riskGroups: RiskGroup[];
-  appClassifications: Record<string, { classification: AppClassification; riskGroupId?: string }>;
+  appClassifications: Record<
+    string,
+    {
+      classification: AppClassification;
+      riskGroupId?: string;
+      dailyRiskAllowance?: DailyRiskAllowancePolicy;
+    }
+  >;
   sessionResetGapMs: number;
   onboardingCompleted: boolean;
 }
@@ -80,6 +99,8 @@ export type RhythmHistoryEvent =
   | { type: 'routine-ended'; windowId: string; timestamp: number }
   | { type: 'group-protection-started'; groupId: string; timestamp: number }
   | { type: 'group-protection-ended'; groupId: string; timestamp: number }
+  | { type: 'daily-allowance-edited'; appId: string; previousMinutes: number; nextMinutes: number; timestamp: number }
+  | { type: 'daily-allowance-exhausted'; appId: string; timestamp: number }
   | { type: 'emergency-bypass'; timestamp: number };
 
 export type RhythmEvent =
@@ -92,6 +113,8 @@ export type RhythmEvent =
   | { type: 'COOLDOWN_ENDED'; groupId: string; timestamp: number }
   | { type: 'START_ACCESS_LEASE'; groupId: string; durationMinutes?: number; reason?: 'emergency' | 'intentional'; timestamp: number }
   | { type: 'END_ACCESS_LEASE'; groupId: string; timestamp: number }
+  | { type: 'UPDATE_DAILY_ALLOWANCE'; appId: string; allowanceMinutes: number; timestamp: number }
+  | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
   | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
@@ -170,6 +193,10 @@ export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
     activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? raw.activeRoutineWindowIds : [],
     lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : Date.now(),
   };
+
+  if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
+    res.dailyAppUsage = { ...raw.dailyAppUsage };
+  }
 
   if (raw.activeSession) {
     res.activeSession = raw.activeSession;

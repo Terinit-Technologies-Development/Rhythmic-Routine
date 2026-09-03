@@ -100,11 +100,11 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(protectedIds.includes('morning-buffer'), false);
   });
 
-  test('Essential-App Safety: Reclassifying Risk app to Essential removes it from all Risk Groups', () => {
+  test('Essential-App Safety: Reclassifying Risk app to Essential removes it from all Risk Groups', async () => {
     const store = usePrototypeStore.getState();
 
     // Reclassify 'x' from risk to essential
-    store.updateAppClassification('x', 'essential');
+    await store.updateAppClassification('x', 'essential');
 
     const updatedApps = usePrototypeStore.getState().apps;
     const updatedGroups = usePrototypeStore.getState().riskGroups;

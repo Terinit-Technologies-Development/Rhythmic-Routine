@@ -5,7 +5,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: 'Rhythmic-Routine',
   slug: 'Rhythmic-Routine',
   scheme: 'rhythmic-routine',
-  version: '1.0.0',
+  version: '1.0.1',
   runtimeVersion: {
     policy: 'appVersion',
   },

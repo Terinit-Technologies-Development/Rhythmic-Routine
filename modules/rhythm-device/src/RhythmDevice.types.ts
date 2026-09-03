@@ -51,12 +51,63 @@ export interface MonitoringDiagnostics {
   lastError: string;
 }
 
+export interface NativeDailyAppSnapshot {
+  packageName: string;
+  usedSeconds: number;
+  allowanceMinutes: number;
+  remainingSeconds: number;
+  exhausted: boolean;
+  activeSegmentStartedAt?: number;
+}
+
+export interface NativeDailyUsageSnapshot {
+  dateKey: string;
+  apps: NativeDailyAppSnapshot[];
+  lastReconciledAt?: number;
+}
+
+export interface NativeDailyAllowancePolicyInput {
+  packageName: string;
+  allowanceMinutes: number;
+}
+
+export interface NativeCooldownPolicyInput {
+  groupId: string;
+  packageNames: string[];
+  endsAt: number;
+}
+
+export interface NativeRoutineWindowInput {
+  id: string;
+  type?: 'morning-buffer' | 'evening-wind-down';
+  startTime: string;
+  endTime?: string;
+  activeDays: number[];
+  protectedPackages: string[];
+  enabled: boolean;
+}
+
+export interface NativeRoutineScheduleInput {
+  windows: NativeRoutineWindowInput[];
+  allRiskPackages: string[];
+}
+
 export interface NativeEnforcementDiagnostics {
   serviceRunning: boolean;
   baseRestrictedPackageCount: number;
   activeLeaseCount: number;
+  cooldownCount?: number;
+  nearestCooldownExpiryAt?: number;
+  routineWindowCount?: number;
   lastForegroundPackage?: string;
   lastInterventionPackage?: string;
   lastInterventionAt?: number;
   overlayVisible: boolean;
+  activeUsagePackage?: string;
+  activeUsageStartedAt?: number;
+  allowanceDeadlineAt?: number;
+  nextRoutineBoundaryAt?: number;
+  dailyUsageAppCount?: number;
+  lastUsageReconciledAt?: number;
+  lastUsageAccountedAt?: number;
 }

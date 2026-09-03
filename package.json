@@ -1,6 +1,6 @@
 {
   "name": "rhythmic-routine",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Experimental local-first digital wellbeing app built around routines, Risk Groups, cooldowns, and calm intervention.",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {

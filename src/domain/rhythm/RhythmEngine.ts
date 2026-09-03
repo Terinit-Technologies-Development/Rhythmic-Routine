@@ -1,4 +1,5 @@
 import {
+  DailyAppUsage,
   PersistedRuntime,
   RhythmConfiguration,
   RhythmEffect,
@@ -25,12 +26,14 @@ export class RhythmEngine {
     if (normalized) {
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
       const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
+      const restoredDailyUsage = normalized.dailyAppUsage ? { ...normalized.dailyAppUsage } : {};
       this.runtime = {
         state: normalized.state,
         activeSession: normalized.activeSession,
         activeCooldowns: restoredCooldowns,
         activeAccessLeases: restoredLeases,
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
+        dailyAppUsage: restoredDailyUsage,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
     } else {
@@ -39,6 +42,7 @@ export class RhythmEngine {
         activeCooldowns: {},
         activeAccessLeases: {},
         activeRoutineWindowIds: [],
+        dailyAppUsage: {},
         activeRestrictions: [], // Start with empty baseline
       };
     }
@@ -96,11 +100,16 @@ export class RhythmEngine {
       activeCooldowns: { ...this.runtime.activeCooldowns },
       activeAccessLeases: { ...this.runtime.activeAccessLeases },
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
+      dailyAppUsage: this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {},
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
         reasons: [...r.reasons],
       })),
     };
+  }
+
+  public getDailyAppUsage(): Record<string, DailyAppUsage> {
+    return this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {};
   }
 
   public getConfiguration(): RhythmConfiguration {
@@ -126,6 +135,9 @@ export class RhythmEngine {
     };
     if (this.runtime.activeSession) {
       res.activeSession = { ...this.runtime.activeSession };
+    }
+    if (this.runtime.dailyAppUsage) {
+      res.dailyAppUsage = { ...this.runtime.dailyAppUsage };
     }
     return res;
   }
