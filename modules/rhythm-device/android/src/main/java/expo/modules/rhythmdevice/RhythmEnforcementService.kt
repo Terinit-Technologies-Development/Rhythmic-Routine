@@ -925,6 +925,17 @@ class RhythmEnforcementService : AccessibilityService() {
 
         fun resolveCurrentForegroundPackage(
             context: Context,
+            now: Long
+        ): String? {
+            return resolveCurrentForegroundPackage(
+                context = context,
+                fromTime = getLocalMidnight(now),
+                toTime = now
+            )
+        }
+
+        fun resolveCurrentForegroundPackage(
+            context: Context,
             fromTime: Long = getLocalMidnight(System.currentTimeMillis()),
             toTime: Long = System.currentTimeMillis()
         ): String? {
