@@ -5,6 +5,46 @@ All notable changes to Rhythmic-Routine are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-09-03
+
+### Added
+- Per-Risk-app daily usage allowances with a 30-minute default.
+- 15-minute allowance adjustment units with a 0-minute minimum.
+- Once-per-local-day allowance editing with a maximum +15-minute daily increase.
+- Native Android per-app daily usage ledger.
+- Real Android usage data and daily allowance information in Insights.
+- Seven-local-day observed Risk-app usage aggregation.
+
+### Changed
+- Evening protection now flows continuously into Overnight Protection before Morning Buffer.
+- Overnight Protection applies to all apps classified as Risk.
+- Android daily allowance enforcement is event-driven through foreground window transitions and a single active deadline.
+- Risk Group session tracking uses a reduced bounded refresh cadence while daily allowance enforcement remains native.
+- Insights distinguish measured, empty, unavailable, permission-required, and demo states.
+- Daily allowance usage during intentional Access Leases continues to count toward the daily total.
+
+### Fixed
+- Evening Wind-Down no longer falls through to Open Day before Morning Buffer.
+- Cross-midnight daily usage accounting no longer double-counts active segments.
+- Duplicate foreground events no longer reset active usage segments.
+- Installed-app refresh no longer resets allowance policy or the daily edit guard.
+- Native routine transitions can release restrictions without React Native JS being active.
+- Android routine serialization no longer treats Open Day as Evening Wind-Down.
+- Usage reconciliation is idempotent across live Accessibility events and UsageStats recovery.
+- Native Insights no longer silently fall back to demo or stale usage values.
+- Allowance/classification updates are persisted deterministically.
+- Foreground-package recovery callbacks are available across native enforcement transitions.
+
+### Platform Status
+- **Android:** Owner-accepted physical v1.0.1 candidate. Core application behaviour and Insights verified on physical hardware.
+- **iOS:** Source-implemented experimental foundation; not physically qualified for v1.0.1.
+- **Web:** Development/demo environment.
+
+### Validation
+- Source suite: 188 tests / 34 suites at the approved Pass 03 baseline.
+- Standalone Android candidate installed and owner-accepted.
+- Dedicated final overlay regression: deferred as a non-blocking post-release smoke check.
+
 ## [1.0.0] — 2026-09-01
 
 ### Added
