@@ -3,6 +3,7 @@ import {
   ActiveCooldown,
   DailyAppUsage,
   EMERGENCY_ACCESS_MINUTES,
+  GroupAllowanceUsage,
   RhythmConfiguration,
   RhythmEffect,
   RhythmEvent,
@@ -31,7 +32,9 @@ import {
 import {
   getLocalDateKey,
   isDailyAllowanceExhausted,
+  isGroupAllowanceExhausted,
   rolloverDailyAppUsage,
+  rolloverGroupAllowanceUsage,
 } from './allowance';
 
 /**
@@ -54,6 +57,10 @@ export function processRhythmEvent(
   const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
   const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
     currentRuntime.dailyAppUsage || {},
+    nowMs
+  );
+  const nextGroupAllowanceUsage: Record<string, GroupAllowanceUsage> = rolloverGroupAllowanceUsage(
+    currentRuntime.groupAllowanceUsage || {},
     nowMs
   );
   const effects: RhythmEffect[] = [];
@@ -303,6 +310,18 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'SYNC_GROUP_ALLOWANCE_USAGE': {
+      Object.assign(nextGroupAllowanceUsage, event.groupAllowanceUsage);
+      break;
+    }
+
+    case 'UPDATE_DAILY_ALLOWANCE':
+    case 'UPDATE_GROUP_ALLOWANCE':
+    case 'UPDATE_GROUP_RECOVERY_ACTIVITY':
+      // Configuration-owned (coordinator updateConfig path); no direct runtime
+      // mutation beyond clock reconciliation performed above.
+      break;
+
     case 'COOLDOWN_STARTED': {
       nextCooldowns[event.groupId] = {
         groupId: event.groupId,
@@ -513,7 +532,25 @@ export function processRhythmEvent(
     }
   }
 
-  // Check and record newly exhausted daily allowances
+  // Check and record newly exhausted group allowances (v1.0.2 authoritative path)
+  for (const group of config.riskGroups) {
+    const usage = nextGroupAllowanceUsage[group.id];
+    if (usage && isGroupAllowanceExhausted(group, usage, nowMs)) {
+      if (!usage.exhaustedAt) {
+        usage.exhaustedAt = nowMs;
+        effects.push({
+          type: 'RECORD_HISTORY',
+          event: {
+            type: 'group-allowance-exhausted',
+            groupId: group.id,
+            timestamp: nowMs,
+          },
+        });
+      }
+    }
+  }
+
+  // Check and record newly exhausted daily allowances (legacy per-app path)
   for (const app of config.apps) {
     if (app.classification === 'risk') {
       const usage = nextDailyAppUsage[app.id];
@@ -545,6 +582,7 @@ export function processRhythmEvent(
     {
       isOvernight,
       dailyAppUsage: nextDailyAppUsage,
+      groupAllowanceUsage: nextGroupAllowanceUsage,
     }
   );
 
@@ -583,6 +621,7 @@ export function processRhythmEvent(
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
     dailyAppUsage: nextDailyAppUsage,
+    groupAllowanceUsage: nextGroupAllowanceUsage,
   };
 
   return {

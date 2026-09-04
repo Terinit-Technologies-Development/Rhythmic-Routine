@@ -5,7 +5,7 @@ import { EngineStatus, RhythmConfiguration, RhythmPreferences } from '../domain/
 import { reconcileRhythm } from './reconcileRhythm';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 
-import { DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES } from '../domain/rhythm/allowance';
+import { migrateConfigurationV102 } from '../domain/rhythm/migration';
 
 export interface BootstrapResult {
   engine: RhythmEngine;
@@ -53,19 +53,19 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
   const isRealNative = installedApps.length > 0;
   const baseApps = isRealNative ? installedApps : initialApps;
 
-  // Build preferences if not previously stored
+  // Build preferences if not previously stored.
+  // v1.0.2: allowance ownership lives on RiskGroup (allowanceMinutes,
+  // lastAllowanceEditedDateKey, recoveryActivityId). Per-app dailyRiskAllowance
+  // is never created here; persisted v1.0.1 values are stripped by migration.
   const preferences: RhythmPreferences = persistedPreferences || {
     routineWindows: initialRoutineWindows,
     riskGroups: isRealNative
       ? initialRiskGroups.map((g) => ({ ...g, appIds: [] }))
       : initialRiskGroups,
-    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
+    appClassifications: baseApps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
-        dailyRiskAllowance: app.classification === 'risk'
-          ? (app.dailyRiskAllowance ?? { allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES })
-          : app.dailyRiskAllowance,
       };
       return acc;
     }, {}),
@@ -73,39 +73,89 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     onboardingCompleted: true,
   };
 
-  let allowanceMigrationMutated = false;
+  let configMigrationMutated = false;
+  // True when persisted state used the v1.0.1 model (legacy group threshold
+  // without an explicit group allowance, or any per-app allowance policy).
+  // Used once to reset stale per-app exhaustion alongside group migration.
+  let legacyAllowanceModelDetected = false;
+  if (persistedPreferences) {
+    for (const g of (persistedPreferences.riskGroups ?? []) as any[]) {
+      const raw = g as Record<string, unknown>;
+      if (
+        Number.isFinite(raw['sessionThresholdMinutes'] as number) &&
+        !Number.isFinite(raw['allowanceMinutes'] as number)
+      ) {
+        legacyAllowanceModelDetected = true;
+        break;
+      }
+    }
+    if (!legacyAllowanceModelDetected) {
+      for (const entry of Object.values(persistedPreferences.appClassifications ?? {})) {
+        if ('dailyRiskAllowance' in (entry as Record<string, unknown>)) {
+          legacyAllowanceModelDetected = true;
+          break;
+        }
+      }
+    }
+  }
 
-  // Reconcile installed app classifications against loaded preferences
-  // Migration: existing Risk app without policy -> 30 minutes; non-Risk app -> no policy until Risk
+  // v1.0.2 idempotent migration of persisted v1.0.1 configuration:
+  // group allowance from legacy group sessionThresholdMinutes (default 30),
+  // per-app allowance stripped (never a policy source), recovery defaults walk.
+  {
+    const migrated = migrateConfigurationV102({
+      riskGroups: preferences.riskGroups as any[],
+      apps: baseApps,
+    });
+    if (
+      JSON.stringify(migrated.riskGroups) !== JSON.stringify(preferences.riskGroups) ||
+      migrated.mutated
+    ) {
+      configMigrationMutated = true;
+    }
+    preferences.riskGroups = migrated.riskGroups;
+    // Strip any persisted per-app allowance classifications (incorrect model).
+    const nextClassifications: RhythmPreferences['appClassifications'] = {};
+    for (const [appId, entry] of Object.entries(preferences.appClassifications ?? {})) {
+      const { dailyRiskAllowance: _removed, ...rest } = entry as Record<string, unknown>;
+      if ('dailyRiskAllowance' in (entry as Record<string, unknown>)) {
+        configMigrationMutated = true;
+      }
+      void _removed;
+      nextClassifications[appId] = rest as RhythmPreferences['appClassifications'][string];
+    }
+    preferences.appClassifications = nextClassifications;
+    void migrated.apps;
+  }
+
+  // Reconcile installed app classifications against loaded preferences.
+  // v1.0.2: classification + group membership only; no per-app allowance policy.
   const apps = baseApps.map((app) => {
     const saved = preferences.appClassifications[app.id];
     const classification = saved ? saved.classification : app.classification;
     const riskGroupId = saved ? saved.riskGroupId : app.riskGroupId;
-    let dailyRiskAllowance = saved?.dailyRiskAllowance ?? app.dailyRiskAllowance;
-
-    if (classification === 'risk' && !dailyRiskAllowance) {
-      dailyRiskAllowance = {
-        allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-      };
-      allowanceMigrationMutated = true;
-    }
 
     if (saved) {
-      saved.dailyRiskAllowance = dailyRiskAllowance;
+      // Persisted shape stays free of per-app allowance state.
+      const { dailyRiskAllowance: _removed, ...rest } = saved as Record<string, unknown>;
+      if ('dailyRiskAllowance' in (saved as Record<string, unknown>)) {
+        configMigrationMutated = true;
+      }
+      void _removed;
+      preferences.appClassifications[app.id] = rest as RhythmPreferences['appClassifications'][string];
     } else {
       preferences.appClassifications[app.id] = {
         classification,
         riskGroupId,
-        dailyRiskAllowance,
       };
-      allowanceMigrationMutated = true;
+      configMigrationMutated = true;
     }
 
     return {
       ...app,
       classification,
       riskGroupId,
-      dailyRiskAllowance,
+      dailyRiskAllowance: undefined,
     };
   });
 
@@ -115,7 +165,7 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
   }
 
   // Await savePreferences if preferences were freshly constructed, mutated by migration, or reconciled for native
-  if (!persistedPreferences || allowanceMigrationMutated || isRealNative) {
+  if (!persistedPreferences || configMigrationMutated || isRealNative) {
     try {
       await storage.savePreferences(preferences);
     } catch (err) {
@@ -131,6 +181,22 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
   };
 
   const now = Date.now();
+
+  // v1.0.2 upgrade-once reset: stale v1.0.1 per-app exhausted usage must not
+  // leak into the new group ledger. Only applied when legacy model state was
+  // actually detected (normal boots preserve same-day runtime usage).
+  if (legacyAllowanceModelDetected && persistedRuntime?.dailyAppUsage) {
+    for (const usage of Object.values(
+      persistedRuntime.dailyAppUsage as Record<string, Record<string, unknown>>
+    )) {
+      if (usage && typeof usage === 'object') {
+        usage['usedSeconds'] = 0;
+        usage['exhaustedAt'] = undefined;
+        usage['activeSegmentStartedAt'] = undefined;
+      }
+    }
+  }
+
   const engine = new RhythmEngine(config, persistedRuntime, now);
 
   // Cold-start restriction reapplication only if not deferred to coordinator

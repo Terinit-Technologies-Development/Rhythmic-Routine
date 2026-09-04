@@ -4,4 +4,6 @@ export * from './sessions';
 export * from './cooldowns';
 export * from './restrictions';
 export * from './events';
+export * from './allowance';
+export * from './migration';
 export * from './RhythmEngine';

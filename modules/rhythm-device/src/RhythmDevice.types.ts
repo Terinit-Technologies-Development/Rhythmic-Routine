@@ -71,6 +71,39 @@ export interface NativeDailyAllowancePolicyInput {
   allowanceMinutes: number;
 }
 
+/**
+ * v1.0.2 conceptual contract (types only): one shared allowance policy per
+ * Risk Group for background-safe enforcement. Pass 02 owns native wiring;
+ * setDailyAllowancePolicies remains the active bridge until then.
+ */
+export interface NativeRecoveryActivity {
+  id: string;
+  title: string;
+  subtitle: string;
+  iconEmoji: string;
+  durationSuggestion?: string;
+}
+
+export interface NativeRiskGroupPolicyInput {
+  groupId: string;
+  groupName: string;
+  packageNames: string[];
+  allowanceMinutes: number;
+  cooldownMinutes: number;
+  recoveryActivity: NativeRecoveryActivity;
+}
+
+export interface NativeGroupAllowanceSnapshot {
+  groupId: string;
+  dateKey: string;
+  usedSeconds: number;
+  allowanceMinutes: number;
+  remainingSeconds: number;
+  exhausted: boolean;
+  activePackageName?: string;
+  activeSegmentStartedAt?: number;
+}
+
 export interface NativeCooldownPolicyInput {
   groupId: string;
   packageNames: string[];

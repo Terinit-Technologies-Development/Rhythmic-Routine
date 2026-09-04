@@ -1372,7 +1372,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       assert.equal((provider as any).pollingTimer, undefined, 'Timer cleaned up on unsubscribe');
     });
 
-    it('Correction 8: refreshInstalledApps preserves dailyRiskAllowance and edit guard', async () => {
+    it('Correction 8: refreshInstalledApps preserves classification and group allowance policy/guard', async () => {
       const storage = new MockStorageProvider();
       const permissions = new MockPermissionProvider();
       const restrictions = new MockRestrictionProvider();
@@ -1388,26 +1388,37 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       });
 
       const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
       await coordinator.initialize();
 
+      // v1.0.2: allowance policy + edit guard live on the Risk Group, never on the app.
+      const baseGroups = coordinator.getConfiguration()?.riskGroups ?? [];
       await coordinator.updateConfig({
         apps: [
           {
             id: 'com.instagram.android',
             name: 'Instagram',
             classification: 'risk',
+            riskGroupId: 'social',
             iconName: 'smartphone',
             iconColor: '#235D43',
             iconBg: '#E8EFE5',
             defaultCategory: 'Social',
             usageTodayMinutes: 0,
             sessionMinutes: 0,
-            dailyRiskAllowance: {
-              allowanceMinutes: 45,
-              lastEditedDateKey: '2026-09-02',
-            },
           },
         ],
+        riskGroups: baseGroups.map((g) =>
+          g.id === 'social'
+            ? {
+                ...g,
+                appIds: ['com.instagram.android'],
+                allowanceMinutes: 45,
+                lastAllowanceEditedDateKey: '2026-09-02',
+                recoveryActivityId: 'stretch',
+              }
+            : g
+        ),
       });
 
       usage.getInstalledApps = async () => [
@@ -1429,11 +1440,18 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
       assert.ok(instagram, 'Instagram must be in refreshed apps');
       assert.equal(instagram?.classification, 'risk', 'Classification must be preserved');
-      assert.equal(instagram?.dailyRiskAllowance?.allowanceMinutes, 45, 'Allowance minutes must be preserved');
-      assert.equal(instagram?.dailyRiskAllowance?.lastEditedDateKey, '2026-09-02', 'lastEditedDateKey must be preserved');
+      assert.equal(instagram?.riskGroupId, 'social', 'Group membership must be preserved');
+      assert.equal(instagram?.dailyRiskAllowance, undefined, 'No per-app allowance policy may be recreated');
 
-      const editResult = await coordinator.updateDailyRiskAllowance('com.instagram.android', 60, Date.parse('2026-09-02T12:00:00Z'));
-      assert.equal(editResult.allowed, false);
+      const social = refreshed.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 45, 'Group allowance minutes must be preserved');
+      assert.equal(social.lastAllowanceEditedDateKey, '2026-09-02', 'Group edit guard must be preserved');
+      assert.equal(social.recoveryActivityId, 'stretch', 'Group recovery activity must be preserved');
+
+      // Same-local-day group edit is still locked by the preserved guard.
+      const localNoon = new Date(2026, 8, 2, 12, 0, 0).getTime();
+      const editResult = await coordinator.updateRiskGroupAllowance('social', 60, localNoon);
+      assert.equal(editResult.ok, false);
       assert.equal(editResult.reason, 'already-edited-today');
 
       coordinator.destroy();

@@ -23,9 +23,11 @@ export const RiskGroupCard: React.FC<Props> = ({ group }) => {
     }
   };
 
-  const hasLimit = group.sessionThresholdMinutes > 0;
+  // Compile-only v1.0.2 compat: legacy threshold falls back to group allowance.
+  const thresholdMinutes = group.sessionThresholdMinutes ?? group.allowanceMinutes ?? 30;
+  const hasLimit = thresholdMinutes > 0;
   const progressRatio = hasLimit
-    ? Math.min(1, group.currentSessionMinutes / group.sessionThresholdMinutes)
+    ? Math.min(1, group.currentSessionMinutes / thresholdMinutes)
     : 0;
 
   return (
@@ -51,7 +53,7 @@ export const RiskGroupCard: React.FC<Props> = ({ group }) => {
       {hasLimit ? (
         <View style={styles.usageContainer}>
           <Text style={styles.usageText}>
-            <Text style={styles.usageBold}>{group.currentSessionMinutes}</Text> / {group.sessionThresholdMinutes} min
+            <Text style={styles.usageBold}>{group.currentSessionMinutes}</Text> / {thresholdMinutes} min
           </Text>
           {/* Progress Bar */}
           <View style={styles.progressBarBg}>

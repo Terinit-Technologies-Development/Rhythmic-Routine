@@ -6,7 +6,9 @@ import {
   NativeDailyAllowancePolicyInput,
   NativeDailyUsageSnapshot,
   NativeEnforcementDiagnostics,
+  NativeGroupAllowanceSnapshot,
   NativePermissionStatus,
+  NativeRiskGroupPolicyInput,
   NativeRoutineWindowInput,
   NativeRoutineScheduleInput,
   NativeCooldownPolicyInput,
@@ -51,6 +53,9 @@ export const FallbackModule = {
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   setDailyAllowancePolicies: async (_policies: NativeDailyAllowancePolicyInput[]): Promise<boolean> => true,
+  /** v1.0.2 (Pass 02): group allowance policies supersede per-package policies. */
+  setRiskGroupPolicies: async (_policies: NativeRiskGroupPolicyInput[]): Promise<boolean> => true,
+  getGroupAllowanceSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => true,
   setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => true,
   getDailyUsageSnapshot: async (): Promise<NativeDailyUsageSnapshot> => ({

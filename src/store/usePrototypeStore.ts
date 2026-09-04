@@ -34,6 +34,7 @@ import {
 import {
   AllowanceEditResult,
   DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+  GroupAllowanceEditResult,
 } from '../domain/rhythm/allowance';
 
 function getPlatformOS(): string {
@@ -165,6 +166,21 @@ interface PrototypeState {
     appId: string,
     nextMinutes: number
   ) => Promise<AllowanceEditResult>;
+
+  /**
+   * v1.0.2: group-scoped allowance edit (sole policy owner). Moving apps
+   * into/out of a group never resets policy/guard/usage.
+   */
+  updateRiskGroupAllowance: (
+    groupId: string,
+    nextMinutes: number
+  ) => Promise<GroupAllowanceEditResult & { groupId: string }>;
+
+  /** v1.0.2: group-scoped recovery activity selection. */
+  updateRiskGroupRecoveryActivity: (
+    groupId: string,
+    activityId: string
+  ) => Promise<{ ok: boolean; groupId: string; activityId: string }>;
 
   updateAppClassification: (
     appId: string,
@@ -609,14 +625,46 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   updateDailyRiskAllowance: async (appId, nextMinutes) => {
+    // @deprecated v1.0.2: delegates to the owning group's shared allowance.
     const result = await RhythmCoordinator.getInstance().updateDailyRiskAllowance(appId, nextMinutes);
     if (result.allowed) {
       const config = RhythmCoordinator.getInstance().getConfig();
       if (config) {
         const snapshot = get().dailyUsageSnapshot;
-        set({ apps: hydrateAppsWithDailyUsage(config.apps, snapshot) });
+        set({
+          apps: hydrateAppsWithDailyUsage(config.apps, snapshot),
+          riskGroups: [...config.riskGroups],
+        });
       }
       await get().refreshDailyUsage();
+    }
+    return result;
+  },
+
+  updateRiskGroupAllowance: async (groupId, nextMinutes) => {
+    const result = await RhythmCoordinator.getInstance().updateRiskGroupAllowance(groupId, nextMinutes);
+    if (result.ok) {
+      const config = RhythmCoordinator.getInstance().getConfig();
+      if (config) {
+        set({ riskGroups: [...config.riskGroups] });
+      }
+      await get().refreshDailyUsage();
+    }
+    return result;
+  },
+
+  updateRiskGroupRecoveryActivity: async (groupId, activityId) => {
+    const result = await RhythmCoordinator.getInstance().updateRiskGroupRecoveryActivity(
+      groupId,
+      activityId,
+      Date.now(),
+      get().offlineActivities.map((a) => a.id)
+    );
+    if (result.ok) {
+      const config = RhythmCoordinator.getInstance().getConfig();
+      if (config) {
+        set({ riskGroups: [...config.riskGroups] });
+      }
     }
     return result;
   },
@@ -627,17 +675,15 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
     const updatedApps = state.apps.map((app) => {
       if (app.id === appId) {
-        let dailyRiskAllowance = app.dailyRiskAllowance;
-        if (classification === 'risk' && !dailyRiskAllowance) {
-          dailyRiskAllowance = {
-            allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-          };
-        }
+        // v1.0.2: classification + membership only. Per-app allowance no
+        // longer exists; group policy/guard/usage are never reset by moves.
+        const { dailyRiskAllowance: _removed, ...rest } = app;
+        void _removed;
         return {
-          ...app,
+          ...rest,
           classification,
           riskGroupId: targetGroupId,
-          dailyRiskAllowance,
+          dailyRiskAllowance: undefined,
         };
       }
       return app;
@@ -749,8 +795,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       iconColor: '#164B38',
       iconBg: '#E8EFE5',
       appIds: [],
-      sessionThresholdMinutes: 30,
+      allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
       cooldownMinutes: 60,
+      recoveryActivityId: 'walk',
       currentSessionMinutes: 0,
       isBufferingToday: false,
     };

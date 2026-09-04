@@ -56,7 +56,9 @@ export default function RiskGroupDetailScreen() {
   const memberApps = apps.filter((a) => group.appIds.includes(a.id));
 
   const handleAdjustSession = (delta: number) => {
-    const currentIndex = sessionThresholds.indexOf(group.sessionThresholdMinutes);
+    // Compile-only v1.0.2 compat: legacy threshold falls back to group allowance.
+    const currentThreshold = group.sessionThresholdMinutes ?? group.allowanceMinutes ?? 30;
+    const currentIndex = sessionThresholds.indexOf(currentThreshold);
     if (currentIndex !== -1) {
       const nextIndex = Math.max(
         0,
@@ -67,7 +69,7 @@ export default function RiskGroupDetailScreen() {
       });
     } else {
       updateRiskGroup(group.id, {
-        sessionThresholdMinutes: Math.max(10, group.sessionThresholdMinutes + delta * 5),
+        sessionThresholdMinutes: Math.max(10, currentThreshold + delta * 5),
       });
     }
   };

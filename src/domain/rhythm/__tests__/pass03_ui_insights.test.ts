@@ -21,6 +21,7 @@ import { MockRestrictionProvider } from '../../../platform/mock/MockRestrictionP
 import { configurePlatformServices } from '../../../platform/PlatformServices';
 import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { NoopNativeRhythmSyncProvider } from '../../../platform/NativeRhythmSyncProvider';
+import { resolveGroupAllowanceMinutes } from '../allowance';
 
 describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insights', () => {
   describe('1. Daily Usage Snapshot Hydration & App Mapping', () => {
@@ -251,271 +252,152 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
     });
   });
 
-  describe('3. Allowance Editing Rules & Once-Per-Day Lock Invariant', () => {
-    test('Allowance cannot be decreased below 0 min', async () => {
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: { allowanceMinutes: 15 },
-        },
-      ];
+  describe('3. Group Allowance Editing Rules & Once-Per-Day Lock Invariant', () => {
+    // v1.0.2: the Risk Group owns the single shared allowance. Fixtures carry
+    // group membership (riskGroupId); edits go through updateRiskGroupAllowance.
+    const groupFixtureApps: DeviceApp[] = [
+      {
+        id: 'com.instagram.android',
+        name: 'Instagram',
+        classification: 'risk',
+        riskGroupId: 'social',
+        iconName: 'camera',
+        iconColor: '#000',
+        iconBg: '#FFF',
+        defaultCategory: 'Social',
+        usageTodayMinutes: 0,
+        sessionMinutes: 0,
+      },
+    ];
 
-      const storage = new MockStorageProvider();
+    async function setupGroupCoordinator() {
       const coordinator = RhythmCoordinator.getInstance();
       coordinator.destroy();
       configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage,
+        usage: new MockUsageProvider(groupFixtureApps),
+        storage: new MockStorageProvider(),
         permissions: new MockPermissionProvider(),
         restrictions: new MockRestrictionProvider(),
         nativeRhythm: new NoopNativeRhythmSyncProvider(),
       });
 
       await coordinator.initialize();
+      return coordinator;
+    }
 
-      const result = await coordinator.updateDailyRiskAllowance('com.instagram.android', -15);
-      assert.equal(result.allowed, false);
+    test('Group allowance cannot be decreased below 0 min', async () => {
+      const coordinator = await setupGroupCoordinator();
+
+      const result = await coordinator.updateRiskGroupAllowance('social', -15);
+      assert.equal(result.ok, false);
       assert.equal(result.reason, 'below-minimum');
+
+      // Policy unchanged by the rejected edit.
+      const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 30);
+      coordinator.destroy();
     });
 
-    test('Allowance increase is capped at persistedMinutes + 15', async () => {
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: { allowanceMinutes: 30 },
-        },
-      ];
-
-      const storage = new MockStorageProvider();
-      const coordinator = RhythmCoordinator.getInstance();
-      coordinator.destroy();
-      configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage,
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-        nativeRhythm: new NoopNativeRhythmSyncProvider(),
-      });
-
-      await coordinator.initialize();
+    test('Group allowance increase is capped at current + 15', async () => {
+      const coordinator = await setupGroupCoordinator();
 
       // +30 min increase: rejected
-      const result = await coordinator.updateDailyRiskAllowance('com.instagram.android', 60);
-      assert.equal(result.allowed, false);
+      const result = await coordinator.updateRiskGroupAllowance('social', 60);
+      assert.equal(result.ok, false);
       assert.equal(result.reason, 'increase-too-large');
 
       // +15 min increase: allowed
-      const validResult = await coordinator.updateDailyRiskAllowance('com.instagram.android', 45);
-      assert.equal(validResult.allowed, true);
+      const validResult = await coordinator.updateRiskGroupAllowance('social', 45);
+      assert.equal(validResult.ok, true);
+      assert.equal(validResult.nextMinutes, 45);
+      coordinator.destroy();
     });
 
-    test('Once-per-day edit lock prevents second modification on same calendar day', async () => {
-      const todayKey = getLocalDateKey();
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: {
-            allowanceMinutes: 30,
-            lastEditedDateKey: todayKey, // Already edited today
-          },
-        },
-      ];
+    test('Once-per-day group edit lock prevents second modification on same calendar day', async () => {
+      const coordinator = await setupGroupCoordinator();
 
-      const storage = new MockStorageProvider();
-      const coordinator = RhythmCoordinator.getInstance();
+      const first = await coordinator.updateRiskGroupAllowance('social', 45);
+      assert.equal(first.ok, true);
+
+      const second = await coordinator.updateRiskGroupAllowance('social', 15);
+      assert.equal(second.ok, false);
+      assert.equal(second.reason, 'already-edited-today');
       coordinator.destroy();
-      configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage,
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-        nativeRhythm: new NoopNativeRhythmSyncProvider(),
-      });
-
-      await coordinator.initialize();
-
-      const result = await coordinator.updateDailyRiskAllowance('com.instagram.android', 15);
-      assert.equal(result.allowed, false);
-      assert.equal(result.reason, 'already-edited-today');
     });
 
-    test('Rejected edit attempts do not mutate lastEditedDateKey or allowanceMinutes', async () => {
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: {
-            allowanceMinutes: 30,
-            lastEditedDateKey: undefined,
-          },
-        },
-      ];
-
-      const storage = new MockStorageProvider();
-      const coordinator = RhythmCoordinator.getInstance();
-      coordinator.destroy();
-      configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage,
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-        nativeRhythm: new NoopNativeRhythmSyncProvider(),
-      });
-
-      await coordinator.initialize();
+    test('Rejected group edits do not mutate lastAllowanceEditedDateKey or allowanceMinutes', async () => {
+      const coordinator = await setupGroupCoordinator();
 
       // Rejected: increase by 30
-      await coordinator.updateDailyRiskAllowance('com.instagram.android', 60);
+      await coordinator.updateRiskGroupAllowance('social', 60);
 
-      const app = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(app.dailyRiskAllowance?.allowanceMinutes, 30);
-      assert.equal(app.dailyRiskAllowance?.lastEditedDateKey, undefined);
+      const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 30);
+      assert.equal(social.lastAllowanceEditedDateKey, undefined);
+      coordinator.destroy();
     });
 
-    test('Risk app: group change + allowance edit -> both persist', async () => {
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          riskGroupId: 'social',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: { allowanceMinutes: 30 },
-        },
-      ];
-
-      const coordinator = RhythmCoordinator.getInstance();
-      coordinator.destroy();
-      configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage: new MockStorageProvider(),
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-        nativeRhythm: new NoopNativeRhythmSyncProvider(),
-      });
-
-      await coordinator.initialize();
+    test('Risk app: group change + group allowance edit -> both persist', async () => {
+      const coordinator = await setupGroupCoordinator();
       usePrototypeStore.setState({
-        apps: [...testApps],
+        apps: [...groupFixtureApps],
         riskGroups: coordinator.getConfiguration()?.riskGroups ?? [],
       });
 
-      // Simulate AppEditModal deterministic save flow:
-      // 1. Update allowance (+15 min step)
-      const allowanceRes = await usePrototypeStore.getState().updateDailyRiskAllowance('com.instagram.android', 45);
-      assert.equal(allowanceRes.allowed, true);
+      // Simulate group configuration save flow:
+      // 1. Update shared group allowance (+15 min step)
+      const allowanceRes = await usePrototypeStore.getState().updateRiskGroupAllowance('social', 45);
+      assert.equal(allowanceRes.ok, true);
 
-      // 2. Update classification / group
+      // 2. Move the app to another group; group policy/guard must survive the move
       await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'risk', 'custom-group');
 
+      const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 45);
+      assert.equal(social.lastAllowanceEditedDateKey, getLocalDateKey());
+
       const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(savedApp.dailyRiskAllowance?.allowanceMinutes, 45);
+      assert.equal(savedApp.dailyRiskAllowance, undefined);
       assert.equal(savedApp.riskGroupId, 'custom-group');
 
       const storeApp = usePrototypeStore.getState().apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(storeApp.dailyRiskAllowance?.allowanceMinutes, 45);
+      assert.equal(storeApp.dailyRiskAllowance, undefined);
       assert.equal(storeApp.riskGroupId, 'custom-group');
+      coordinator.destroy();
     });
 
-    test('rejected allowance edit -> classification/group unchanged', async () => {
-      const testApps: DeviceApp[] = [
-        {
-          id: 'com.instagram.android',
-          name: 'Instagram',
-          classification: 'risk',
-          riskGroupId: 'social',
-          iconName: 'camera',
-          iconColor: '#000',
-          iconBg: '#FFF',
-          defaultCategory: 'Social',
-          usageTodayMinutes: 0,
-          sessionMinutes: 0,
-          dailyRiskAllowance: { allowanceMinutes: 30 },
-        },
-      ];
-
-      const coordinator = RhythmCoordinator.getInstance();
-      coordinator.destroy();
-      configurePlatformServices({
-        usage: new MockUsageProvider(testApps),
-        storage: new MockStorageProvider(),
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-        nativeRhythm: new NoopNativeRhythmSyncProvider(),
-      });
-
-      await coordinator.initialize();
+    test('Rejected group edit -> classification/group unchanged', async () => {
+      const coordinator = await setupGroupCoordinator();
       usePrototypeStore.setState({
-        apps: [...testApps],
+        apps: [...groupFixtureApps],
         riskGroups: coordinator.getConfiguration()?.riskGroups ?? [],
       });
 
-      // Simulate AppEditModal save with invalid allowance change (+30 min)
-      const selectedApp = testApps[0];
-      const classification = 'risk';
-      const persistedMinutes = selectedApp.dailyRiskAllowance?.allowanceMinutes ?? 30;
-      const draftMinutes: number = 60;
-      const targetGroupId = 'news';
+      // Invalid group allowance change (+30 min) blocks the save flow
+      const result = await usePrototypeStore.getState().updateRiskGroupAllowance('social', 60);
+      assert.equal(result.ok, false);
+      const allowanceError: string = result.reason ?? 'error';
 
-      let allowanceError: string | null = null;
-      if (selectedApp.classification === 'risk' && classification === 'risk' && draftMinutes !== persistedMinutes) {
-        const result = await usePrototypeStore.getState().updateDailyRiskAllowance(selectedApp.id, draftMinutes);
-        if (!result.allowed) {
-          allowanceError = result.reason || 'error';
-        }
-      }
-
-      if (!allowanceError) {
-        await usePrototypeStore.getState().updateAppClassification(selectedApp.id, classification, targetGroupId);
+      if (result.ok) {
+        await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'risk', 'news');
       }
 
       // Rejection stops flow before classification change:
       assert.equal(allowanceError, 'increase-too-large');
 
-      // Ensure app in coordinator and store remains untouched:
+      // Group policy/guard untouched; app membership untouched:
+      const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 30);
+      assert.equal(social.lastAllowanceEditedDateKey, undefined);
+
       const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(savedApp.dailyRiskAllowance?.allowanceMinutes, 30);
+      assert.equal(savedApp.dailyRiskAllowance, undefined);
       assert.equal(savedApp.riskGroupId, 'social');
 
       const storeApp = usePrototypeStore.getState().apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(storeApp.dailyRiskAllowance?.allowanceMinutes, 30);
+      assert.equal(storeApp.dailyRiskAllowance, undefined);
       assert.equal(storeApp.riskGroupId, 'social');
+      coordinator.destroy();
     });
 
     test('Risk -> Normal -> no allowance write race and cleanly removes group membership', async () => {
@@ -762,13 +644,13 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
           id: 'com.instagram.android',
           name: 'Instagram',
           classification: 'risk',
+          riskGroupId: 'social',
           iconName: 'camera',
           iconColor: '#000',
           iconBg: '#FFF',
           defaultCategory: 'Social',
           usageTodayMinutes: 0,
           sessionMinutes: 0,
-          dailyRiskAllowance: { allowanceMinutes: 30 },
         },
       ];
 
@@ -819,9 +701,11 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
       // UI / store no longer treats 18 as current measured usage
       assert.equal(state.dailyUsageSnapshot, undefined);
       assert.equal(state.dailyUsageError, 'Usage unavailable');
-      // Configured 30-minute allowance remains intact
+      // Configured 30-minute group allowance remains intact; no per-app policy exists
       const app = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
-      assert.equal(app.dailyRiskAllowance?.allowanceMinutes, 30);
+      assert.equal(app.dailyRiskAllowance, undefined);
+      const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(resolveGroupAllowanceMinutes(social), 30);
 
       // 3. Subsequent success = 20/30
       const nextSnapshot = {

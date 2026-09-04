@@ -647,7 +647,7 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
   });
 
   describe('5. Bootstrap Migration & Persistence', () => {
-    it('migrates existing Risk apps without policy to 30 minutes idempotently', async () => {
+    it('migrates bootstrap state to group-owned allowances idempotently (no per-app policy)', async () => {
       const mockStorage = new MockStorageProvider();
       const testApps: DeviceApp[] = [
         {
@@ -660,7 +660,7 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
           defaultCategory: 'Social',
           usageTodayMinutes: 0,
           sessionMinutes: 0,
-          // No dailyRiskAllowance
+          // No dailyRiskAllowance: v1.0.2 never creates per-app policy
         },
         {
           id: 'com.example.notes',
@@ -681,17 +681,31 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
         restrictions: new MockRestrictionProvider(),
       });
 
-      const { config, preferences } = await bootstrapRhythm({ deferRestrictionEffects: true });
-      const instagram = config.apps.find((a) => a.id === 'com.instagram.android');
-      const notes = config.apps.find((a) => a.id === 'com.example.notes');
+      const first = await bootstrapRhythm({ deferRestrictionEffects: true });
+      const social = first.config.riskGroups.find((g) => g.id === 'social');
+      const instagram = first.config.apps.find((a) => a.id === 'com.instagram.android');
+      const notes = first.config.apps.find((a) => a.id === 'com.example.notes');
 
-      // Risk app migrated to 30 min
-      assert.equal(instagram?.dailyRiskAllowance?.allowanceMinutes, 30);
-      assert.equal(preferences.appClassifications['com.instagram.android'].dailyRiskAllowance?.allowanceMinutes, 30);
+      // Risk Group owns the shared allowance (default 30) with walk recovery
+      assert.equal(social?.allowanceMinutes, 30);
+      assert.equal(social?.recoveryActivityId, 'walk');
+      assert.equal(first.preferences.appClassifications['com.instagram.android'].dailyRiskAllowance, undefined);
 
-      // Normal app has no policy
+      // No per-app allowance policy is created for Risk or Normal apps
+      assert.equal(instagram?.dailyRiskAllowance, undefined);
       assert.equal(notes?.dailyRiskAllowance, undefined);
-      assert.equal(preferences.appClassifications['com.example.notes'].dailyRiskAllowance, undefined);
+      assert.equal(first.preferences.appClassifications['com.example.notes'].dailyRiskAllowance, undefined);
+
+      // Re-bootstrap from persisted state is idempotent
+      const second = await bootstrapRhythm({ deferRestrictionEffects: true });
+      assert.equal(
+        second.config.riskGroups.find((g) => g.id === 'social')?.allowanceMinutes,
+        30
+      );
+      assert.equal(
+        second.config.apps.find((a) => a.id === 'com.instagram.android')?.dailyRiskAllowance,
+        undefined
+      );
     });
 
     it('regression: rejects allowance editing for non-risk or missing apps with truthful reasons', async () => {

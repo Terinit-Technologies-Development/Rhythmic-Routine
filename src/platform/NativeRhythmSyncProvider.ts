@@ -4,8 +4,36 @@ import RhythmDeviceModule from '../../modules/rhythm-device';
 export interface IOSNativeGroupPolicy {
   groupId: string;
   selectionRef?: string;
+  /** @deprecated v1.0.2: consolidated into allowanceMinutes. */
   sessionThresholdMinutes: number;
+  /** v1.0.2: shared group allowance (sole policy owner). */
+  allowanceMinutes?: number;
   cooldownMinutes: number;
+  recoveryActivityId?: string;
+}
+
+/**
+ * v1.0.2 conceptual contract for Pass 02 native enforcement ( Hochreiter ):
+ * one group policy carries everything Android needs for background-safe
+ * enforcement — group identity, member packages, shared allowance, cooldown
+ * and recovery activity for the Touch Grass overlay. Introduced here as types
+ * only; Pass 02 owns enforcement wiring.
+ */
+export interface NativeRecoveryActivity {
+  id: string;
+  title: string;
+  subtitle: string;
+  iconEmoji: string;
+  durationSuggestion?: string;
+}
+
+export interface NativeRiskGroupPolicy {
+  groupId: string;
+  groupName: string;
+  packageNames: string[];
+  allowanceMinutes: number;
+  cooldownMinutes: number;
+  recoveryActivity: NativeRecoveryActivity;
 }
 
 export interface IOSNativeRoutinePolicy {
@@ -62,7 +90,9 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
       nativeSelectionRef: group.nativeSelectionRef,
       nativeSelectionRevision: group.nativeSelectionRevision,
       sessionThresholdMinutes: group.sessionThresholdMinutes,
+      allowanceMinutes: group.allowanceMinutes ?? group.sessionThresholdMinutes,
       cooldownMinutes: group.cooldownMinutes,
+      recoveryActivityId: group.recoveryActivityId,
     })),
     routines: config.routineWindows.map((routine) => ({
       id: routine.id,
@@ -91,8 +121,10 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         const groups: IOSNativeGroupPolicy[] = config.riskGroups.map((g) => ({
           groupId: g.id,
           selectionRef: g.nativeSelectionRef,
-          sessionThresholdMinutes: g.sessionThresholdMinutes,
+          sessionThresholdMinutes: g.sessionThresholdMinutes ?? g.allowanceMinutes ?? 30,
+          allowanceMinutes: g.allowanceMinutes ?? g.sessionThresholdMinutes ?? 30,
           cooldownMinutes: g.cooldownMinutes,
+          recoveryActivityId: g.recoveryActivityId,
         }));
 
         const routines: IOSNativeRoutinePolicy[] = config.routineWindows.map((w) => ({

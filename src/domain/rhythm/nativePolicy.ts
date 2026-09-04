@@ -1,6 +1,6 @@
 import { RhythmConfiguration, RhythmRuntime } from './types';
 import { isInsideOvernightProtection, isInsideWindow } from './routine';
-import { isDailyAllowanceExhausted } from './allowance';
+import { isDailyAllowanceExhausted, isGroupAllowanceExhausted } from './allowance';
 
 /**
  * Computes the Android native BASE restriction registry.
@@ -58,7 +58,23 @@ export function computeUnsuppressedBaseRestrictedAppIds(
     }
   }
 
-  // Exhausted daily allowance locks the specific Risk app
+  // v1.0.2: exhausted group allowance locks every member Risk app.
+  // (Legacy per-app check below retained for compat.)
+  if (runtime.groupAllowanceUsage) {
+    for (const group of config.riskGroups) {
+      if (isGroupAllowanceExhausted(group, runtime.groupAllowanceUsage[group.id], nowMs)) {
+        for (const appId of group.appIds) {
+          const app = config.apps.find((item) => item.id === appId);
+          if (!app) continue;
+          if (app.classification === 'essential') continue;
+          if (app.classification !== 'risk') continue;
+          restrictedAppIds.add(app.id);
+        }
+      }
+    }
+  }
+
+  // Exhausted daily allowance locks the specific Risk app (legacy path)
   for (const app of config.apps) {
     if (app.classification === 'essential') continue;
     if (app.classification !== 'risk') continue;
