@@ -550,7 +550,9 @@ export function processRhythmEvent(
     }
   }
 
-  // Check and record newly exhausted daily allowances (legacy per-app path)
+  // Observational per-app exhaustion history (NOT restriction authority).
+  // Retained so Insights can still break observed usage down per app for
+  // analytics. Restriction decisions consult only the group ledger above.
   for (const app of config.apps) {
     if (app.classification === 'risk') {
       const usage = nextDailyAppUsage[app.id];
@@ -581,7 +583,6 @@ export function processRhythmEvent(
     nextAccessLeases,
     {
       isOvernight,
-      dailyAppUsage: nextDailyAppUsage,
       groupAllowanceUsage: nextGroupAllowanceUsage,
     }
   );

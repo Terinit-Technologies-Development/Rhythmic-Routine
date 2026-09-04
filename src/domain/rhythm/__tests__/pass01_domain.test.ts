@@ -5,7 +5,7 @@ import {
   DAILY_ALLOWANCE_STEP_MINUTES,
   MIN_DAILY_RISK_ALLOWANCE_MINUTES,
   validateDailyAllowanceEdit,
-  isDailyAllowanceExhausted,
+  isGroupAllowanceExhausted,
   rolloverDailyAppUsage,
 } from '../allowance';
 import {
@@ -300,98 +300,111 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
     });
   });
 
-  describe('3. Daily Allowance Exhaustion & Restriction Union', () => {
+  describe('3. Group Allowance Exhaustion & Restriction Union', () => {
     const today = '2026-09-02';
     const nowMs = new Date(2026, 8, 2, 14, 0, 0, 0).getTime(); // Midday 14:00
+    // v1.0.2: the Risk Group shared allowance is the sole allowance authority.
+    const groupOwnedSocial: RiskGroup = {
+      ...standardRiskGroup,
+      allowanceMinutes: 30,
+      recoveryActivityId: 'walk',
+    };
 
-    it('evaluates allowance exhaustion based on usedSeconds + active segment', () => {
-      const app: DeviceApp = { ...standardApps[0], dailyRiskAllowance: { allowanceMinutes: 30 } };
-
+    it('evaluates group exhaustion from shared usedSeconds + active segment', () => {
       // 29m 50s used (1790s) -> not exhausted
-      const usage1 = {
-        [app.id]: {
-          appId: app.id,
-          dateKey: today,
-          usedSeconds: 1790,
-        },
-      };
-      assert.equal(isDailyAllowanceExhausted(app, usage1, nowMs), false);
+      assert.equal(
+        isGroupAllowanceExhausted(
+          groupOwnedSocial,
+          { groupId: 'social', dateKey: today, usedSeconds: 1790, cycleRevision: 0 },
+          nowMs
+        ),
+        false
+      );
 
       // Exactly 30m used (1800s) -> exhausted
-      const usage2 = {
-        [app.id]: {
-          appId: app.id,
-          dateKey: today,
-          usedSeconds: 1800,
-        },
-      };
-      assert.equal(isDailyAllowanceExhausted(app, usage2, nowMs), true);
+      assert.equal(
+        isGroupAllowanceExhausted(
+          groupOwnedSocial,
+          { groupId: 'social', dateKey: today, usedSeconds: 1800, cycleRevision: 0 },
+          nowMs
+        ),
+        true
+      );
 
       // 29m used + active segment running for 70s -> total 30m10s -> exhausted
-      const usage3 = {
-        [app.id]: {
-          appId: app.id,
-          dateKey: today,
-          usedSeconds: 1740,
-          activeSegmentStartedAt: nowMs - 70000,
-        },
-      };
-      assert.equal(isDailyAllowanceExhausted(app, usage3, nowMs), true);
+      assert.equal(
+        isGroupAllowanceExhausted(
+          groupOwnedSocial,
+          {
+            groupId: 'social',
+            dateKey: today,
+            usedSeconds: 1740,
+            activeSegmentStartedAt: nowMs - 70000,
+            cycleRevision: 0,
+          },
+          nowMs
+        ),
+        true
+      );
     });
 
-    it('unions routine, overnight, cooldown, and allowance exhaustion reasons', () => {
-      const app: DeviceApp = { ...standardApps[0], dailyRiskAllowance: { allowanceMinutes: 30 } };
+    it('unions routine, overnight, cooldown, and group allowance exhaustion reasons', () => {
+      const app: DeviceApp = { ...standardApps[0] };
       const configApps = [app, standardApps[1], standardApps[2]];
 
-      // Exhausted usage
-      const dailyUsage = {
-        [app.id]: {
-          appId: app.id,
+      // Exhausted shared group ledger
+      const groupUsage = {
+        social: {
+          groupId: 'social',
           dateKey: today,
           usedSeconds: 1800,
+          cycleRevision: 0,
         },
       };
 
-      // During Morning Buffer (routine active) AND daily allowance exhausted
+      // During Morning Buffer (routine active) AND group allowance exhausted
       const morningWindow = standardWindows.find((w) => w.type === 'morning-buffer')!;
       const res = computeEffectiveRestrictions(
         [morningWindow],
         {},
-        [standardRiskGroup],
+        [groupOwnedSocial],
         configApps,
         nowMs,
         {},
         {
           isOvernight: false,
-          dailyAppUsage: dailyUsage,
+          groupAllowanceUsage: groupUsage,
         }
       );
 
       assert.deepEqual(res.effectiveAppIds, [app.id]);
       const appRest = res.appRestrictions.find((r) => r.appId === app.id);
       assert.ok(appRest);
-      // Contains both routine and daily-allowance reasons
+      // Contains both routine and group daily-allowance reasons
       assert.equal(appRest?.reasons.some((r) => r.type === 'routine'), true);
-      assert.equal(appRest?.reasons.some((r) => r.type === 'daily-allowance'), true);
+      const allowanceReason = appRest?.reasons.find((r) => r.type === 'daily-allowance');
+      assert.ok(allowanceReason);
+      assert.equal(allowanceReason?.sourceId, 'social');
     });
 
-    it('Access Lease temporarily suppresses effective restriction without altering usedSeconds or base set', () => {
-      const app: DeviceApp = { ...standardApps[0], dailyRiskAllowance: { allowanceMinutes: 30 } };
+    it('Access Lease temporarily suppresses effective restriction without altering group usage or base set', () => {
+      const app: DeviceApp = { ...standardApps[0] };
       const config: RhythmConfiguration = {
         routineWindows: standardWindows,
-        riskGroups: [standardRiskGroup],
+        riskGroups: [groupOwnedSocial],
         apps: [app, standardApps[1], standardApps[2]],
       };
 
-      const dailyUsage = {
-        [app.id]: {
-          appId: app.id,
+      const groupUsage = {
+        social: {
+          groupId: 'social',
           dateKey: today,
           usedSeconds: 1800,
+          cycleRevision: 0,
         },
       };
 
-      // Native base set includes the exhausted app
+      // Native base set includes the exhausted-group app
       const baseAppIds = computeUnsuppressedBaseRestrictedAppIds(
         {
           state: 'available',
@@ -399,12 +412,12 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
           activeAccessLeases: {},
           activeRoutineWindowIds: [],
           activeRestrictions: [],
-          dailyAppUsage: dailyUsage,
+          groupAllowanceUsage: groupUsage,
         },
         config,
         nowMs
       );
-      assert.ok(baseAppIds.includes(app.id), 'Base restriction includes exhausted app');
+      assert.ok(baseAppIds.includes(app.id), 'Base restriction includes exhausted-group app');
 
       // With active Access Lease for 'social'
       const activeLease = {
@@ -420,13 +433,13 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
       const res = computeEffectiveRestrictions(
         [],
         {},
-        [standardRiskGroup],
+        [groupOwnedSocial],
         config.apps,
         nowMs,
         activeLease,
         {
           isOvernight: false,
-          dailyAppUsage: dailyUsage,
+          groupAllowanceUsage: groupUsage,
         }
       );
 
@@ -441,7 +454,7 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
           activeAccessLeases: activeLease,
           activeRoutineWindowIds: [],
           activeRestrictions: [],
-          dailyAppUsage: dailyUsage,
+          groupAllowanceUsage: groupUsage,
         },
         config,
         nowMs

@@ -18,6 +18,8 @@ import {
   migrateRiskGroupV102,
 } from '../migration';
 import { DeviceApp, GroupAllowanceUsage, RiskGroup } from '../../../types/domain';
+import { computeEffectiveRestrictions } from '../restrictions';
+import { computeUnsuppressedBaseRestrictedAppIds } from '../nativePolicy';
 import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { bootstrapRhythm } from '../../../application/bootstrapRhythm';
 import { MockStorageProvider } from '../../../platform/storage/MockStorageProvider';
@@ -578,6 +580,184 @@ describe('Pass 01 (v1.0.2) — Group Allowance Domain & Migration', () => {
         'stretch'
       );
       coordinator.destroy();
+    });
+
+    it('reports group-not-found for an unknown group', async () => {
+      configurePlatformServices({
+        storage: new MockStorageProvider(),
+        usage: new MockUsageProvider([]),
+        permissions: new MockPermissionProvider(),
+        restrictions: new MockRestrictionProvider(),
+      });
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+      await coordinator.initialize();
+
+      const result = await coordinator.updateRiskGroupAllowance('no-such-group', 45);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'group-not-found');
+      coordinator.destroy();
+    });
+
+    it('reports unavailable when the engine cannot initialize', async () => {
+      const throwingPermissions = new MockPermissionProvider();
+      throwingPermissions.getStatus = async () => {
+        throw new Error('permission backend unreachable');
+      };
+      configurePlatformServices({
+        storage: new MockStorageProvider(),
+        usage: new MockUsageProvider([]),
+        permissions: throwingPermissions,
+        restrictions: new MockRestrictionProvider(),
+      });
+      const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
+
+      const result = await coordinator.updateRiskGroupAllowance('social', 45);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'unavailable');
+      coordinator.destroy();
+    });
+  });
+
+  describe('sole group ownership regression', () => {
+    const today = '2026-09-02';
+    const nowMs = new Date(2026, 8, 2, 14, 0, 0).getTime();
+    const memberApps: DeviceApp[] = [
+      {
+        id: 'instagram', name: 'Instagram', classification: 'risk', riskGroupId: 'social',
+        iconName: 'c', iconColor: '#000', iconBg: '#fff', defaultCategory: 'Social',
+        usageTodayMinutes: 0, sessionMinutes: 0,
+        // Stale v1.0.1 per-app policy: must never act as authority.
+        dailyRiskAllowance: { allowanceMinutes: 30 },
+      },
+      {
+        id: 'x', name: 'X', classification: 'risk', riskGroupId: 'social',
+        iconName: 'c', iconColor: '#000', iconBg: '#fff', defaultCategory: 'Social',
+        usageTodayMinutes: 0, sessionMinutes: 0,
+      },
+      {
+        id: 'tiktok', name: 'TikTok', classification: 'risk', riskGroupId: 'social',
+        iconName: 'c', iconColor: '#000', iconBg: '#fff', defaultCategory: 'Social',
+        usageTodayMinutes: 0, sessionMinutes: 0,
+      },
+      {
+        id: 'phone', name: 'Phone', classification: 'essential',
+        iconName: 'c', iconColor: '#000', iconBg: '#fff', defaultCategory: 'Communication',
+        usageTodayMinutes: 0, sessionMinutes: 0,
+      },
+    ];
+    const ownedGroup = makeGroup({ appIds: ['instagram', 'x', 'tiktok', 'phone'] });
+
+    it('stale/exhausted per-app ledger cannot restrict when the group allowance is available', () => {
+      const availableGroupUsage = {
+        social: makeUsage({ dateKey: today, usedSeconds: 10 * 60 }),
+      };
+      // Stale v1.0.1 ledger: instagram looks fully exhausted per-app.
+      const stalePerAppLedger = {
+        instagram: {
+          appId: 'instagram',
+          dateKey: today,
+          usedSeconds: 1800,
+          exhaustedAt: nowMs - 1000,
+        },
+      };
+
+      const res = computeEffectiveRestrictions(
+        [], {}, [ownedGroup], memberApps, nowMs, {},
+        { isOvernight: false, groupAllowanceUsage: availableGroupUsage }
+      );
+      assert.deepEqual(res.effectiveAppIds, []);
+
+      const base = computeUnsuppressedBaseRestrictedAppIds(
+        {
+          state: 'available',
+          activeCooldowns: {},
+          activeAccessLeases: {},
+          activeRoutineWindowIds: [],
+          activeRestrictions: [],
+          dailyAppUsage: stalePerAppLedger,
+          groupAllowanceUsage: availableGroupUsage,
+        },
+        { routineWindows: [], riskGroups: [ownedGroup], apps: memberApps },
+        nowMs
+      );
+      assert.deepEqual(base, [], 'Stale per-app exhaustion must not restrict anyone');
+    });
+
+    it('group exhaustion restricts every member app at once', () => {
+      const exhaustedGroupUsage = {
+        social: makeUsage({ dateKey: today, usedSeconds: 30 * 60 }),
+      };
+
+      const res = computeEffectiveRestrictions(
+        [], {}, [ownedGroup], memberApps, nowMs, {},
+        { isOvernight: false, groupAllowanceUsage: exhaustedGroupUsage }
+      );
+      assert.deepEqual(res.effectiveAppIds.sort(), ['instagram', 'tiktok', 'x']);
+      for (const restriction of res.appRestrictions) {
+        const reason = restriction.reasons.find((r) => r.type === 'daily-allowance');
+        assert.ok(reason, `${restriction.appId} carries the group allowance reason`);
+        assert.equal(reason?.sourceId, 'social');
+      }
+
+      const base = computeUnsuppressedBaseRestrictedAppIds(
+        {
+          state: 'available',
+          activeCooldowns: {},
+          activeAccessLeases: {},
+          activeRoutineWindowIds: [],
+          activeRestrictions: [],
+          groupAllowanceUsage: exhaustedGroupUsage,
+        },
+        { routineWindows: [], riskGroups: [ownedGroup], apps: memberApps },
+        nowMs
+      );
+      assert.deepEqual(base.sort(), ['instagram', 'tiktok', 'x']);
+    });
+
+    it('essential apps stay exempt even when their group is exhausted', () => {
+      const exhaustedGroupUsage = {
+        social: makeUsage({ dateKey: today, usedSeconds: 30 * 60 }),
+      };
+      const res = computeEffectiveRestrictions(
+        [], {}, [ownedGroup], memberApps, nowMs, {},
+        { isOvernight: false, groupAllowanceUsage: exhaustedGroupUsage }
+      );
+      assert.ok(!res.effectiveAppIds.includes('phone'));
+    });
+  });
+
+  describe('migration always strips the legacy threshold', () => {
+    it('strips invalid legacy thresholds while defaulting to 30', () => {
+      for (const legacy of [-1, Number.NaN, 'forty-five', undefined]) {
+        const migrated = migrateRiskGroupV102({ id: 'g', sessionThresholdMinutes: legacy } as any);
+        assert.equal(migrated.allowanceMinutes, 30);
+        assert.ok(!('sessionThresholdMinutes' in migrated), `must strip ${String(legacy)}`);
+      }
+    });
+
+    it('strips missing legacy thresholds while defaulting to 30', () => {
+      const migrated = migrateRiskGroupV102({ id: 'g', name: 'G' } as any);
+      assert.equal(migrated.allowanceMinutes, 30);
+      assert.ok(!('sessionThresholdMinutes' in migrated));
+    });
+
+    it('strips legacy threshold when an explicit allowance already exists', () => {
+      const migrated = migrateRiskGroupV102({
+        id: 'g',
+        allowanceMinutes: 45,
+        sessionThresholdMinutes: 20,
+      } as any);
+      assert.equal(migrated.allowanceMinutes, 45);
+      assert.ok(!('sessionThresholdMinutes' in migrated));
+    });
+
+    it('stays stripped across repeated migration runs', () => {
+      const once = migrateRiskGroupV102({ id: 'g', sessionThresholdMinutes: 45 } as any);
+      const twice = migrateRiskGroupV102(JSON.parse(JSON.stringify(once)));
+      assert.deepEqual(twice, once);
+      assert.ok(!('sessionThresholdMinutes' in twice));
     });
   });
 });

@@ -1,19 +1,21 @@
-import { AccessLease, DailyAppUsage, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow } from '../../types/domain';
+import { AccessLease, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow } from '../../types/domain';
 import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns, RestrictionReason } from './types';
-import { isDailyAllowanceExhausted, isGroupAllowanceExhausted } from './allowance';
+import { isGroupAllowanceExhausted } from './allowance';
 
 export interface RestrictionOptions {
   isOvernight?: boolean;
-  /** @deprecated v1.0.2: legacy per-app ledger. */
-  dailyAppUsage?: Record<string, DailyAppUsage>;
-  /** v1.0.2: authoritative per-group allowance ledgers. */
+  /** v1.0.2: authoritative per-group allowance ledgers (sole allowance authority). */
   groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
 }
 
 /**
  * Computes effective desired app restrictions across active routine windows, overnight protection,
- * all active cooldowns, and exhausted daily allowances, minus active access lease suppressions.
+ * all active cooldowns, and exhausted group allowances, minus active access lease suppressions.
  * Maintains the fundamental invariant: Essential apps are NEVER restricted.
+ *
+ * v1.0.2: the Risk Group shared allowance is the SOLE allowance authority. Legacy
+ * per-app ledgers (DailyAppUsage) are never consulted here, even if present on
+ * the runtime for migration/observational compatibility.
  */
 export function computeEffectiveRestrictions(
   activeWindows: RoutineWindow[],
@@ -100,9 +102,9 @@ export function computeEffectiveRestrictions(
     }
   }
 
-  // 4. Process Group Allowance Exhaustion (v1.0.2 authoritative path).
+  // 4. Process Group Allowance Exhaustion (v1.0.2 sole allowance authority).
   // When a group's shared allowance is exhausted, every member Risk app is
-  // restricted. The legacy per-app check below is retained for compat.
+  // restricted. Per-app ledgers are deliberately never consulted.
   if (options?.groupAllowanceUsage) {
     for (const group of riskGroups) {
       if (isGroupAllowanceExhausted(group, options.groupAllowanceUsage[group.id], now)) {
@@ -115,18 +117,6 @@ export function computeEffectiveRestrictions(
             });
           }
         }
-      }
-    }
-  }
-
-  // 4b. Process Daily Allowance Exhaustion (legacy per-app path, deprecated)
-  for (const app of apps) {
-    if (app.classification === 'risk') {
-      if (isDailyAllowanceExhausted(app, options?.dailyAppUsage, now)) {
-        addReason(app.id, {
-          type: 'daily-allowance',
-          sourceId: app.id,
-        });
       }
     }
   }

@@ -78,7 +78,9 @@ export interface GroupAllowanceEditResult {
     | 'increase-too-large'
     | 'invalid-step'
     | 'below-minimum'
-    | 'already-edited-today';
+    | 'already-edited-today'
+    | 'group-not-found'
+    | 'unavailable';
 }
 
 /**
@@ -129,7 +131,7 @@ export function validateGroupAllowanceEdit(args: {
  */
 export function isGroupAllowanceExhausted(
   group: Pick<RiskGroup, 'allowanceMinutes' | 'sessionThresholdMinutes'>,
-  usage: Pick<GroupAllowanceUsage, 'usedSeconds' | 'dateKey' | 'activeSegmentStartedAt'> | undefined,
+  usage: GroupAllowanceUsage | undefined,
   nowOrDateKey: number | string = Date.now()
 ): boolean {
   const allowanceMinutes = resolveGroupAllowanceMinutes(group);

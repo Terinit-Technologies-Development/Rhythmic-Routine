@@ -395,15 +395,19 @@ export class RhythmCoordinator {
     nowMs: number = Date.now()
   ): Promise<GroupAllowanceEditResult & { groupId: string }> {
     if (!this.config || !this.engine) {
-      await this.initialize();
+      try {
+        await this.initialize();
+      } catch {
+        return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
+      }
     }
     if (!this.config || !this.engine) {
-      return { ok: false, nextMinutes, groupId, reason: 'already-edited-today' };
+      return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
     }
 
     const group = this.config.riskGroups.find((g) => g.id === groupId);
     if (!group) {
-      return { ok: false, nextMinutes, groupId, reason: 'below-minimum' };
+      return { ok: false, nextMinutes, groupId, reason: 'group-not-found' };
     }
 
     const currentMinutes = resolveGroupAllowanceMinutes(group);
@@ -546,8 +550,22 @@ export class RhythmCoordinator {
     }
 
     // Delegate to the owning group's shared allowance (sole policy owner).
+    // The owning group is re-resolved here so a dangling riskGroupId (no
+    // policy owner in config) is reported truthfully instead of editing air.
+    const ownerExists = this.config.riskGroups.some((g) => g.id === app.riskGroupId);
+    if (!ownerExists) {
+      return {
+        allowed: false,
+        nextMinutes,
+        consumesDailyEdit: false,
+        reason: 'not-risk-app',
+      };
+    }
     const groupResult = await this.updateRiskGroupAllowance(app.riskGroupId, nextMinutes, nowMs);
     if (!groupResult.ok) {
+      // Deprecated shim keeps the frozen app-level union: policy-rule reasons
+      // map 1:1; owner-availability failures mean the app has no editable
+      // group policy, i.e. it cannot be treated as a policy-owning risk app.
       const reason =
         groupResult.reason === 'already-edited-today'
           ? 'already-edited-today'
@@ -555,7 +573,9 @@ export class RhythmCoordinator {
             ? 'increase-too-large'
             : groupResult.reason === 'invalid-step'
               ? 'invalid-step'
-              : ('below-minimum' as const);
+              : groupResult.reason === 'below-minimum'
+                ? 'below-minimum'
+                : ('not-risk-app' as const);
       return {
         allowed: false,
         nextMinutes: groupResult.nextMinutes,

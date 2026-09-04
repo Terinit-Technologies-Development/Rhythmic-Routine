@@ -45,6 +45,11 @@ export function migrateRiskGroupV102(group: any): RiskGroup {
   // case a v1.0.1 payload embedded one.
   delete (migrated as unknown as Record<string, unknown>)['dailyRiskAllowance'];
 
+  // The migrated ACTIVE group must never carry a second policy: once
+  // allowanceMinutes is derived/materialized (explicit value, valid legacy
+  // threshold, or 30-minute default), the legacy threshold is always stripped.
+  delete (migrated as unknown as Record<string, unknown>)['sessionThresholdMinutes'];
+
   // lastAllowanceEditedDateKey (if present) is preserved as-is by the spread.
 
   return migrated;
@@ -64,11 +69,9 @@ export function migrateDeviceAppV102(app: DeviceApp): DeviceApp {
 
 /**
  * v1.0.2 migration for a full persisted configuration snapshot.
- * - migrates every Risk Group (allowance from legacy group threshold)
+ * - migrates every Risk Group (allowance from legacy group threshold;
+ *   legacy threshold always stripped from the active shape)
  * - strips every per-app dailyRiskAllowance (never a policy source)
- * - drops stale `sessionThresholdMinutes` from the active shape only when an
- *   explicit allowanceMinutes is present (legacy fixtures without one keep it
- *   for resolver fallback; it is never consulted as policy after migration)
  * - preserves unrelated fields; idempotent.
  */
 export function migrateConfigurationV102(config: {
@@ -80,14 +83,6 @@ export function migrateConfigurationV102(config: {
   const riskGroups = (config.riskGroups ?? []).map((g) => {
     const before = JSON.stringify(g);
     const migrated = migrateRiskGroupV102(g);
-    // Once the group owns an explicit allowance, the legacy threshold must not
-    // survive as a second configurable policy on the active shape.
-    if (
-      Number.isFinite((g as unknown as Record<string, unknown>)['allowanceMinutes'] as number) ||
-      Number.isFinite((g as unknown as Record<string, unknown>)['sessionThresholdMinutes'] as number)
-    ) {
-      delete (migrated as unknown as Record<string, unknown>)['sessionThresholdMinutes'];
-    }
     if (JSON.stringify(migrated) !== before) mutated = true;
     // Backfill check: resolver must agree with materialized value.
     void resolveGroupAllowanceMinutes(migrated);
