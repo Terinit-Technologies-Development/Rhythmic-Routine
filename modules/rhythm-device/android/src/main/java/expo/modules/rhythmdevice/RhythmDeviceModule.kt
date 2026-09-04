@@ -173,9 +173,7 @@ class RhythmDeviceModule : Module() {
     }
 
     AsyncFunction("getGroupUsageSnapshot") {
-      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
-        "groups" to emptyList<Map<String, Any>>()
-      )
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
       return@AsyncFunction groupSnapshots(context)
     }
 
@@ -185,9 +183,7 @@ class RhythmDeviceModule : Module() {
     }
 
     AsyncFunction("reconcileGroupUsage") {
-      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
-        "groups" to emptyList<Map<String, Any>>()
-      )
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
       RhythmEnforcementService.instance?.reconcileUsage()
       return@AsyncFunction groupSnapshots(context)
     }
@@ -208,7 +204,18 @@ class RhythmDeviceModule : Module() {
         val pkgsList = (it["packageNames"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
         NativeCooldownPolicy(gid, pkgsList, endsAt)
       }
-      RhythmEnforcementService.saveCooldownPolicies(context, parsed)
+      // Expiry resets the ledger before any cooldown is removed or merged.
+      RhythmEnforcementService.instance?.pruneExpiredCooldowns(System.currentTimeMillis())
+      // A stale JS projection may not delete a native-created cooldown.
+      val native = RhythmEnforcementService.loadCooldownPolicies(context)
+      val merged = (native + parsed).groupBy { it.groupId }.map { (_, values) ->
+        NativeCooldownPolicy(
+          values.first().groupId,
+          values.flatMap { it.packageNames }.toSet(),
+          values.maxOf { it.endsAt }
+        )
+      }
+      RhythmEnforcementService.saveCooldownPolicies(context, merged)
       RhythmEnforcementService.instance?.onCooldownPoliciesChanged()
       return@AsyncFunction true
     }
@@ -265,6 +272,9 @@ class RhythmDeviceModule : Module() {
       }
       if (service?.nextRoutineBoundaryAt != null && service.nextRoutineBoundaryAt!! > 0L) {
         result["nextRoutineBoundaryAt"] = service.nextRoutineBoundaryAt!!.toDouble()
+      }
+      if (service?.nextMidnightRolloverAt != null && service.nextMidnightRolloverAt!! > 0L) {
+        result["nextMidnightRolloverAt"] = service.nextMidnightRolloverAt!!.toDouble()
       }
       if (service?.nearestCooldownExpiryAt != null && service.nearestCooldownExpiryAt!! > 0L) {
         result["nearestCooldownExpiryAt"] = service.nearestCooldownExpiryAt!!.toDouble()

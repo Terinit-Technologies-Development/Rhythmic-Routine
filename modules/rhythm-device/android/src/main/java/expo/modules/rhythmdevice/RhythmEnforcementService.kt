@@ -37,6 +37,7 @@ class RhythmEnforcementService : AccessibilityService() {
     private var cooldownExpiryRunnable: Runnable? = null
 
     var lastForegroundPackage: String? = null; private set
+    private var lastForegroundEventAt: Long = 0L
     var lastInterventionPackage: String? = null; private set
     var lastInterventionAt: Long = 0L; private set
     var activeUsageGroup: String? = null; private set
@@ -44,6 +45,7 @@ class RhythmEnforcementService : AccessibilityService() {
     var activeUsageStartedAt: Long? = null; private set
     var allowanceDeadlineAt: Long? = null; private set
     var nextRoutineBoundaryAt: Long? = null; private set
+    var nextMidnightRolloverAt: Long? = null; private set
     var nearestCooldownExpiryAt: Long? = null; private set
     var lastUsageReconciledAt: Long = 0L; private set
 
@@ -56,6 +58,8 @@ class RhythmEnforcementService : AccessibilityService() {
         loadActiveLeases(applicationContext).forEach { scheduleLeaseExpiry(it) }
         reconcileUsage()
         rolloverIfNeeded(System.currentTimeMillis())
+        pruneExpiredCooldowns(System.currentTimeMillis())
+        scheduleMidnightRollover(System.currentTimeMillis())
         scheduleNearestCooldownExpiry()
         scheduleNextRoutineBoundary()
         restoreForegroundStateAfterReconnect()
@@ -74,11 +78,13 @@ class RhythmEnforcementService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val packageName = event.packageName?.toString() ?: return
-        val now = System.currentTimeMillis()
+        val now = event.eventTime.takeIf { it > 0L } ?: System.currentTimeMillis()
+        if (now < lastForegroundEventAt) return
+        lastForegroundEventAt = now
         if (packageName == applicationContext.packageName || packageName.startsWith("com.android.systemui")) {
             lastForegroundPackage?.let { if (it == activeUsagePackage) activeUsageGroup?.let { group -> finalizeActiveGroupSegment(group, now) } }
             lastForegroundPackage = packageName
-            cancelAllowanceDeadline(); cancelMidnightRollover()
+            cancelAllowanceDeadline()
             return
         }
         if (packageName == lastForegroundPackage) return
@@ -86,7 +92,7 @@ class RhythmEnforcementService : AccessibilityService() {
         val previousPackage = activeUsagePackage
         lastForegroundPackage = packageName
         if (previousGroup != null && previousPackage != null) finalizeActiveGroupSegment(previousGroup, now)
-        cancelAllowanceDeadline(); cancelMidnightRollover()
+        cancelAllowanceDeadline()
         pruneExpiredLeases(applicationContext, now)
         pruneExpiredCooldowns(now)
         val policy = findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), packageName)
@@ -144,7 +150,7 @@ class RhythmEnforcementService : AccessibilityService() {
         saveCooldownPolicies(applicationContext, cooldowns)
         activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null
         scheduleNearestCooldownExpiry(now)
-        if (!hasActiveAccessLease(applicationContext, foregroundPackage, now)) presentIntervention(foregroundPackage, policy, endsAt)
+        if (lastForegroundPackage == foregroundPackage && !hasActiveAccessLease(applicationContext, foregroundPackage, now)) presentIntervention(foregroundPackage, policy, endsAt)
         Log.i(TAG, "Risk group exhausted: ${policy.groupId}; cooldown ends $endsAt")
     }
 
@@ -172,11 +178,12 @@ class RhythmEnforcementService : AccessibilityService() {
     private fun scheduleMidnightRollover(now: Long) {
         cancelMidnightRollover()
         val next = getNextLocalMidnight(now)
+        nextMidnightRolloverAt = next
         val callback = Runnable { onMidnightRolloverFired(next) }
         midnightRolloverRunnable = callback
         handler.postDelayed(callback, maxOf(0L, next - now))
     }
-    private fun cancelMidnightRollover() { midnightRolloverRunnable?.let { handler.removeCallbacks(it) }; midnightRolloverRunnable = null }
+    private fun cancelMidnightRollover() { midnightRolloverRunnable?.let { handler.removeCallbacks(it) }; midnightRolloverRunnable = null; nextMidnightRolloverAt = null }
 
     private fun rolloverIfNeeded(now: Long) {
         val ledger = loadGroupUsageLedger(applicationContext)
@@ -197,15 +204,51 @@ class RhythmEnforcementService : AccessibilityService() {
         val cooldowns = loadCooldownPolicies(applicationContext).filterNot { cooldown -> cooldown.packageNames.all { isProtectedByRoutine(applicationContext, it, now) } }
         saveCooldownPolicies(applicationContext, cooldowns)
         cancelAllowanceDeadline()
+        val rolloverPackage = activeUsagePackage
+        activeUsageGroup = null
+        activeUsagePackage = null
+        activeUsageStartedAt = null
         val foreground = lastForegroundPackage
         val policy = foreground?.let { findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), it) }
-        if (foreground != null && policy != null && !isEffectivelyRestricted(applicationContext, foreground, now)) startGroupUsage(policy, foreground, now)
+        if (foreground != null && policy != null && rolloverPackage != null && !isEffectivelyRestricted(applicationContext, foreground, now)) startGroupUsage(policy, foreground, midnight)
         scheduleMidnightRollover(now + 1000L)
     }
 
-    private fun scheduleNextRoutineBoundary(now: Long = System.currentTimeMillis()) { cancelRoutineBoundary(); val next = getNextLocalMidnight(now); nextRoutineBoundaryAt = next; val r = Runnable { onRoutineBoundaryFired() }; routineBoundaryRunnable = r; handler.postDelayed(r, maxOf(0L, next - now)) }
+    private fun scheduleNextRoutineBoundary(now: Long = System.currentTimeMillis()) {
+        cancelRoutineBoundary()
+        val schedule = loadRoutineSchedule(applicationContext)
+        val calendar = Calendar.getInstance().apply { timeInMillis = now }
+        val currentMinutes = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
+        val targets = mutableSetOf<Int>(1440)
+        schedule.windows.filter { it.enabled }.forEach { window ->
+            parseTime(window.startTime).takeIf { it > currentMinutes }?.let { targets += it }
+            parseTime(window.endTime).takeIf { it > currentMinutes }?.let { targets += it }
+        }
+        val target = targets.minOrNull() ?: 1440
+        val boundary = if (target >= 1440) getNextLocalMidnight(now) else Calendar.getInstance().apply {
+            timeInMillis = now; set(Calendar.HOUR_OF_DAY, target / 60); set(Calendar.MINUTE, target % 60); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        nextRoutineBoundaryAt = boundary
+        val r = Runnable { onRoutineBoundaryFired() }
+        routineBoundaryRunnable = r
+        handler.postDelayed(r, maxOf(0L, boundary - now))
+    }
     private fun cancelRoutineBoundary() { routineBoundaryRunnable?.let { handler.removeCallbacks(it) }; routineBoundaryRunnable = null; nextRoutineBoundaryAt = null }
-    private fun onRoutineBoundaryFired() { val now = System.currentTimeMillis(); lastForegroundPackage?.let { if (isEffectivelyRestricted(applicationContext, it, now)) presentIntervention(it, findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), it), loadCooldownForPackage(it, now)?.endsAt) }; scheduleNextRoutineBoundary(now + 1000L) }
+    private fun onRoutineBoundaryFired() {
+        val now = System.currentTimeMillis()
+        rolloverIfNeeded(now)
+        lastForegroundPackage?.let { packageName ->
+            val policy = findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), packageName)
+            if (isEffectivelyRestricted(applicationContext, packageName, now)) {
+                activeUsageGroup?.let { finalizeActiveGroupSegment(it, now) }
+                cancelAllowanceDeadline()
+                presentIntervention(packageName, policy, loadCooldownForPackage(packageName, now)?.endsAt)
+            } else if (policy != null && !isRestrictedByCooldown(applicationContext, packageName, now)) {
+                if (activeUsageGroup == null) startGroupUsage(policy, packageName, now)
+            }
+        }
+        scheduleNextRoutineBoundary(now + 1000L)
+    }
 
     private fun scheduleNearestCooldownExpiry(now: Long = System.currentTimeMillis()) { cancelCooldownExpiry(); val active = loadCooldownPolicies(applicationContext).filter { it.endsAt > now }; if (active.isEmpty()) return; val nearest = active.minOf { it.endsAt }; nearestCooldownExpiryAt = nearest; val r = Runnable { onCooldownExpiryFired() }; cooldownExpiryRunnable = r; handler.postDelayed(r, maxOf(0L, nearest - now)) }
     private fun cancelCooldownExpiry() { cooldownExpiryRunnable?.let { handler.removeCallbacks(it) }; cooldownExpiryRunnable = null; nearestCooldownExpiryAt = null }
@@ -243,7 +286,21 @@ class RhythmEnforcementService : AccessibilityService() {
 
     fun onBaseRestrictionsChanged() = recheckForeground()
     fun resolveRecentForegroundPackage(): String? = resolveCurrentForegroundPackage(applicationContext)
-    fun onRiskGroupPoliciesChanged() { rolloverIfNeeded(System.currentTimeMillis()); recheckForeground() }
+    fun onRiskGroupPoliciesChanged() {
+        val now = System.currentTimeMillis()
+        activeUsageGroup?.let { finalizeActiveGroupSegment(it, now) }
+        cancelAllowanceDeadline()
+        rolloverIfNeeded(now)
+        scheduleMidnightRollover(now)
+        scheduleNextRoutineBoundary(now)
+        val foreground = lastForegroundPackage ?: resolveRecentForegroundPackage() ?: return
+        val policy = findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), foreground)
+        if (isEffectivelyRestricted(applicationContext, foreground, now)) {
+            presentIntervention(foreground, policy, loadCooldownForPackage(foreground, now)?.endsAt)
+        } else if (policy != null && !isRestrictedByCooldown(applicationContext, foreground, now)) {
+            startGroupUsage(policy, foreground, now)
+        }
+    }
     fun onCooldownPoliciesChanged() { scheduleNearestCooldownExpiry(); recheckForeground() }
     fun onRoutineScheduleChanged() { scheduleNextRoutineBoundary(); recheckForeground() }
     private fun recheckForeground() { val now = System.currentTimeMillis(); lastForegroundPackage?.let { if (isEffectivelyRestricted(applicationContext, it, now)) presentIntervention(it, findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), it), loadCooldownForPackage(it, now)?.endsAt) } }
@@ -257,16 +314,30 @@ class RhythmEnforcementService : AccessibilityService() {
             if (from >= toTime) return
             val policies = loadRiskGroupPolicies(applicationContext); val byPackage = policies.flatMap { p -> p.packageNames.map { it to p } }.toMap()
             val events = manager.queryEvents(from, toTime); val transitions = mutableListOf<UsageTransition>(); val ev = UsageEvents.Event()
-            while (events.hasNextEvent()) { events.getNextEvent(ev); val p = byPackage[ev.packageName] ?: continue; val fg = ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED || ev.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND; val bg = ev.eventType == UsageEvents.Event.ACTIVITY_PAUSED || ev.eventType == UsageEvents.Event.ACTIVITY_STOPPED || ev.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND; if (fg || bg) transitions += UsageTransition(ev.packageName, ev.timeStamp, fg) }
+            while (events.hasNextEvent()) { events.getNextEvent(ev); if (byPackage[ev.packageName] == null) continue; val fg = ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED || ev.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND; val bg = ev.eventType == UsageEvents.Event.ACTIVITY_PAUSED || ev.eventType == UsageEvents.Event.ACTIVITY_STOPPED || ev.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND; if (fg || bg) transitions += UsageTransition(ev.packageName, ev.timeStamp, fg) }
             val ledger = loadGroupUsageLedger(applicationContext).toMutableMap(); val watermarks = loadAccountedWatermarks(applicationContext).toMutableMap()
             for (policy in policies) {
-                var start: Long? = null; var delta = 0L
-                transitions.filter { it.packageName in policy.packageNames }.sortedBy { it.timestamp }.forEach { t -> if (t.foreground) start = t.timestamp else if (start != null) { val watermark = watermarks[policy.groupId] ?: 0L; delta += maxOf(0L, t.timestamp - maxOf(start!!, watermark, getLocalMidnight(toTime))); start = null } }
-                if (start != null && policy.groupId != activeUsageGroup) delta += maxOf(0L, toTime - maxOf(start!!, watermarks[policy.groupId] ?: 0L, getLocalMidnight(toTime)))
+                val watermark = watermarks[policy.groupId] ?: 0L; var activePackage: String? = null; var start: Long? = null; var delta = 0L
+                transitions.filter { it.packageName in policy.packageNames }.sortedBy { it.timestamp }.forEach { t ->
+                    if (t.foreground) {
+                        if (activePackage != null && activePackage != t.packageName && start != null) delta += maxOf(0L, t.timestamp - maxOf(start!!, watermark, getLocalMidnight(toTime)))
+                        if (activePackage != t.packageName) { activePackage = t.packageName; start = t.timestamp }
+                    } else if (activePackage == t.packageName && start != null) {
+                        delta += maxOf(0L, t.timestamp - maxOf(start!!, watermark, getLocalMidnight(toTime))); activePackage = null; start = null
+                    }
+                }
+                if (start != null && policy.groupId != activeUsageGroup) delta += maxOf(0L, toTime - maxOf(start!!, watermark, getLocalMidnight(toTime)))
                 if (delta > 0L) { val current = ledger[policy.groupId]?.takeIf { it.dateKey == getLocalDateKey(toTime) } ?: NativeGroupAllowanceUsage(policy.groupId, getLocalDateKey(toTime), 0L, null, null, null, 0L); ledger[policy.groupId] = current.copy(usedMillis = current.usedMillis + delta); }
                 watermarks[policy.groupId] = maxOf(watermarks[policy.groupId] ?: 0L, toTime)
             }
             saveGroupUsageLedger(applicationContext, ledger); saveAccountedWatermarks(applicationContext, watermarks)
+            policies.forEach { policy ->
+                val usage = ledger[policy.groupId]
+                val exhausted = usage?.dateKey == getLocalDateKey(toTime) && (usage.exhaustedAt != null || usage.usedMillis >= policy.allowanceMinutes * 60_000L || policy.allowanceMinutes == 0)
+                if (exhausted && loadCooldownPolicies(applicationContext).none { it.groupId == policy.groupId && it.endsAt > toTime }) {
+                    exhaustGroup(policy, lastForegroundPackage ?: policy.packageNames.firstOrNull().orEmpty(), toTime)
+                }
+            }
             prefs.edit().putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime).apply(); lastUsageReconciledAt = toTime
         } catch (e: Exception) { Log.w(TAG, "bounded UsageStats reconciliation failed", e) }
     }
@@ -285,6 +356,18 @@ class RhythmEnforcementService : AccessibilityService() {
         fun hasActiveAccessLease(context: Context, packageName: String, now: Long = System.currentTimeMillis()) = loadActiveLeases(context, now).any { packageName in it.packageNames && it.endsAt > now }
         fun loadActiveLeases(context: Context, now: Long = System.currentTimeMillis()): List<NativeAccessLease> { val json = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null) ?: return emptyList(); val out = mutableListOf<NativeAccessLease>(); try { val a = JSONArray(json); for (i in 0 until a.length()) { val o = a.getJSONObject(i); val end = o.optLong("endsAt"); if (end > now) out += NativeAccessLease(o.optString("groupId"), jsonStrings(o.optJSONArray("packageNames")), end) } } catch (_: Exception) {} ; return out }
         fun saveLeases(context: Context, leases: List<NativeAccessLease>) { val a = JSONArray(); leases.forEach { l -> a.put(JSONObject().apply { put("groupId", l.groupId); put("endsAt", l.endsAt); put("packageNames", JSONArray(l.packageNames.toList())) }) }; context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).edit().putString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, a.toString()).apply() }
+        fun parseAndPruneLeases(json: String, now: Long): Pair<List<NativeAccessLease>, Boolean> {
+            val active = mutableListOf<NativeAccessLease>(); var expired = false
+            try {
+                val array = JSONArray(json)
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val endsAt = item.optLong("endsAt", 0L)
+                    if (endsAt > now) active += NativeAccessLease(item.optString("groupId"), jsonStrings(item.optJSONArray("packageNames")), endsAt) else expired = true
+                }
+            } catch (_: Exception) { expired = true }
+            return active to expired
+        }
         fun pruneExpiredLeases(context: Context, now: Long = System.currentTimeMillis()) = saveLeases(context, loadActiveLeases(context, now))
         fun loadRiskGroupPolicies(context: Context): List<NativeRiskGroupPolicy> { val json = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).getString(RhythmNativePolicyKeys.RISK_GROUP_POLICIES_JSON, null) ?: return emptyList(); val out = mutableListOf<NativeRiskGroupPolicy>(); try { val a = JSONArray(json); for (i in 0 until a.length()) { val o = a.getJSONObject(i); val activity = o.optJSONObject("recoveryActivity"); out += NativeRiskGroupPolicy(o.optString("groupId"), o.optString("groupName"), jsonStrings(o.optJSONArray("packageNames")), maxOf(0, o.optInt("allowanceMinutes", 30)), maxOf(0, o.optInt("cooldownMinutes", 0)), NativeRecoveryActivity(activity?.optString("id", "walk") ?: "walk", activity?.optString("title", "Take a short walk") ?: "Take a short walk", activity?.optString("subtitle", "Fresh air. Clear mind.") ?: "Fresh air. Clear mind.", activity?.optString("iconEmoji", "walk") ?: "walk", activity?.optString("durationSuggestion", null))) } } catch (_: Exception) {} ; return out }
         fun saveRiskGroupPolicies(context: Context, policies: List<NativeRiskGroupPolicy>) { val a = JSONArray(); policies.forEach { p -> a.put(JSONObject().apply { put("groupId", p.groupId); put("groupName", p.groupName); put("packageNames", JSONArray(p.packageNames.toList())); put("allowanceMinutes", p.allowanceMinutes); put("cooldownMinutes", p.cooldownMinutes); put("recoveryActivity", JSONObject().apply { put("id", p.recoveryActivity.id); put("title", p.recoveryActivity.title); put("subtitle", p.recoveryActivity.subtitle); put("iconEmoji", p.recoveryActivity.iconEmoji); p.recoveryActivity.durationSuggestion?.let { put("durationSuggestion", it) } }) }) }; context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).edit().putString(RhythmNativePolicyKeys.RISK_GROUP_POLICIES_JSON, a.toString()).apply() }
@@ -350,5 +433,16 @@ class RhythmEnforcementService : AccessibilityService() {
 
     private fun advanceWatermark(groupId: String, timestamp: Long) { val m = loadAccountedWatermarks(applicationContext).toMutableMap(); m[groupId] = maxOf(m[groupId] ?: 0L, timestamp); saveAccountedWatermarks(applicationContext, m) }
     private fun loadCooldownForPackage(packageName: String, now: Long) = loadCooldownPolicies(applicationContext).firstOrNull { packageName in it.packageNames && it.endsAt > now }
-    private fun pruneExpiredCooldowns(now: Long) { saveCooldownPolicies(applicationContext, loadCooldownPolicies(applicationContext).filter { it.endsAt > now }) }
+    fun pruneExpiredCooldowns(now: Long) {
+        val current = loadCooldownPolicies(applicationContext)
+        val expired = current.filter { it.endsAt <= now }
+        if (expired.isEmpty()) return
+        val ledger = loadGroupUsageLedger(applicationContext).toMutableMap()
+        expired.forEach { cooldown ->
+            val previous = ledger[cooldown.groupId]
+            ledger[cooldown.groupId] = NativeGroupAllowanceUsage(cooldown.groupId, getLocalDateKey(now), 0L, null, null, null, (previous?.cycleRevision ?: 0L) + 1L)
+        }
+        saveGroupUsageLedger(applicationContext, ledger)
+        saveCooldownPolicies(applicationContext, current.filter { it.endsAt > now })
+    }
 }

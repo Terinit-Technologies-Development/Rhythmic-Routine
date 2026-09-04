@@ -215,6 +215,15 @@ export class RhythmCoordinator {
         if (usageSnapshot?.length > 0) {
           const currentGroupUsage = { ...(this.engine.getGroupAllowanceUsage() || {}) };
           for (const group of usageSnapshot) {
+            if (group.cooldownEndsAt && group.cooldownEndsAt > now) {
+              const cooldownEffects = this.engine.dispatch({
+                type: 'NATIVE_COOLDOWN_RESTORED',
+                groupId: group.groupId,
+                endsAt: group.cooldownEndsAt,
+                timestamp: now,
+              });
+              await this.executeEffects(cooldownEffects);
+            }
             currentGroupUsage[group.groupId] = {
               groupId: group.groupId,
               dateKey: group.dateKey,

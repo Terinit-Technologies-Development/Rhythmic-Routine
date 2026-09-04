@@ -228,7 +228,9 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               const grp = config.riskGroups.find((g) => g.id === gid);
               return {
                 groupId: gid,
-                packageNames: (grp?.appIds || []).slice().sort(),
+                packageNames: (grp?.appIds || [])
+                  .filter((id) => config.apps.some((app) => app.id === id && app.classification === 'risk'))
+                  .sort(),
                 endsAt: cd.endsAt,
               };
             })

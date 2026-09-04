@@ -48,10 +48,16 @@ describe('Pass 02 native Risk Group lifecycle contract', () => {
     assert.match(service, /data class NativeGroupAllowanceUsage/);
     assert.match(service, /exhaustGroup\(/);
     assert.match(service, /EXTRA_ACTIVITY_TITLE/);
+    assert.match(service, /scheduleNextRoutineBoundary/);
+    assert.match(service, /parseTime\(window\.startTime\)/);
+    assert.match(service, /nextMidnightRolloverAt/);
+    assert.match(service, /saveGroupUsageLedger\(applicationContext, ledger\)[\s\S]*saveCooldownPolicies/);
+    assert.match(service, /parseAndPruneLeases/);
     assert.doesNotMatch(service, /NativeDailyAllowancePolicy|DAILY_USAGE_LEDGER_JSON/);
     assert.match(module, /AsyncFunction\("setRiskGroupPolicies"/);
     assert.match(module, /AsyncFunction\("getGroupAllowanceSnapshot"/);
     assert.match(module, /AsyncFunction\("reconcileGroupUsage"/);
+    assert.match(module, /values\.maxOf \{ it\.endsAt \}/);
     assert.doesNotMatch(module, /setDailyAllowancePolicies|getDailyUsageSnapshot/);
   });
 });

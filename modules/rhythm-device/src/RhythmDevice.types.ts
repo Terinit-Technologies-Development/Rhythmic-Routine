@@ -119,6 +119,7 @@ export interface NativeEnforcementDiagnostics {
   activeUsageStartedAt?: number;
   allowanceDeadlineAt?: number;
   nextRoutineBoundaryAt?: number;
+  nextMidnightRolloverAt?: number;
   dailyUsageAppCount?: number;
   lastUsageReconciledAt?: number;
   lastUsageAccountedAt?: number;
