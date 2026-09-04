@@ -78,6 +78,7 @@ export interface NativeGroupAllowanceSnapshot {
   activePackageName?: string;
   activeSegmentStartedAt?: number;
   exhaustedAt?: number;
+  cooldownEndsAt?: number;
   cycleRevision: number;
 }
 
