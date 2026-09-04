@@ -3,8 +3,6 @@ import {
   MonitoringDiagnostics,
   MonitoringSyncResult,
   NativeAppInfo,
-  NativeDailyAllowancePolicyInput,
-  NativeDailyUsageSnapshot,
   NativeEnforcementDiagnostics,
   NativeGroupAllowanceSnapshot,
   NativePermissionStatus,
@@ -52,20 +50,12 @@ export const FallbackModule = {
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
-  setDailyAllowancePolicies: async (_policies: NativeDailyAllowancePolicyInput[]): Promise<boolean> => true,
-  /** v1.0.2 (Pass 02): group allowance policies supersede per-package policies. */
   setRiskGroupPolicies: async (_policies: NativeRiskGroupPolicyInput[]): Promise<boolean> => true,
+  getGroupUsageSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   getGroupAllowanceSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
+  reconcileGroupUsage: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => true,
   setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => true,
-  getDailyUsageSnapshot: async (): Promise<NativeDailyUsageSnapshot> => ({
-    dateKey: '',
-    apps: [],
-  }),
-  reconcileDailyUsage: async (): Promise<NativeDailyUsageSnapshot> => ({
-    dateKey: '',
-    apps: [],
-  }),
   getEnforcementDiagnostics: async (): Promise<NativeEnforcementDiagnostics> => ({
     serviceRunning: false,
     baseRestrictedPackageCount: 0,

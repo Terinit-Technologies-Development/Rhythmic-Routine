@@ -51,31 +51,6 @@ export interface MonitoringDiagnostics {
   lastError: string;
 }
 
-export interface NativeDailyAppSnapshot {
-  packageName: string;
-  usedSeconds: number;
-  allowanceMinutes: number;
-  remainingSeconds: number;
-  exhausted: boolean;
-  activeSegmentStartedAt?: number;
-}
-
-export interface NativeDailyUsageSnapshot {
-  dateKey: string;
-  apps: NativeDailyAppSnapshot[];
-  lastReconciledAt?: number;
-}
-
-export interface NativeDailyAllowancePolicyInput {
-  packageName: string;
-  allowanceMinutes: number;
-}
-
-/**
- * v1.0.2 conceptual contract (types only): one shared allowance policy per
- * Risk Group for background-safe enforcement. Pass 02 owns native wiring;
- * setDailyAllowancePolicies remains the active bridge until then.
- */
 export interface NativeRecoveryActivity {
   id: string;
   title: string;
@@ -102,6 +77,8 @@ export interface NativeGroupAllowanceSnapshot {
   exhausted: boolean;
   activePackageName?: string;
   activeSegmentStartedAt?: number;
+  exhaustedAt?: number;
+  cycleRevision: number;
 }
 
 export interface NativeCooldownPolicyInput {
@@ -136,6 +113,8 @@ export interface NativeEnforcementDiagnostics {
   lastInterventionPackage?: string;
   lastInterventionAt?: number;
   overlayVisible: boolean;
+  activeGroupId?: string;
+  activeGroupUsageStartedAt?: number;
   activeUsagePackage?: string;
   activeUsageStartedAt?: number;
   allowanceDeadlineAt?: number;
