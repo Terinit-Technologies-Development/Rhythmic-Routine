@@ -20,6 +20,8 @@ import {
 import { DeviceApp, GroupAllowanceUsage, RiskGroup } from '../../../types/domain';
 import { computeEffectiveRestrictions } from '../restrictions';
 import { computeUnsuppressedBaseRestrictedAppIds } from '../nativePolicy';
+import { processRhythmEvent } from '../events';
+import type { RhythmConfiguration, RhythmRuntime } from '../types';
 import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { bootstrapRhythm } from '../../../application/bootstrapRhythm';
 import { MockStorageProvider } from '../../../platform/storage/MockStorageProvider';
@@ -725,6 +727,108 @@ describe('Pass 01 (v1.0.2) — Group Allowance Domain & Migration', () => {
         { isOvernight: false, groupAllowanceUsage: exhaustedGroupUsage }
       );
       assert.ok(!res.effectiveAppIds.includes('phone'));
+    });
+
+    it('reducer never emits per-app allowance-exhausted history nor mutates per-app exhaustion', () => {
+      const eventTime = new Date(2026, 8, 2, 14, 0, 0).getTime();
+      const dayKey = getLocalDateKey(eventTime);
+      const config: RhythmConfiguration = {
+        routineWindows: [],
+        riskGroups: [makeGroup({ appIds: ['instagram', 'x'] })],
+        apps: memberApps.filter((a) => a.id === 'instagram' || a.id === 'x'),
+      };
+      const baseRuntime: RhythmRuntime = {
+        state: 'available',
+        activeCooldowns: {},
+        activeAccessLeases: {},
+        activeRoutineWindowIds: [],
+        activeRestrictions: [],
+        // Stale/high per-app ledger: instagram looks exhausted per-app (30m).
+        dailyAppUsage: {
+          instagram: { appId: 'instagram', dateKey: dayKey, usedSeconds: 30 * 60 },
+          x: { appId: 'x', dateKey: dayKey, usedSeconds: 60 },
+        },
+        // ...while the shared group ledger still has 20 of 30 minutes left.
+        groupAllowanceUsage: {
+          social: makeUsage({ dateKey: dayKey, usedSeconds: 10 * 60 }),
+        },
+      };
+
+      const { nextRuntime, effects } = processRhythmEvent(baseRuntime, {
+        type: 'RECONCILE',
+        timestamp: eventTime,
+      }, config);
+
+      const historyEvents = effects
+        .filter((e) => e.type === 'RECORD_HISTORY')
+        .map((e) => (e as { event: { type: string } }).event);
+      assert.ok(
+        historyEvents.every((e) => e.type !== 'daily-allowance-exhausted'),
+        'No per-app allowance-exhausted history may be emitted'
+      );
+      assert.equal(
+        nextRuntime.dailyAppUsage?.['instagram']?.exhaustedAt,
+        undefined,
+        'Stale per-app ledger must not gain an exhaustion marker'
+      );
+      assert.deepEqual(
+        nextRuntime.activeRestrictions.map((r) => r.appId),
+        [],
+        'Stale per-app ledger must not restrict anyone'
+      );
+    });
+
+    it('group exhaustion emits exactly one group-allowance-exhausted event', () => {
+      const eventTime = new Date(2026, 8, 2, 14, 0, 0).getTime();
+      const dayKey = getLocalDateKey(eventTime);
+      const config: RhythmConfiguration = {
+        routineWindows: [],
+        riskGroups: [makeGroup({ appIds: ['instagram', 'x'] })],
+        apps: memberApps.filter((a) => a.id === 'instagram' || a.id === 'x'),
+      };
+      const exhaustedRuntime: RhythmRuntime = {
+        state: 'available',
+        activeCooldowns: {},
+        activeAccessLeases: {},
+        activeRoutineWindowIds: [],
+        activeRestrictions: [],
+        dailyAppUsage: {
+          instagram: { appId: 'instagram', dateKey: dayKey, usedSeconds: 30 * 60 },
+        },
+        groupAllowanceUsage: {
+          social: makeUsage({ dateKey: dayKey, usedSeconds: 30 * 60 }),
+        },
+      };
+
+      const first = processRhythmEvent(exhaustedRuntime, {
+        type: 'RECONCILE',
+        timestamp: eventTime,
+      }, config);
+      const firstHistory = first.effects
+        .filter((e) => e.type === 'RECORD_HISTORY')
+        .map((e) => (e as { event: { type: string } }).event);
+      assert.equal(
+        firstHistory.filter((e) => e.type === 'group-allowance-exhausted').length,
+        1,
+        'Exactly one group exhaustion event'
+      );
+      assert.ok(
+        firstHistory.every((e) => e.type !== 'daily-allowance-exhausted'),
+        'No per-app allowance-exhausted history alongside group exhaustion'
+      );
+
+      // A second reconcile must not re-emit: exhaustion is recorded once.
+      const second = processRhythmEvent(first.nextRuntime, {
+        type: 'RECONCILE',
+        timestamp: eventTime + 1000,
+      }, config);
+      const secondHistory = second.effects
+        .filter((e) => e.type === 'RECORD_HISTORY')
+        .map((e) => (e as { event: { type: string } }).event);
+      assert.equal(
+        secondHistory.filter((e) => e.type === 'group-allowance-exhausted').length,
+        0
+      );
     });
   });
 

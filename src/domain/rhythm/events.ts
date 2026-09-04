@@ -31,7 +31,6 @@ import {
 } from './restrictions';
 import {
   getLocalDateKey,
-  isDailyAllowanceExhausted,
   isGroupAllowanceExhausted,
   rolloverDailyAppUsage,
   rolloverGroupAllowanceUsage,
@@ -550,27 +549,10 @@ export function processRhythmEvent(
     }
   }
 
-  // Observational per-app exhaustion history (NOT restriction authority).
-  // Retained so Insights can still break observed usage down per app for
-  // analytics. Restriction decisions consult only the group ledger above.
-  for (const app of config.apps) {
-    if (app.classification === 'risk') {
-      const usage = nextDailyAppUsage[app.id];
-      if (usage && isDailyAllowanceExhausted(app, nextDailyAppUsage, nowMs)) {
-        if (!usage.exhaustedAt) {
-          usage.exhaustedAt = nowMs;
-          effects.push({
-            type: 'RECORD_HISTORY',
-            event: {
-              type: 'daily-allowance-exhausted',
-              appId: app.id,
-              timestamp: nowMs,
-            },
-          });
-        }
-      }
-    }
-  }
+  // v1.0.2: per-app usage remains raw observation only (rollover/segments/
+  // sync above). It is never interpreted as an app allowance/exhaustion and
+  // never emits per-app allowance-exhausted history: individual apps own no
+  // allowance. Only the shared group ledger above produces exhaustion history.
 
   // 5. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
