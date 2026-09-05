@@ -132,6 +132,7 @@ interface PrototypeState {
 
   // Daily usage & Insights State
   dailyUsageSnapshot?: DailyUsageSnapshot;
+  groupUsageSnapshots?: Record<string, import('../types/domain').GroupAllowanceSnapshot>;
   dailyUsageLoading: boolean;
   dailyUsageError?: string;
   insightDataState: InsightDataState;
@@ -224,6 +225,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   weeklySummary: undefined,
   todaySummary: undefined,
   dailyUsageSnapshot: undefined,
+  groupUsageSnapshots: undefined,
   dailyUsageLoading: false,
   dailyUsageError: undefined,
   insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',
@@ -305,32 +307,40 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
 
     try {
+      let groupSnapshotsMap: Record<string, import('../types/domain').GroupAllowanceSnapshot> | undefined;
+      const nativeGroupSnapshots =
+        (await usage.reconcileGroupUsage?.()) ??
+        (await usage.getGroupUsageSnapshot?.());
+
+      if (nativeGroupSnapshots && nativeGroupSnapshots.length > 0) {
+        groupSnapshotsMap = {};
+        for (const s of nativeGroupSnapshots) {
+          groupSnapshotsMap[s.groupId] = s;
+        }
+      }
+
       const snapshot =
         (await usage.reconcileDailyUsage?.()) ??
         (await usage.getDailyUsageSnapshot?.());
 
-      if (!snapshot) {
-        set({
-          dailyUsageSnapshot: undefined,
-          dailyUsageLoading: false,
-        });
-        return;
-      }
-
       const currentApps = get().apps;
-      const hydratedApps = hydrateAppsWithDailyUsage(currentApps, snapshot);
+      const hydratedApps = snapshot ? hydrateAppsWithDailyUsage(currentApps, snapshot) : currentApps;
 
       set({
         apps: hydratedApps,
-        dailyUsageSnapshot: snapshot,
+        dailyUsageSnapshot: snapshot ?? undefined,
+        groupUsageSnapshots: groupSnapshotsMap,
         dailyUsageLoading: false,
         dailyUsageError: undefined,
       });
     } catch {
+      // Invariant 4: A failed native snapshot refresh does NOT clear native cooldown.
+      // Show `Usage unavailable` and recover on a later refresh.
       set({
         dailyUsageLoading: false,
         dailyUsageError: 'Usage unavailable',
         dailyUsageSnapshot: undefined,
+        groupUsageSnapshots: undefined,
       });
     }
   },
@@ -612,6 +622,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       weeklySummary: undefined,
       todaySummary: undefined,
       dailyUsageSnapshot: undefined,
+      groupUsageSnapshots: undefined,
       dailyUsageLoading: false,
       dailyUsageError: undefined,
       insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',

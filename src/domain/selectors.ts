@@ -1,4 +1,5 @@
 import { DeviceApp, RiskGroup, RoutineWindow } from '../types/domain';
+export { getRiskGroupStatus, RiskGroupStatus } from './rhythm/allowance';
 
 /**
  * Finds a routine window by type.

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,9 @@ import {
 import { XLogoIcon } from '../../src/components/BrandIcons';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
+import { resolveGroupAllowanceMinutes } from '../../src/domain/rhythm/allowance';
+import { getLocalDateKey } from '../../src/domain/insights';
+import { useNow } from '../../src/domain/timer';
 import Svg, { Path, Circle } from 'react-native-svg';
 
 export default function RiskGroupDetailScreen() {
@@ -36,15 +39,42 @@ export default function RiskGroupDetailScreen() {
 
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const updateRiskGroup = usePrototypeStore((s) => s.updateRiskGroup);
+  const updateRiskGroupAllowance = usePrototypeStore((s) => s.updateRiskGroupAllowance);
+  const updateRiskGroupRecoveryActivity = usePrototypeStore((s) => s.updateRiskGroupRecoveryActivity);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const toggleGroupProtection = usePrototypeStore((s) => s.toggleGroupProtection);
   const apps = usePrototypeStore((s) => s.apps);
+  const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
+  const groupSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
+  const rhythmState = usePrototypeStore((s) => s.rhythmState);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
   const selectIosRiskGroupApps = usePrototypeStore((s) => s.selectIosRiskGroupApps);
 
   const group = riskGroups.find((g) => g.id === id) || riskGroups[0];
+  const now = useNow();
 
-  const sessionThresholds = [15, 30, 45, 60];
+  const currentAllowanceMinutes = resolveGroupAllowanceMinutes(group);
+  const [draftAllowanceMinutes, setDraftAllowanceMinutes] = useState<number | null>(null);
+  const [allowanceError, setAllowanceError] = useState<string | null>(null);
+
+  const displayedAllowanceMinutes = draftAllowanceMinutes ?? currentAllowanceMinutes;
+
+  const isAllowanceEditLocked = group.lastAllowanceEditedDateKey === getLocalDateKey();
+
+  const snapshot = groupSnapshots?.[group.id];
+  const cooldownEndsAt =
+    snapshot?.cooldownEndsAt ??
+    (activeRiskGroupId === group.id && rhythmState === 'cooldown' ? activeTimerEndsAt : undefined);
+  const coolingDown = Boolean(cooldownEndsAt && cooldownEndsAt > now);
+  const usedMinutes = snapshot ? Math.floor(snapshot.usedSeconds / 60) : 0;
+  const remainingMinutes = snapshot
+    ? Math.ceil(snapshot.remainingSeconds / 60)
+    : Math.max(0, currentAllowanceMinutes - usedMinutes);
+  const isUsageUnavailable = Boolean(dailyUsageError);
+
   const cooldownOptions = [30, 60, 90, 120, 180];
 
   const morningWin = routineWindows.find((w) => w.type === 'morning-buffer');
@@ -55,22 +85,20 @@ export default function RiskGroupDetailScreen() {
 
   const memberApps = apps.filter((a) => group.appIds.includes(a.id));
 
-  const handleAdjustSession = (delta: number) => {
-    // Compile-only v1.0.2 compat: legacy threshold falls back to group allowance.
-    const currentThreshold = group.sessionThresholdMinutes ?? group.allowanceMinutes ?? 30;
-    const currentIndex = sessionThresholds.indexOf(currentThreshold);
-    if (currentIndex !== -1) {
-      const nextIndex = Math.max(
-        0,
-        Math.min(sessionThresholds.length - 1, currentIndex + delta)
-      );
-      updateRiskGroup(group.id, {
-        sessionThresholdMinutes: sessionThresholds[nextIndex],
-      });
+  const handleSaveAllowance = async () => {
+    setAllowanceError(null);
+    const res = await updateRiskGroupAllowance(group.id, displayedAllowanceMinutes);
+    if (!res.ok) {
+      const msgs: Record<string, string> = {
+        'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
+        'increase-too-large': 'Group allowance increase cannot exceed 15 minutes at a time.',
+        'invalid-step': 'Group allowance must be adjusted in 15-minute intervals.',
+        'below-minimum': 'Group allowance cannot be negative.',
+        'group-not-found': 'Risk Group not found.',
+      };
+      setAllowanceError(msgs[res.reason || ''] || 'Unable to update group allowance.');
     } else {
-      updateRiskGroup(group.id, {
-        sessionThresholdMinutes: Math.max(10, currentThreshold + delta * 5),
-      });
+      setDraftAllowanceMinutes(null);
     }
   };
 
@@ -241,66 +269,96 @@ export default function RiskGroupDetailScreen() {
           )}
         </View>
 
-        {/* Section 2: Session Threshold */}
+        {/* Section 2: Group Allowance */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Continuous session threshold</Text>
+          <Text style={styles.cardTitle}>Group Allowance</Text>
           <Text style={styles.cardSubtitle}>
-            Time spent continuously across apps in this Risk Group before a recovery break begins.
+            Shared daily usage limit for all apps in this Risk Group before recovery cooldown begins.
           </Text>
+
+          {/* Cycle Stats */}
+          <View style={styles.allowanceStatsRow}>
+            <View style={styles.allowanceStatCol}>
+              <Text style={styles.allowanceStatLabel}>Used in cycle</Text>
+              <Text style={styles.allowanceStatValue}>
+                {isUsageUnavailable ? '—' : `${usedMinutes} min`}
+              </Text>
+            </View>
+            <View style={styles.allowanceStatCol}>
+              <Text style={styles.allowanceStatLabel}>Allowance</Text>
+              <Text style={styles.allowanceStatValue}>{currentAllowanceMinutes} min</Text>
+            </View>
+            <View style={styles.allowanceStatCol}>
+              <Text style={styles.allowanceStatLabel}>Remaining</Text>
+              <Text style={[styles.allowanceStatValue, coolingDown && styles.statCooldown]}>
+                {isUsageUnavailable
+                  ? '—'
+                  : coolingDown
+                  ? `Cooling · ${Math.max(1, Math.ceil((cooldownEndsAt! - now) / 60000))}m`
+                  : `${remainingMinutes} min`}
+              </Text>
+            </View>
+          </View>
 
           <View style={styles.stepperRow}>
             <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => handleAdjustSession(-1)}
+              style={[
+                styles.stepBtn,
+                (isAllowanceEditLocked || displayedAllowanceMinutes <= 0) && styles.stepBtnDisabled,
+              ]}
+              disabled={isAllowanceEditLocked || displayedAllowanceMinutes <= 0}
+              onPress={() => setDraftAllowanceMinutes(Math.max(0, displayedAllowanceMinutes - 15))}
             >
-              <Minus size={20} color={colors.forest} strokeWidth={2.5} />
+              <Minus
+                size={20}
+                color={isAllowanceEditLocked || displayedAllowanceMinutes <= 0 ? colors.textMuted : colors.forest}
+                strokeWidth={2.5}
+              />
             </TouchableOpacity>
 
             <Text style={styles.stepperNumber}>
-              {group.sessionThresholdMinutes} <Text style={styles.stepperUnit}>min</Text>
+              {displayedAllowanceMinutes} <Text style={styles.stepperUnit}>min</Text>
             </Text>
 
             <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => handleAdjustSession(1)}
+              style={[
+                styles.stepBtn,
+                (isAllowanceEditLocked || displayedAllowanceMinutes >= currentAllowanceMinutes + 15) &&
+                  styles.stepBtnDisabled,
+              ]}
+              disabled={isAllowanceEditLocked || displayedAllowanceMinutes >= currentAllowanceMinutes + 15}
+              onPress={() => setDraftAllowanceMinutes(Math.min(currentAllowanceMinutes + 15, displayedAllowanceMinutes + 15))}
             >
-              <Plus size={20} color={colors.forest} strokeWidth={2.5} />
+              <Plus
+                size={20}
+                color={
+                  isAllowanceEditLocked || displayedAllowanceMinutes >= currentAllowanceMinutes + 15
+                    ? colors.textMuted
+                    : colors.forest
+                }
+                strokeWidth={2.5}
+              />
             </TouchableOpacity>
           </View>
 
-          {/* Notch Line Slider */}
-          <View style={styles.sliderTrack}>
-            <View style={styles.sliderLine} />
-            <View style={styles.notchesRow}>
-              {sessionThresholds.map((val) => {
-                const isSelected = group.sessionThresholdMinutes === val;
-                return (
-                  <TouchableOpacity
-                    key={val}
-                    style={styles.notchItem}
-                    onPress={() =>
-                      updateRiskGroup(group.id, { sessionThresholdMinutes: val })
-                    }
-                  >
-                    <View
-                      style={[
-                        styles.notchDot,
-                        isSelected && styles.notchDotSelected,
-                      ]}
-                    />
-                    <Text
-                      style={[
-                        styles.notchLabel,
-                        isSelected && styles.notchLabelSelected,
-                      ]}
-                    >
-                      {val} min
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+          {draftAllowanceMinutes !== null && draftAllowanceMinutes !== currentAllowanceMinutes && (
+            <TouchableOpacity style={styles.saveAllowanceBtn} onPress={handleSaveAllowance}>
+              <Text style={styles.saveAllowanceBtnText}>Save Allowance</Text>
+            </TouchableOpacity>
+          )}
+
+          {isAllowanceEditLocked && (
+            <View style={styles.lockNoticeBox}>
+              <Text style={styles.lockNoticeTitle}>Allowance set for today</Text>
+              <Text style={styles.lockNoticeSub}>Editable again tomorrow</Text>
             </View>
-          </View>
+          )}
+
+          {allowanceError && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{allowanceError}</Text>
+            </View>
+          )}
         </View>
 
         {/* Section 3: Recovery Cooldown */}
@@ -361,7 +419,38 @@ export default function RiskGroupDetailScreen() {
           </View>
         </View>
 
-        {/* Section 4: Protected in (Routine Window Toggles) */}
+        {/* Section 4: Recovery Activity Selector */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Recovery activity</Text>
+          <Text style={styles.cardSubtitle}>
+            Chosen offline activity suggested during recovery cooldown.
+          </Text>
+
+          <View style={styles.activitiesList}>
+            {offlineActivities.map((act) => {
+              const isChosen = (group.recoveryActivityId || 'walk') === act.id;
+              return (
+                <TouchableOpacity
+                  key={act.id}
+                  style={[styles.activityOption, isChosen && styles.activityOptionSelected]}
+                  onPress={() => updateRiskGroupRecoveryActivity(group.id, act.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.activityEmoji}>{act.iconEmoji}</Text>
+                  <View style={styles.activityInfo}>
+                    <Text style={[styles.activityTitle, isChosen && styles.activityTitleSelected]}>
+                      {act.title}
+                    </Text>
+                    <Text style={styles.activitySub}>{act.subtitle}</Text>
+                  </View>
+                  {isChosen && <Check size={18} color={colors.forest} strokeWidth={2.5} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Section 5: Protected in (Routine Window Toggles) */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Protected in</Text>
           <Text style={styles.cardSubtitle}>
@@ -409,7 +498,7 @@ export default function RiskGroupDetailScreen() {
           </View>
         </View>
 
-        {/* Section 5: Trigger Logic Preview */}
+        {/* Section 6: Trigger Logic Preview */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Trigger logic preview</Text>
           <Text style={styles.cardSubtitle}>How protection works for this group.</Text>
@@ -420,9 +509,9 @@ export default function RiskGroupDetailScreen() {
               <Clock size={16} color={colors.amberDark} />
               <View style={{ marginTop: 6 }}>
                 <Text style={styles.logicBoxTitle}>
-                  {group.sessionThresholdMinutes} min online
+                  {currentAllowanceMinutes} min online
                 </Text>
-                <Text style={styles.logicBoxSub}>Session threshold</Text>
+                <Text style={styles.logicBoxSub}>Group Allowance</Text>
               </View>
             </View>
 
@@ -722,5 +811,120 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textSecondary,
     textAlign: 'center',
+  },
+  allowanceStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#FAF8F4',
+    borderRadius: radii.md,
+    padding: 12,
+    marginVertical: 12,
+    borderWidth: 1,
+    borderColor: '#EFEAE0',
+  },
+  allowanceStatCol: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  allowanceStatLabel: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginBottom: 4,
+    fontWeight: '500',
+  },
+  allowanceStatValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  statCooldown: {
+    color: colors.coralDark,
+  },
+  stepBtnDisabled: {
+    opacity: 0.4,
+    backgroundColor: '#F3EFE6',
+  },
+  saveAllowanceBtn: {
+    backgroundColor: colors.forest,
+    borderRadius: radii.full,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  saveAllowanceBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  lockNoticeBox: {
+    backgroundColor: '#E8EFE5',
+    borderRadius: radii.md,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  lockNoticeTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  lockNoticeSub: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  errorBox: {
+    backgroundColor: colors.coralLight,
+    borderRadius: radii.md,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  errorText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.coralDark,
+    textAlign: 'center',
+  },
+  activitiesList: {
+    gap: 8,
+    marginTop: 8,
+  },
+  activityOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: '#EFEAE0',
+    backgroundColor: '#FAF8F4',
+    gap: 12,
+  },
+  activityOptionSelected: {
+    borderColor: colors.forest,
+    backgroundColor: colors.sageLight,
+  },
+  activityEmoji: {
+    fontSize: 24,
+  },
+  activityInfo: {
+    flex: 1,
+  },
+  activityTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  activityTitleSelected: {
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  activitySub: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
 });

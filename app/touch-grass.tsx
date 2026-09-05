@@ -14,6 +14,7 @@ import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
+import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
 
 export default function TouchGrassScreen() {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
@@ -23,6 +24,10 @@ export default function TouchGrassScreen() {
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
 
   const group = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
+  const configuredActivity = offlineActivities.find((a) => a.id === group?.recoveryActivityId);
+  const displayActivities = configuredActivity
+    ? [configuredActivity, ...offlineActivities.filter((a) => a.id !== configuredActivity.id)].slice(0, 4)
+    : offlineActivities.slice(0, 4);
   const countdownSeconds = useRemainingSeconds(activeTimerEndsAt);
 
   const hrs = Math.floor(countdownSeconds / 3600);
@@ -45,7 +50,7 @@ export default function TouchGrassScreen() {
 
           <Text style={styles.title}>Touch grass 🌱</Text>
           <Text style={styles.subtitle}>
-            You’ve been in {group.name} for {group.sessionThresholdMinutes} minutes.{'\n'}
+            You’ve been in {group.name} for {resolveGroupAllowanceMinutes(group)} minutes.{'\n'}
             Come back in {hrs > 0 ? `${hrs}h ` : ''}{mins}m.
           </Text>
         </View>
@@ -97,7 +102,7 @@ export default function TouchGrassScreen() {
           <Text style={styles.awaySubtitle}>Try one of these feel-good things.</Text>
 
           <View style={styles.activitiesList}>
-            {offlineActivities.slice(0, 4).map((activity) => (
+            {displayActivities.map((activity) => (
               <OfflineActivityCard
                 key={activity.id}
                 activity={activity}

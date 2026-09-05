@@ -17,6 +17,7 @@ import {
   getRoutineWindow,
 } from '../domain/selectors';
 import { useRemainingSeconds } from '../domain/timer';
+import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
 
 export const RhythmStateHeroCard: React.FC = () => {
   const router = useRouter();
@@ -24,6 +25,7 @@ export const RhythmStateHeroCard: React.FC = () => {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const groupUsageSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
 
@@ -33,8 +35,9 @@ export const RhythmStateHeroCard: React.FC = () => {
   const activeGroup = getRiskGroup(riskGroups, activeRiskGroupId) || riskGroups[0];
 
   const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
-  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
-  const currentUsage = activeGroup?.currentSessionMinutes ?? 18;
+  const allowanceMinutes = resolveGroupAllowanceMinutes(activeGroup);
+  const snap = activeGroup ? groupUsageSnapshots?.[activeGroup.id] : undefined;
+  const currentUsage = snap ? Math.floor(snap.usedSeconds / 60) : (activeGroup?.currentSessionMinutes ?? 0);
 
   const getCardContent = () => {
     switch (rhythmState) {
@@ -68,8 +71,8 @@ export const RhythmStateHeroCard: React.FC = () => {
         };
       case 'risk-session':
         return {
-          title: `${activeGroup.name} Active`,
-          subtitle: `${currentUsage} min used of ${threshold} min limit`,
+          title: `${activeGroup?.name ?? 'Risk Group'} Active`,
+          subtitle: `${currentUsage} min used of ${allowanceMinutes} min allowance`,
           badgeText: 'Session Active',
           badgeIcon: Flame,
           badgeBg: colors.coralLight,
@@ -78,12 +81,12 @@ export const RhythmStateHeroCard: React.FC = () => {
           timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Flame,
           ArtworkComponent: OpenDayLandscape,
-          onPress: () => router.push(`/risk-groups/${activeGroup.id}` as any),
+          onPress: () => router.push(`/risk-groups/${activeGroup?.id}` as any),
         };
       case 'cooldown':
         return {
           title: 'Touch Grass 🌱',
-          subtitle: `${threshold} min threshold reached`,
+          subtitle: `${allowanceMinutes} min allowance reached`,
           badgeText: 'Cooldown in progress',
           badgeIcon: Lock,
           badgeBg: colors.skyLight,

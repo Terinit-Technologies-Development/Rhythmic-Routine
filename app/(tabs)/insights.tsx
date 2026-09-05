@@ -25,13 +25,30 @@ import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
 import { formatMinutesToHumanReadable, getInsightSource } from '../../src/domain/insights/metrics';
+import { resolveGroupAllowanceMinutes } from '../../src/domain/rhythm/allowance';
+import { useNow } from '../../src/domain/timer';
+
+export interface RiskGroupInsightRow {
+  groupId: string;
+  groupName: string;
+  allowanceMinutes: number;
+  usedMinutes: number;
+  remainingMinutes: number;
+  coolingDown: boolean;
+  cooldownEndsAt?: number;
+  recoveryActivityTitle?: string;
+}
 
 export default function InsightsScreen() {
+  const now = useNow(5000);
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);
   const weeklySummary = usePrototypeStore((s) => s.weeklySummary);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const apps = usePrototypeStore((s) => s.apps);
-  const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
+  const groupSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
+  const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
+  const rhythmState = usePrototypeStore((s) => s.rhythmState);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
   const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
   const insightDataState = usePrototypeStore((s) => s.insightDataState);
   const refreshInsights = usePrototypeStore((s) => s.refreshInsights);
@@ -76,48 +93,37 @@ export default function InsightsScreen() {
     ...insightMetrics.weeklyTrend.map((t) => t.protectedMinutes + t.riskMinutes)
   );
 
-  // Today's Risk Allowances: strictly for Risk apps, sorted exhausted first, then most-used
-  const riskApps = apps.filter((a) => a.classification === 'risk');
-  const isDailyUsageUnavailable = !!dailyUsageError || !dailyUsageSnapshot;
+  const isDailyUsageUnavailable = Boolean(dailyUsageError);
 
-  const riskAppsWithAllowance = riskApps
-    .map((app) => {
-      const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
-      const snap = dailyUsageSnapshot?.apps.find((a) => a.packageName === app.id);
-      const usedSeconds = snap?.usedSeconds ?? app.usageTodayMinutes * 60;
-      const usedMinutes = Math.floor(usedSeconds / 60);
-      const remainingSeconds =
-        snap?.remainingSeconds ?? Math.max(0, allowanceMinutes * 60 - usedSeconds);
-      const remainingMinutes = Math.ceil(remainingSeconds / 60);
-      const isExhausted =
-        snap?.exhausted ?? (allowanceMinutes > 0 && usedMinutes >= allowanceMinutes);
+  const riskGroupInsightRows: RiskGroupInsightRow[] = riskGroups.map((group) => {
+    const allowanceMinutes = resolveGroupAllowanceMinutes(group);
+    const snap = groupSnapshots?.[group.id];
+    const cooldownEndsAt =
+      snap?.cooldownEndsAt ??
+      (activeRiskGroupId === group.id && rhythmState === 'cooldown' ? activeTimerEndsAt : undefined);
+    const coolingDown = Boolean(cooldownEndsAt && cooldownEndsAt > now);
+    const usedSeconds =
+      snap?.usedSeconds ??
+      (weeklySummary?.groupUsageMinutes?.[group.id] ? weeklySummary.groupUsageMinutes[group.id] * 60 : 0);
+    const usedMinutes = Math.floor(usedSeconds / 60);
+    const remainingSeconds =
+      snap?.remainingSeconds ?? Math.max(0, allowanceMinutes * 60 - usedSeconds);
+    const remainingMinutes = Math.ceil(remainingSeconds / 60);
+    const activity =
+      offlineActivities.find((a) => a.id === group.recoveryActivityId) ??
+      offlineActivities.find((a) => a.id === 'walk');
 
-      let statusText = '';
-      if (isDailyUsageUnavailable) {
-        statusText = `${allowanceMinutes} min planned`;
-      } else if (allowanceMinutes === 0) {
-        statusText = '0 min planned';
-      } else if (isExhausted || remainingMinutes <= 0) {
-        statusText = 'Allowance complete';
-      } else {
-        statusText = `${remainingMinutes} min remaining`;
-      }
-
-      return {
-        id: app.id,
-        name: app.name,
-        allowanceMinutes,
-        usedMinutes,
-        remainingMinutes,
-        isExhausted,
-        statusText,
-      };
-    })
-    .sort((a, b) => {
-      if (a.isExhausted && !b.isExhausted) return -1;
-      if (!a.isExhausted && b.isExhausted) return 1;
-      return b.usedMinutes - a.usedMinutes;
-    });
+    return {
+      groupId: group.id,
+      groupName: group.name,
+      allowanceMinutes,
+      usedMinutes,
+      remainingMinutes,
+      coolingDown,
+      cooldownEndsAt,
+      recoveryActivityTitle: activity?.title,
+    };
+  });
 
   if (insightDataState === 'permission-required') {
     return (
@@ -210,40 +216,57 @@ export default function InsightsScreen() {
           <Text style={styles.sourceText}>Telemetry Source: {sourceLabel}</Text>
         </View>
 
-        {/* Today's Risk Allowances Section */}
-        {riskAppsWithAllowance.length > 0 && (
+        {/* Risk Group Allowances Section */}
+        {riskGroupInsightRows.length > 0 && (
           <View style={styles.allowanceCard}>
             <View style={styles.allowanceCardHeader}>
               <Clock size={18} color={colors.forest} />
-              <Text style={styles.allowanceCardTitle}>Today&apos;s Risk Allowances</Text>
+              <Text style={styles.allowanceCardTitle}>Risk Group Allowances</Text>
               {isDailyUsageUnavailable && (
                 <Text style={styles.allowanceCardUnavailable}>Current usage unavailable</Text>
               )}
             </View>
-            {riskAppsWithAllowance.map((item) => (
-              <View key={item.id} style={styles.allowanceRow}>
-                <View style={styles.allowanceRowInfo}>
-                  <Text style={styles.allowanceRowName}>{item.name}</Text>
-                  <Text style={styles.allowanceRowSub}>
-                    {isDailyUsageUnavailable
-                      ? `${item.allowanceMinutes} min planned`
-                      : item.allowanceMinutes === 0
-                      ? '0 min planned today'
-                      : `${item.usedMinutes} / ${item.allowanceMinutes} min`}
-                  </Text>
+            {riskGroupInsightRows.map((item) => {
+              let badgeText = `${item.remainingMinutes} min left`;
+              let isExhausted = false;
+              let isCooldown = false;
+
+              if (isDailyUsageUnavailable) {
+                badgeText = 'Usage unavailable';
+              } else if (item.coolingDown) {
+                badgeText = 'Cooling down';
+                isCooldown = true;
+              } else if (item.remainingMinutes <= 0) {
+                badgeText = 'Allowance complete';
+                isExhausted = true;
+              }
+
+              const recoveryLabel = item.recoveryActivityTitle ?? 'Take a mindful break';
+
+              return (
+                <View key={item.groupId} style={styles.allowanceRow}>
+                  <View style={styles.allowanceRowInfo}>
+                    <Text style={styles.allowanceRowName}>{item.groupName}</Text>
+                    <Text style={styles.allowanceRowSub}>
+                      {isDailyUsageUnavailable
+                        ? `${item.allowanceMinutes} min planned · Recovery: ${recoveryLabel}`
+                        : `${item.usedMinutes} / ${item.allowanceMinutes} min used · Recovery: ${recoveryLabel}`}
+                    </Text>
+                  </View>
+                  <View style={styles.allowanceRowBadge}>
+                    <Text
+                      style={[
+                        styles.allowanceStatusText,
+                        isExhausted && styles.allowanceStatusExhausted,
+                        isCooldown && styles.allowanceStatusCooldown,
+                      ]}
+                    >
+                      {badgeText}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.allowanceRowBadge}>
-                  <Text
-                    style={[
-                      styles.allowanceStatusText,
-                      item.isExhausted && styles.allowanceStatusExhausted,
-                    ]}
-                  >
-                    {item.statusText}
-                  </Text>
-                </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
 
@@ -395,7 +418,7 @@ export default function InsightsScreen() {
                   <View style={styles.groupInfo}>
                     <Text style={styles.groupName}>{group.name}</Text>
                     <Text style={styles.groupSub}>
-                      {group.appIds.length} app{group.appIds.length === 1 ? '' : 's'} · {group.sessionThresholdMinutes}m session threshold
+                      {group.appIds.length} app{group.appIds.length === 1 ? '' : 's'} · {resolveGroupAllowanceMinutes(group)}m group allowance
                     </Text>
                   </View>
                   <Text style={styles.groupUsageVal}>{displayMins}</Text>
@@ -735,6 +758,10 @@ const styles = StyleSheet.create({
   },
   allowanceStatusExhausted: {
     color: colors.coralDark,
+    fontWeight: '700',
+  },
+  allowanceStatusCooldown: {
+    color: colors.amberDark,
     fontWeight: '700',
   },
   stateCenterContainer: {

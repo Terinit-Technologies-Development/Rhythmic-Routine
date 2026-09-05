@@ -236,6 +236,33 @@ export function getGroupAllowanceSnapshot(
   };
 }
 
+export type RiskGroupStatus =
+  | { kind: 'unavailable' }
+  | { kind: 'cooldown'; endsAt: number }
+  | { kind: 'fresh' }
+  | { kind: 'active'; snapshot: GroupAllowanceSnapshot };
+
+/**
+ * v1.0.2: derived status helper for Risk Group card/status presentation.
+ * Returns the truthful current cycle status according to native snapshots
+ * and cooldown timestamps.
+ */
+export function getRiskGroupStatus(args: {
+  snapshot?: GroupAllowanceSnapshot;
+  cooldownEndsAt?: number;
+  usageAvailable: boolean;
+  now: number;
+}): RiskGroupStatus {
+  if (!args.usageAvailable) return { kind: 'unavailable' as const };
+  if (args.cooldownEndsAt && args.cooldownEndsAt > args.now) {
+    return { kind: 'cooldown' as const, endsAt: args.cooldownEndsAt };
+  }
+  if (!args.snapshot || args.snapshot.usedSeconds === 0) {
+    return { kind: 'fresh' as const };
+  }
+  return { kind: 'active' as const, snapshot: args.snapshot };
+}
+
 /**
  * @deprecated v1.0.2: per-app allowance ownership removed. Group-level
  * validateGroupAllowanceEdit() is the active policy; this function is retained

@@ -28,6 +28,7 @@ import {
   getRoutineTargetTime,
   getRoutineWindow,
 } from '../domain/selectors';
+import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
 
 export const DemoStateSwitcher: React.FC = () => {
   const router = useRouter();
@@ -48,7 +49,7 @@ export const DemoStateSwitcher: React.FC = () => {
 
   const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
   const eveningStart = evening?.startTime ?? '21:30';
-  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
+  const allowance = activeGroup ? resolveGroupAllowanceMinutes(activeGroup) : 30;
   const cooldown = activeGroup?.cooldownMinutes ?? 90;
 
   if (!visible) return null;
@@ -83,7 +84,7 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'risk-session',
       label: 'Active Risk Session',
-      description: `18 min elapsed of ${threshold} min session limit in ${activeGroup.name}`,
+      description: `18 min elapsed of ${allowance} min allowance in ${activeGroup.name}`,
       icon: Flame,
       color: colors.coralDark,
       bg: colors.coralLight,
@@ -92,7 +93,7 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'cooldown',
       label: 'Touch Grass Cooldown',
-      description: `${threshold} min threshold reached, ${cooldown} min recovery countdown`,
+      description: `${allowance} min allowance reached, ${cooldown} min recovery countdown`,
       icon: Waves,
       color: colors.skyDark,
       bg: colors.skyLight,
