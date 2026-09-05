@@ -26,7 +26,6 @@ import {
 } from '../../../types/domain';
 import { RhythmConfiguration } from '../types';
 import { RhythmEngine } from '../RhythmEngine';
-import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { bootstrapRhythm } from '../../../application/bootstrapRhythm';
 import { MockStorageProvider } from '../../../platform/storage/MockStorageProvider';
 import { MockPermissionProvider } from '../../../platform/permissions/MockPermissionProvider';
@@ -721,33 +720,8 @@ describe('Pass 01 — Overnight Protection, Daily Allowance & Domain Invariants'
       );
     });
 
-    it('regression: rejects allowance editing for non-risk or missing apps with truthful reasons', async () => {
-      const coordinator = RhythmCoordinator.getInstance();
-      const mockStorage = new MockStorageProvider();
-      configurePlatformServices({
-        storage: mockStorage,
-        usage: new MockUsageProvider(standardApps),
-        permissions: new MockPermissionProvider(),
-        restrictions: new MockRestrictionProvider(),
-      });
-      await coordinator.initialize();
-
-      // 1. Missing app
-      const rMissing = await coordinator.updateDailyRiskAllowance('com.missing.app', 45);
-      assert.equal(rMissing.allowed, false);
-      assert.equal(rMissing.reason, 'app-not-found');
-
-      // 2. Normal app
-      const rNormal = await coordinator.updateDailyRiskAllowance('com.example.notes', 45);
-      assert.equal(rNormal.allowed, false);
-      assert.equal(rNormal.reason, 'not-risk-app');
-
-      // 3. Essential app
-      const rEssential = await coordinator.updateDailyRiskAllowance('com.google.android.dialer', 45);
-      assert.equal(rEssential.allowed, false);
-      assert.equal(rEssential.reason, 'not-risk-app');
-
-      // 4. Domain validateDailyAllowanceEdit directly rejects non-risk
+    it('regression: rejects allowance editing for non-risk or missing apps with truthful reasons', () => {
+      // Domain validateDailyAllowanceEdit directly rejects non-risk
       const rDomainNonRisk = validateDailyAllowanceEdit({ allowanceMinutes: 30 }, 45, '2026-09-02', 'normal');
       assert.equal(rDomainNonRisk.allowed, false);
       assert.equal(rDomainNonRisk.reason, 'not-risk-app');

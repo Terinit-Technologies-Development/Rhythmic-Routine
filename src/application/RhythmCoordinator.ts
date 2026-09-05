@@ -12,7 +12,6 @@ import { reconcileRhythm } from './reconcileRhythm';
 import { DeviceApp, RiskGroup } from '../types/domain';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 import {
-  AllowanceEditResult,
   GroupAllowanceEditResult,
   getLocalDateKey,
   resolveGroupAllowanceMinutes,
@@ -511,101 +510,6 @@ export class RhythmCoordinator {
       // fall through
     }
     return [];
-  }
-
-  /**
-   * @deprecated v1.0.2: per-app allowance ownership removed. Delegates to the
-   * owning Risk Group's shared allowance so legacy callers enforce group
-   * policy. New code must call updateRiskGroupAllowance().
-   * Enforces:
-   * - multiples of 15 min
-   * - max +15 min per day
-   * - reductions down to 0 allowed
-   * - at most once per local day
-   * - persists updated policy and emits history event
-   */
-  public async updateDailyRiskAllowance(
-    appId: string,
-    nextMinutes: number,
-    nowMs: number = Date.now()
-  ): Promise<AllowanceEditResult> {
-    if (!this.config || !this.engine) {
-      await this.initialize();
-    }
-    if (!this.config || !this.engine) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
-    }
-
-    const app = this.config.apps.find((a) => a.id === appId);
-    if (!app) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
-    }
-
-    if (app.classification !== 'risk' || !app.riskGroupId) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'not-risk-app',
-      };
-    }
-
-    // Delegate to the owning group's shared allowance (sole policy owner).
-    // The owning group is re-resolved here so a dangling riskGroupId (no
-    // policy owner in config) is reported truthfully instead of editing air.
-    const ownerExists = this.config.riskGroups.some((g) => g.id === app.riskGroupId);
-    if (!ownerExists) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'not-risk-app',
-      };
-    }
-    const groupResult = await this.updateRiskGroupAllowance(app.riskGroupId, nextMinutes, nowMs);
-    if (!groupResult.ok) {
-      // Deprecated shim keeps the frozen app-level union: policy-rule reasons
-      // map 1:1; owner-availability failures mean the app has no editable
-      // group policy, i.e. it cannot be treated as a policy-owning risk app.
-      const reason =
-        groupResult.reason === 'already-edited-today'
-          ? 'already-edited-today'
-          : groupResult.reason === 'increase-too-large'
-            ? 'increase-too-large'
-            : groupResult.reason === 'invalid-step'
-              ? 'invalid-step'
-              : groupResult.reason === 'below-minimum'
-                ? 'below-minimum'
-                : ('not-risk-app' as const);
-      return {
-        allowed: false,
-        nextMinutes: groupResult.nextMinutes,
-        consumesDailyEdit: false,
-        reason,
-      };
-    }
-    if (!groupResult.consumesDailyEdit) {
-      return {
-        allowed: true,
-        nextMinutes: groupResult.nextMinutes,
-        consumesDailyEdit: false,
-      };
-    }
-    return {
-      allowed: true,
-      nextMinutes: groupResult.nextMinutes,
-      consumesDailyEdit: true,
-    };
   }
 
   /**

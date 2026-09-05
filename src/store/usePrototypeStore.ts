@@ -18,6 +18,7 @@ import {
   offlineActivities as defaultOfflineActivities,
 } from '../data/mockData';
 import { getPlatformServices } from '../platform/PlatformServices';
+import { MockUsageProvider } from '../platform/mock/MockUsageProvider';
 import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
@@ -32,7 +33,6 @@ import {
   ObservedRiskUsageAggregation,
 } from '../domain/insights';
 import {
-  AllowanceEditResult,
   DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
   GroupAllowanceEditResult,
 } from '../domain/rhythm/allowance';
@@ -162,11 +162,6 @@ interface PrototypeState {
 
   startAccessLease: (groupId: string, durationMinutes?: number) => Promise<void>;
   triggerEmergencyBypass: () => Promise<void>;
-
-  updateDailyRiskAllowance: (
-    appId: string,
-    nextMinutes: number
-  ) => Promise<AllowanceEditResult>;
 
   /**
    * v1.0.2: group-scoped allowance edit (sole policy owner). Moving apps
@@ -325,6 +320,26 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
       const currentApps = get().apps;
       const hydratedApps = snapshot ? hydrateAppsWithDailyUsage(currentApps, snapshot) : currentApps;
+
+      const platformOS = getPlatformOS();
+      const isWebOrMock =
+        platformOS === 'web' ||
+        usage instanceof MockUsageProvider ||
+        usage.constructor.name === 'MockUsageProvider' ||
+        Boolean((usage as any).isMock);
+
+      const hasGroupSnapshots = Boolean(nativeGroupSnapshots && nativeGroupSnapshots.length > 0);
+
+      if (!isWebOrMock && !hasGroupSnapshots) {
+        set({
+          apps: hydratedApps,
+          dailyUsageSnapshot: snapshot ?? undefined,
+          groupUsageSnapshots: undefined,
+          dailyUsageLoading: false,
+          dailyUsageError: 'Usage unavailable',
+        });
+        return;
+      }
 
       set({
         apps: hydratedApps,
@@ -633,23 +648,6 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       timeSelector: { visible: false },
       appEdit: { visible: false },
     });
-  },
-
-  updateDailyRiskAllowance: async (appId, nextMinutes) => {
-    // @deprecated v1.0.2: delegates to the owning group's shared allowance.
-    const result = await RhythmCoordinator.getInstance().updateDailyRiskAllowance(appId, nextMinutes);
-    if (result.allowed) {
-      const config = RhythmCoordinator.getInstance().getConfig();
-      if (config) {
-        const snapshot = get().dailyUsageSnapshot;
-        set({
-          apps: hydrateAppsWithDailyUsage(config.apps, snapshot),
-          riskGroups: [...config.riskGroups],
-        });
-      }
-      await get().refreshDailyUsage();
-    }
-    return result;
   },
 
   updateRiskGroupAllowance: async (groupId, nextMinutes) => {

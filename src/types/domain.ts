@@ -26,6 +26,7 @@ export const DEFAULT_RECOVERY_ACTIVITY_ID = 'walk';
 /**
  * @deprecated v1.0.2: per-app allowance is removed from runtime ownership.
  * Retained for idempotent migration reads only. Do not write new values.
+ * Exists ONLY for reading v1.0.1 persisted JSON during migration.
  */
 export interface DailyRiskAllowancePolicy {
   allowanceMinutes: number;
@@ -71,6 +72,7 @@ export interface DeviceApp {
    * @deprecated v1.0.2: removed from runtime ownership. RiskGroup.allowanceMinutes
    * is the sole allowance policy. Retained as optional for idempotent migration
    * reads of persisted v1.0.1 state only; runtime code must not derive policy from it.
+   * Exists ONLY for reading v1.0.1 persisted JSON during migration.
    */
   dailyRiskAllowance?: DailyRiskAllowancePolicy;
   iconName: string;
@@ -107,6 +109,7 @@ export interface RiskGroup {
    * @deprecated v1.0.2: legacy v1.0.1 threshold concept, consolidated into
    * allowanceMinutes. Retained as optional for migration reads and legacy
    * fixtures only; never treat as a second active policy.
+   * Exists ONLY for reading v1.0.1 persisted JSON during migration.
    */
   sessionThresholdMinutes?: number; // e.g. 30
   cooldownMinutes: number;         // e.g. 90

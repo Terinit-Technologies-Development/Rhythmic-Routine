@@ -84,6 +84,10 @@ export default function RiskGroupDetailScreen() {
   const eveningWindDownEnabled = eveningWin?.protectedGroupIds.includes(group.id) ?? false;
 
   const memberApps = apps.filter((a) => group.appIds.includes(a.id));
+  const resolvedRecoveryActivity =
+    offlineActivities.find((a) => a.id === group.recoveryActivityId) ??
+    offlineActivities.find((a) => a.id === 'walk');
+  const resolvedRecoveryActivityId = resolvedRecoveryActivity?.id ?? 'walk';
 
   const handleSaveAllowance = async () => {
     setAllowanceError(null);
@@ -428,7 +432,7 @@ export default function RiskGroupDetailScreen() {
 
           <View style={styles.activitiesList}>
             {offlineActivities.map((act) => {
-              const isChosen = (group.recoveryActivityId || 'walk') === act.id;
+              const isChosen = act.id === resolvedRecoveryActivityId;
               return (
                 <TouchableOpacity
                   key={act.id}
