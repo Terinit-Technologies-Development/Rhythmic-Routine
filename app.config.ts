@@ -51,6 +51,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ],
   extra: {
     eas: {
+      projectId: 'a4fbeb0c-0d65-4a0d-bf12-4a985ca03088',
       build: {
         experimental: {
           ios: {
