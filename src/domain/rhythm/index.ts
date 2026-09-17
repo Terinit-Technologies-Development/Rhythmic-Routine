@@ -7,3 +7,4 @@ export * from './events';
 export * from './allowance';
 export * from './migration';
 export * from './RhythmEngine';
+export * from './recovery';

@@ -33,6 +33,9 @@ export interface ActiveCooldown {
   groupId: string;
   startedAt: number;
   endsAt: number;
+  recoverySessionId?: string;
+  recoveryRequired?: boolean;
+  cycleNumber?: number;
 }
 
 export type RestrictionReasonType =

@@ -6,6 +6,8 @@ export interface RestrictionOptions {
   isOvernight?: boolean;
   /** v1.0.2: authoritative per-group allowance ledgers (sole allowance authority). */
   groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** Pass 03: recovery satisfaction state per group for cooldown re-entry gating. */
+  groupRecoverySatisfied?: Record<string, boolean>;
 }
 
 /**
@@ -77,7 +79,12 @@ export function computeEffectiveRestrictions(
     : [];
 
   for (const cooldown of cooldownList) {
-    if (cooldown.endsAt <= now) continue;
+    const isElapsed = cooldown.endsAt <= now;
+    const isRecoveryRequired = cooldown.recoveryRequired ?? false;
+    const isSatisfied = options?.groupRecoverySatisfied?.[cooldown.groupId] ?? false;
+
+    // Cooldown restriction clears only when time has elapsed AND (recovery is not required OR recovery is satisfied)
+    if (isElapsed && (!isRecoveryRequired || isSatisfied)) continue;
 
     const group = riskGroups.find((g) => g.id === cooldown.groupId);
     if (!group) continue;

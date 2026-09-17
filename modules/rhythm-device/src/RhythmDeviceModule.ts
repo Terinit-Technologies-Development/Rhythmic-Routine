@@ -11,6 +11,7 @@ import {
   NativeRoutineScheduleInput,
   NativeCooldownPolicyInput,
   NativeUsageEvent,
+  NativeRecoveryStatus,
 } from './RhythmDevice.types';
 
 // Fallback behavior:
@@ -85,6 +86,15 @@ export const FallbackModule = {
     configSignature: isWeb ? 'fallback' : '',
     lastError: isWeb ? '' : 'Native module unavailable',
   }),
+  isReaderAvailable: async (): Promise<boolean> => false,
+  startRecoverySession: async (
+    _sessionId: string,
+    _requiredSeconds: number,
+    _requiredPages: number,
+    _createdAt: number,
+    _expiresAt: number
+  ): Promise<boolean> => false,
+  queryRecoveryStatus: async (_sessionId: string): Promise<NativeRecoveryStatus | null> => null,
 };
 
 let nativeModuleAvailable = false;

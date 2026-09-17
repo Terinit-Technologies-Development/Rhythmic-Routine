@@ -37,7 +37,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       backgroundColor: '#F8F4E8',
     },
     predictiveBackGestureEnabled: false,
-    permissions: ['android.permission.PACKAGE_USAGE_STATS'],
+    permissions: [
+      'android.permission.PACKAGE_USAGE_STATS',
+      'com.terinit.rhythmicreader.permission.RECOVERY',
+    ],
   },
   web: {
     favicon: './assets/favicon.png',

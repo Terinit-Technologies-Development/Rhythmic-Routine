@@ -125,3 +125,13 @@ export interface NativeEnforcementDiagnostics {
   lastUsageReconciledAt?: number;
   lastUsageAccountedAt?: number;
 }
+
+export interface NativeRecoveryStatus {
+  sessionId: string;
+  protocolVersion: number;
+  status: 'ACTIVE' | 'COMPLETE' | 'ABANDONED' | 'EXPIRED' | string;
+  activeSeconds: number;
+  qualifiedPages: number;
+  completedAtEpochMs: number;
+}
+
