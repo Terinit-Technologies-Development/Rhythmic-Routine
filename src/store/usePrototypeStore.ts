@@ -935,17 +935,6 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         riskGroups: updatedRiskGroups,
         routineWindows: updatedWindows,
       });
-
-      if (allowanceChanged) {
-        const { storage } = getPlatformServices();
-        await storage.appendHistoryEvent({
-          type: 'group-allowance-edited',
-          groupId,
-          previousMinutes: currentAllowance,
-          nextMinutes: draft.allowanceMinutes,
-          timestamp: Date.now(),
-        });
-      }
     } catch {
       return { ok: false, groupId, reason: 'persistence-failed' };
     }
@@ -954,6 +943,22 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       riskGroups: updatedRiskGroups,
       routineWindows: updatedWindows,
     });
+
+    if (allowanceChanged) {
+      try {
+        const { storage } = getPlatformServices();
+        await storage.appendHistoryEvent({
+          type: 'group-allowance-edited',
+          groupId,
+          previousMinutes: currentAllowance,
+          nextMinutes: draft.allowanceMinutes,
+          timestamp: Date.now(),
+        });
+      } catch {
+        // Configuration has already committed.
+        // History failure must not report the save itself as failed.
+      }
+    }
 
     return { ok: true, groupId };
   },

@@ -799,4 +799,61 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
       assert.equal(latestEvent.nextMinutes, 45);
     }
   });
+
+  test('21. history-write failure after successful save does not invalidate configuration transaction', async () => {
+    const store = usePrototypeStore.getState();
+    const coordinator = RhythmCoordinator.getInstance();
+    const groupId = await store.createRiskGroup({
+      name: 'Resilient History',
+      allowanceMinutes: 30,
+    });
+
+    const { storage } = getPlatformServices();
+    const originalAppendHistoryEvent = storage.appendHistoryEvent.bind(storage);
+
+    // Mock history append failure
+    storage.appendHistoryEvent = async () => {
+      throw new Error('Simulated history storage write failure');
+    };
+
+    try {
+      const draft: RiskGroupConfigurationDraft = {
+        name: 'Resilient History Saved',
+        description: 'Should commit config despite history failure',
+        allowanceMinutes: 45,
+        cooldownMinutes: 75,
+        recoveryActivityId: 'stretch',
+        morningProtected: false,
+        eveningProtected: false,
+      };
+
+      const res = await store.saveRiskGroupConfiguration(groupId, draft);
+
+      // 1. Save returns ok: true
+      assert.equal(res.ok, true);
+
+      // 2. Preferences contain new config
+      const persisted = await storage.loadPreferences();
+      const persistedGroup = persisted?.riskGroups.find((g) => g.id === groupId);
+      assert.equal(persistedGroup?.name, 'Resilient History Saved');
+      assert.equal(persistedGroup?.allowanceMinutes, 45);
+
+      // 3. Coordinator contains new config
+      const coordinatorGroup = coordinator.getConfig()?.riskGroups.find((g) => g.id === groupId);
+      assert.equal(coordinatorGroup?.name, 'Resilient History Saved');
+      assert.equal(coordinatorGroup?.allowanceMinutes, 45);
+
+      // 4. Engine contains new config
+      const engineGroup = (coordinator as any).engine.config.riskGroups.find((g: any) => g.id === groupId);
+      assert.equal(engineGroup?.name, 'Resilient History Saved');
+      assert.equal(engineGroup?.allowanceMinutes, 45);
+
+      // 5. Zustand contains new config
+      const storeGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId);
+      assert.equal(storeGroup?.name, 'Resilient History Saved');
+      assert.equal(storeGroup?.allowanceMinutes, 45);
+    } finally {
+      storage.appendHistoryEvent = originalAppendHistoryEvent;
+    }
+  });
 });
