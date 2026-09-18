@@ -1,5 +1,6 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import * as storeModule from '../../store/usePrototypeStore';
 import {
   usePrototypeStore,
   __getTransientSecretCountForTests,
@@ -446,10 +447,16 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     assert.deepEqual(enabled.map((p) => p.id), ['1', '3']);
   });
 
-  test('17. raw executor APIs are not public', () => {
+  test('17. raw executor APIs and transient secret vault functions are not public', () => {
     const store = usePrototypeStore.getState() as any;
     assert.equal(store.executeProtectedMutation, undefined);
     assert.equal(store.registerMutationExecutor, undefined);
+
+    // Module export audit: transient vault operations must be module-private
+    assert.equal((storeModule as any).consumeTransientSecret, undefined);
+    assert.equal((storeModule as any).createTransientSecretRef, undefined);
+    assert.equal((storeModule as any).deleteTransientSecret, undefined);
+    assert.equal((storeModule as any).__clearTransientSecretsForTests, undefined);
   });
 
   test('18. partner creation password never enters pending state', async () => {

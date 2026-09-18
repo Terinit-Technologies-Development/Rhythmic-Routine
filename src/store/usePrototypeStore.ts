@@ -282,13 +282,13 @@ const mutationExecutors = new Map<AccountabilityOperation, (payload: any) => Pro
 
 const transientApprovalSecrets = new Map<string, string>();
 
-export function createTransientSecretRef(secret: string): string {
+function createTransientSecretRef(secret: string): string {
   const ref = `secret_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   transientApprovalSecrets.set(ref, secret);
   return ref;
 }
 
-export function consumeTransientSecret(ref: string): string {
+function consumeTransientSecret(ref: string): string {
   const value = transientApprovalSecrets.get(ref);
   transientApprovalSecrets.delete(ref);
   if (!value) {
@@ -297,17 +297,13 @@ export function consumeTransientSecret(ref: string): string {
   return value;
 }
 
-export function deleteTransientSecret(ref?: string): void {
+function deleteTransientSecret(ref?: string): void {
   if (!ref) return;
   transientApprovalSecrets.delete(ref);
 }
 
 export function __getTransientSecretCountForTests(): number {
   return transientApprovalSecrets.size;
-}
-
-export function __clearTransientSecretsForTests(): void {
-  transientApprovalSecrets.clear();
 }
 
 function cleanupPendingApprovalSecrets(pending: PendingApproval | null): void {
