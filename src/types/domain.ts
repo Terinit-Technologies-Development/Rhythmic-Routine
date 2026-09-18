@@ -172,7 +172,8 @@ export type DeleteRiskGroupResult =
         | 'group-not-found'
         | 'cannot-delete-seeded-group'
         | 'replacement-required'
-        | 'invalid-replacement-group';
+        | 'invalid-replacement-group'
+        | 'active-runtime';
     };
 
 /**

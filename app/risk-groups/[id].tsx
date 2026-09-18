@@ -252,6 +252,8 @@ export default function RiskGroupDetailScreen() {
           'invalid-replacement-group': 'Selected replacement group is invalid.',
           'cannot-delete-seeded-group': 'Starter risk groups cannot be deleted.',
           'group-not-found': 'Group not found.',
+          'active-runtime':
+            'This group is currently active. Wait until its current session or recovery cooldown ends before deleting it.',
         };
         setDeleteError(msgs[res.reason || ''] || 'Failed to delete risk group.');
       }

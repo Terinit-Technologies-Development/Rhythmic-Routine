@@ -931,6 +931,11 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
 
     try {
+      await RhythmCoordinator.getInstance().updateConfig({
+        riskGroups: updatedRiskGroups,
+        routineWindows: updatedWindows,
+      });
+
       if (allowanceChanged) {
         const { storage } = getPlatformServices();
         await storage.appendHistoryEvent({
@@ -941,11 +946,6 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
           timestamp: Date.now(),
         });
       }
-
-      await RhythmCoordinator.getInstance().updateConfig({
-        riskGroups: updatedRiskGroups,
-        routineWindows: updatedWindows,
-      });
     } catch {
       return { ok: false, groupId, reason: 'persistence-failed' };
     }
@@ -1007,6 +1007,19 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const isSeeded = target.origin === 'seeded' || target.id === 'social' || target.id === 'entertainment';
     if (isSeeded) {
       return { ok: false, reason: 'cannot-delete-seeded-group' };
+    }
+
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = coordinator.getRuntimeSnapshot();
+
+    const hasActiveCooldown = Boolean(runtime?.activeCooldowns?.[groupId]);
+    const hasActiveSession = runtime?.activeSession?.groupId === groupId;
+
+    if (hasActiveCooldown || hasActiveSession) {
+      return {
+        ok: false,
+        reason: 'active-runtime',
+      };
     }
 
     // Find apps that belong to this group (by app.riskGroupId or target.appIds)

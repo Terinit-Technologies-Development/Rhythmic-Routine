@@ -4,6 +4,7 @@ import { usePrototypeStore } from '../../store/usePrototypeStore';
 import { createUniqueGroupId, resolveCooldownInfo } from '../selectors';
 import { RiskGroup, RiskGroupConfigurationDraft } from '../../types/domain';
 import { RhythmCoordinator } from '../../application/RhythmCoordinator';
+import { getPlatformServices } from '../../platform/PlatformServices';
 
 describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
   beforeEach(async () => {
@@ -317,13 +318,20 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     assert.ok(usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment'));
   });
 
-  test('11. delete group clears active cooldown immediately from engine runtime', async () => {
+  test('11. deletion is blocked with active-runtime while a cooldown is active', async () => {
     const store = usePrototypeStore.getState();
     const coordinator = RhythmCoordinator.getInstance();
     const groupId = await store.createRiskGroup({
       name: 'Focus Writing',
       cooldownMinutes: 45,
     });
+
+    // Assign an app to this group
+    await store.updateAppClassification('notes', 'risk', groupId);
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'notes')?.riskGroupId,
+      groupId
+    );
 
     // Start a cooldown on this group
     await coordinator.dispatch({
@@ -335,29 +343,40 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
 
     assert.ok(coordinator.getRuntime()!.activeCooldowns[groupId]);
 
-    // Delete group
-    const res = await store.deleteRiskGroup(groupId);
-    assert.equal(res.ok, true);
+    // Deletion attempt must be blocked
+    const res = await store.deleteRiskGroup(groupId, 'social');
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.reason, 'active-runtime');
+    }
 
-    // Cooldown is purged immediately
-    assert.equal(coordinator.getRuntime()!.activeCooldowns[groupId], undefined);
+    // Group still exists
+    assert.ok(usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId));
+
+    // Cooldown remains active
+    assert.ok(coordinator.getRuntime()!.activeCooldowns[groupId]);
+
+    // Member apps remain assigned to that group
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'notes')?.riskGroupId,
+      groupId
+    );
   });
 
-  test('12. delete group clears active session when pointing to deleted group', async () => {
+  test('12. deletion is blocked with active-runtime while a Risk session is active for that group', async () => {
     const store = usePrototypeStore.getState();
     const coordinator = RhythmCoordinator.getInstance();
     const groupId = await store.createRiskGroup({
       name: 'Media Stream',
     });
 
-    // Set an active session pointing to this group via app foregrounding
+    // Set an active session pointing to this group via app foregrounding / runtime setup
     await coordinator.dispatch({
       type: 'APP_FOREGROUND',
       appId: 'mock-stream-app',
       timestamp: Date.now(),
     });
 
-    // Directly assign session for testing
     (coordinator as any).engine.runtime.activeSession = {
       groupId,
       startedAt: Date.now() - 10000,
@@ -367,12 +386,65 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
 
     assert.equal(coordinator.getRuntime()!.activeSession?.groupId, groupId);
 
-    // Delete group
+    // Deletion attempt must be blocked
     const res = await store.deleteRiskGroup(groupId);
-    assert.equal(res.ok, true);
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.reason, 'active-runtime');
+    }
 
-    // Active session is cleared
-    assert.equal(coordinator.getRuntime()!.activeSession, undefined);
+    // Group remains intact
+    assert.ok(usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId));
+
+    // Active session remains intact
+    assert.equal(coordinator.getRuntime()!.activeSession?.groupId, groupId);
+  });
+
+  test('12b. deletion succeeds after cooldown clears and defensively purges runtime state', async () => {
+    const store = usePrototypeStore.getState();
+    const coordinator = RhythmCoordinator.getInstance();
+    const groupId = await store.createRiskGroup({
+      name: 'Cleared Focus',
+    });
+
+    // Start with an active cooldown
+    await coordinator.dispatch({
+      type: 'NATIVE_COOLDOWN_RESTORED',
+      groupId,
+      endsAt: Date.now() + 10000,
+      timestamp: Date.now(),
+    });
+
+    // Deletion blocked while active
+    const blockedRes = await store.deleteRiskGroup(groupId);
+    assert.equal(blockedRes.ok, false);
+    if (!blockedRes.ok) {
+      assert.equal(blockedRes.reason, 'active-runtime');
+    }
+
+    // Cooldown clears via COOLDOWN_ENDED
+    await coordinator.dispatch({
+      type: 'COOLDOWN_ENDED',
+      groupId,
+      timestamp: Date.now(),
+    });
+    assert.equal(coordinator.getRuntime()!.activeCooldowns[groupId], undefined);
+
+    // Residual stale lease to test defensive cleanup
+    (coordinator as any).engine.runtime.activeAccessLeases[groupId] = {
+      groupId,
+      endsAt: Date.now() + 60000,
+    };
+
+    // Now deletion succeeds
+    const deleteRes = await store.deleteRiskGroup(groupId);
+    assert.equal(deleteRes.ok, true);
+
+    // Group is removed
+    assert.equal(usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId), undefined);
+
+    // Defensive cleanup: stale runtime state is purged
+    assert.equal(coordinator.getRuntime()!.activeAccessLeases[groupId], undefined);
   });
 
   test('13. delete group purges active access lease and group allowance usage', async () => {
@@ -423,14 +495,29 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
       name: 'Temporary Group',
     });
 
+    // Add access lease and group allowance usage (neither blocks deletion)
     await coordinator.dispatch({
-      type: 'NATIVE_COOLDOWN_RESTORED',
+      type: 'NATIVE_ACCESS_LEASE_RESTORED',
       groupId,
       endsAt: Date.now() + 60 * 60 * 1000,
       timestamp: Date.now(),
     });
 
-    await store.deleteRiskGroup(groupId);
+    await coordinator.dispatch({
+      type: 'SYNC_GROUP_ALLOWANCE_USAGE',
+      groupAllowanceUsage: {
+        [groupId]: {
+          groupId,
+          dateKey: '2026-09-18',
+          usedSeconds: 600,
+          cycleRevision: 1,
+        },
+      },
+      timestamp: Date.now(),
+    });
+
+    const delRes = await store.deleteRiskGroup(groupId);
+    assert.equal(delRes.ok, true);
 
     // Simulate app restart / coordinator re-initialization
     coordinator.destroy();
@@ -448,20 +535,22 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
 
     const id1 = await store.createRiskGroup({ name: 'Mindfulness' });
     await coordinator.dispatch({
-      type: 'NATIVE_COOLDOWN_RESTORED',
+      type: 'NATIVE_ACCESS_LEASE_RESTORED',
       groupId: id1,
       endsAt: Date.now() + 30 * 60 * 1000,
       timestamp: Date.now(),
     });
 
-    await store.deleteRiskGroup(id1);
+    const delRes = await store.deleteRiskGroup(id1);
+    assert.equal(delRes.ok, true);
 
     // Recreate same name
     const id2 = await store.createRiskGroup({ name: 'Mindfulness' });
     assert.equal(id2, 'mindfulness');
 
-    // Runtime state for this group must be clean (no inherited cooldown or usage)
+    // Runtime state for this group must be clean (no inherited cooldown, lease, or usage)
     assert.equal(coordinator.getRuntime()!.activeCooldowns[id2], undefined);
+    assert.equal(coordinator.getRuntime()!.activeAccessLeases[id2], undefined);
     assert.equal(coordinator.getRuntime()!.groupAllowanceUsage?.[id2], undefined);
   });
 
@@ -591,5 +680,123 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     // Ensure NO partial write occurred: name is STILL 'Art & Design'
     const unmutatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId)!;
     assert.equal(unmutatedGroup.name, 'Art & Design');
+  });
+
+  test('19. coordinator persistence failure aborts cleanly without state corruption or history write', async () => {
+    const store = usePrototypeStore.getState();
+    const coordinator = RhythmCoordinator.getInstance();
+    const groupId = await store.createRiskGroup({
+      name: 'Resilient Group',
+      allowanceMinutes: 30,
+    });
+
+    const rawCoordinatorConfigBefore = (coordinator as any).config;
+    const engineConfigBefore = (coordinator as any).engine.config;
+    const storeRiskGroupsBefore = [...usePrototypeStore.getState().riskGroups];
+
+    const { storage } = getPlatformServices();
+    const historyBefore = await storage.getHistoryEvents();
+    const originalSavePreferences = storage.savePreferences.bind(storage);
+
+    // Simulate persistence failure
+    storage.savePreferences = async () => {
+      throw new Error('Simulated disk full');
+    };
+
+    try {
+      const draft: RiskGroupConfigurationDraft = {
+        name: 'Resilient Group Renamed',
+        description: 'Should not save',
+        allowanceMinutes: 45,
+        cooldownMinutes: 60,
+        recoveryActivityId: 'walk',
+        morningProtected: false,
+        eveningProtected: false,
+      };
+
+      const res = await store.saveRiskGroupConfiguration(groupId, draft);
+      assert.equal(res.ok, false);
+      if (!res.ok) {
+        assert.equal(res.reason, 'persistence-failed');
+      }
+
+      // 1. Coordinator config remains unchanged
+      assert.equal((coordinator as any).config, rawCoordinatorConfigBefore);
+      assert.equal(coordinator.getConfig()?.riskGroups.find((g) => g.id === groupId)?.name, 'Resilient Group');
+      assert.equal(coordinator.getConfig()?.riskGroups.find((g) => g.id === groupId)?.allowanceMinutes, 30);
+
+      // 2. Engine config remains unchanged
+      assert.equal((coordinator as any).engine.config, engineConfigBefore);
+
+      // 3. Zustand store state remains unchanged
+      assert.deepEqual(usePrototypeStore.getState().riskGroups, storeRiskGroupsBefore);
+
+      // 4. No allowance history event written
+      const historyAfter = await storage.getHistoryEvents();
+      assert.equal(historyAfter.length, historyBefore.length);
+      const allowanceEvents = historyAfter.filter((e) => e.type === 'group-allowance-edited');
+      assert.equal(allowanceEvents.length, historyBefore.filter((e) => e.type === 'group-allowance-edited').length);
+    } finally {
+      storage.savePreferences = originalSavePreferences;
+    }
+  });
+
+  test('20. successful atomic save: preferences persist, coordinator/engine/store update, history event recorded', async () => {
+    const store = usePrototypeStore.getState();
+    const coordinator = RhythmCoordinator.getInstance();
+    const groupId = await store.createRiskGroup({
+      name: 'Atomic Workflow',
+      allowanceMinutes: 30,
+    });
+
+    const { storage } = getPlatformServices();
+    const historyBefore = await storage.getHistoryEvents();
+
+    const draft: RiskGroupConfigurationDraft = {
+      name: 'Atomic Workflow Updated',
+      description: 'Fully committed',
+      allowanceMinutes: 45,
+      cooldownMinutes: 90,
+      recoveryActivityId: 'tea',
+      morningProtected: true,
+      eveningProtected: true,
+    };
+
+    const res = await store.saveRiskGroupConfiguration(groupId, draft);
+    assert.equal(res.ok, true);
+
+    // 1. Preferences persisted in storage
+    const persisted = await storage.loadPreferences();
+    assert.ok(persisted);
+    const persistedGroup = persisted?.riskGroups.find((g) => g.id === groupId);
+    assert.equal(persistedGroup?.name, 'Atomic Workflow Updated');
+    assert.equal(persistedGroup?.allowanceMinutes, 45);
+    assert.equal(persistedGroup?.cooldownMinutes, 90);
+
+    // 2. Coordinator in-memory config updated
+    const coordinatorGroup = coordinator.getConfig()?.riskGroups.find((g) => g.id === groupId);
+    assert.equal(coordinatorGroup?.name, 'Atomic Workflow Updated');
+    assert.equal(coordinatorGroup?.allowanceMinutes, 45);
+
+    // 3. Engine config updated
+    const engineGroup = (coordinator as any).engine.config.riskGroups.find((g: any) => g.id === groupId);
+    assert.equal(engineGroup?.name, 'Atomic Workflow Updated');
+    assert.equal(engineGroup?.allowanceMinutes, 45);
+
+    // 4. Zustand store state updated
+    const storeGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === groupId);
+    assert.equal(storeGroup?.name, 'Atomic Workflow Updated');
+    assert.equal(storeGroup?.allowanceMinutes, 45);
+
+    // 5. History event appended only after success
+    const historyAfter = await storage.getHistoryEvents();
+    assert.equal(historyAfter.length, historyBefore.length + 1);
+    const latestEvent = historyAfter[historyAfter.length - 1];
+    assert.equal(latestEvent.type, 'group-allowance-edited');
+    if (latestEvent.type === 'group-allowance-edited') {
+      assert.equal(latestEvent.groupId, groupId);
+      assert.equal(latestEvent.previousMinutes, 30);
+      assert.equal(latestEvent.nextMinutes, 45);
+    }
   });
 });

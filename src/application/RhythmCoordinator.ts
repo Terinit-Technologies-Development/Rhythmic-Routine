@@ -351,13 +351,13 @@ export class RhythmCoordinator {
     }
     if (!this.config || !this.engine) return;
 
-    this.config = {
+    const candidateConfig: RhythmConfiguration = {
       ...this.config,
       ...nextConfig,
     };
 
     const { storage } = getPlatformServices();
-    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
+    const appClassifications = candidateConfig.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
@@ -366,20 +366,27 @@ export class RhythmCoordinator {
     }, {});
 
     await storage.savePreferences({
-      routineWindows: this.config.routineWindows,
-      riskGroups: this.config.riskGroups,
+      routineWindows: candidateConfig.routineWindows,
+      riskGroups: candidateConfig.riskGroups,
       appClassifications,
-      sessionResetGapMs: this.config.sessionResetGapMs ?? 5 * 60 * 1000,
+      sessionResetGapMs: candidateConfig.sessionResetGapMs ?? 5 * 60 * 1000,
       onboardingCompleted: true,
     });
 
+    // Commit in-memory config only after preference persistence succeeds.
+    this.config = candidateConfig;
+
     // Execute effects emitted directly from updateConfiguration
-    const effects = this.engine.updateConfiguration(this.config);
+    const effects = this.engine.updateConfiguration(candidateConfig);
     await this.executeEffects(effects);
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
     await this.syncNativeState();
     this.notifyListeners();
+  }
+
+  public getRuntimeSnapshot(): RhythmRuntime | null {
+    return this.engine?.getRuntime() ?? null;
   }
 
   public getConfig(): RhythmConfiguration | null {
