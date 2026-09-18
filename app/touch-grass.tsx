@@ -59,7 +59,7 @@ export default function TouchGrassScreen() {
           </Text>
           <Text style={styles.subtitle}>
             {group
-              ? `${threshold} min session reached · ${recovery} min recovery break.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
+              ? `${threshold} min group allowance reached · ${recovery} min recovery break.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
               : `Recovery break active.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`}
           </Text>
         </View>

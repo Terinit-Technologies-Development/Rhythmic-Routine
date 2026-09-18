@@ -140,7 +140,8 @@ export type RhythmEvent =
   | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
-  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
+  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'RISK_GROUP_DELETED'; groupId: string; timestamp: number };
 
 export type RhythmEffect =
   | { type: 'APPLY_RESTRICTIONS'; appIds: string[] }

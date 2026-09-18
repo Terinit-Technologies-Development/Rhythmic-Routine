@@ -433,6 +433,30 @@ export function processRhythmEvent(
     case 'ROUTINE_STARTED':
     case 'ROUTINE_ENDED':
       break;
+
+    case 'RISK_GROUP_DELETED': {
+      if (nextCooldowns[event.groupId]) {
+        delete nextCooldowns[event.groupId];
+        effects.push({
+          type: 'END_COOLDOWN',
+          groupId: event.groupId,
+        });
+      }
+      if (nextAccessLeases[event.groupId]) {
+        delete nextAccessLeases[event.groupId];
+        effects.push({
+          type: 'END_ACCESS_LEASE',
+          groupId: event.groupId,
+        });
+      }
+      delete nextGroupAllowanceUsage[event.groupId];
+
+      if (nextSession?.groupId === event.groupId) {
+        nextSession = undefined;
+      }
+
+      break;
+    }
   }
 
   // 4. Resolve active routine windows

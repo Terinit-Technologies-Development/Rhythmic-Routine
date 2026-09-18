@@ -37,6 +37,7 @@ import { usePrototypeStore } from '../../src/store/usePrototypeStore';
 import { resolveGroupAllowanceMinutes } from '../../src/domain/rhythm/allowance';
 import { getLocalDateKey } from '../../src/domain/insights';
 import { useNow } from '../../src/domain/timer';
+import { RiskGroupConfigurationDraft } from '../../src/types/domain';
 import Svg, { Path, Circle } from 'react-native-svg';
 
 export default function RiskGroupDetailScreen() {
@@ -45,12 +46,9 @@ export default function RiskGroupDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const saveRiskGroup = usePrototypeStore((s) => s.saveRiskGroup);
+  const saveRiskGroupConfiguration = usePrototypeStore((s) => s.saveRiskGroupConfiguration);
   const deleteRiskGroup = usePrototypeStore((s) => s.deleteRiskGroup);
-  const updateRiskGroupAllowance = usePrototypeStore((s) => s.updateRiskGroupAllowance);
-  const updateRiskGroupRecoveryActivity = usePrototypeStore((s) => s.updateRiskGroupRecoveryActivity);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
-  const toggleGroupProtection = usePrototypeStore((s) => s.toggleGroupProtection);
   const apps = usePrototypeStore((s) => s.apps);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const groupSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
@@ -66,12 +64,26 @@ export default function RiskGroupDetailScreen() {
 
   const currentAllowanceMinutes = group ? resolveGroupAllowanceMinutes(group) : 30;
 
+  const morningWin = routineWindows.find((w) => w.type === 'morning-buffer');
+  const eveningWin = routineWindows.find((w) => w.type === 'evening-wind-down');
+
+  const morningBufferEnabled = group ? morningWin?.protectedGroupIds.includes(group.id) ?? false : false;
+  const eveningWindDownEnabled = group ? eveningWin?.protectedGroupIds.includes(group.id) ?? false : false;
+
+  const resolvedRecoveryActivity =
+    offlineActivities.find((a) => a.id === group?.recoveryActivityId) ??
+    offlineActivities.find((a) => a.id === 'walk');
+  const resolvedRecoveryActivityId = resolvedRecoveryActivity?.id ?? 'walk';
+
   // Staged editing draft
-  const [draft, setDraft] = useState(() => ({
+  const [draft, setDraft] = useState<RiskGroupConfigurationDraft>(() => ({
     name: group?.name ?? '',
     description: group?.description ?? '',
-    sessionThresholdMinutes: currentAllowanceMinutes,
+    allowanceMinutes: currentAllowanceMinutes,
     cooldownMinutes: group?.cooldownMinutes ?? 60,
+    recoveryActivityId: resolvedRecoveryActivityId,
+    morningProtected: morningBufferEnabled,
+    eveningProtected: eveningWindDownEnabled,
   }));
 
   const [isEditingDetails, setIsEditingDetails] = useState(false);
@@ -89,9 +101,12 @@ export default function RiskGroupDetailScreen() {
   const isDirty = Boolean(
     group &&
       (draft.name.trim() !== group.name ||
-        draft.description.trim() !== group.description ||
-        draft.sessionThresholdMinutes !== currentAllowanceMinutes ||
-        draft.cooldownMinutes !== group.cooldownMinutes)
+        draft.description.trim() !== (group.description ?? '') ||
+        draft.allowanceMinutes !== currentAllowanceMinutes ||
+        draft.cooldownMinutes !== group.cooldownMinutes ||
+        draft.recoveryActivityId !== resolvedRecoveryActivityId ||
+        draft.morningProtected !== morningBufferEnabled ||
+        draft.eveningProtected !== eveningWindDownEnabled)
   );
 
   if (!group) {
@@ -137,17 +152,7 @@ export default function RiskGroupDetailScreen() {
 
   const cooldownOptions = [30, 60, 90, 120, 180];
 
-  const morningWin = routineWindows.find((w) => w.type === 'morning-buffer');
-  const eveningWin = routineWindows.find((w) => w.type === 'evening-wind-down');
-
-  const morningBufferEnabled = morningWin?.protectedGroupIds.includes(group.id) ?? false;
-  const eveningWindDownEnabled = eveningWin?.protectedGroupIds.includes(group.id) ?? false;
-
   const memberApps = apps.filter((a) => a.riskGroupId === group.id || group.appIds.includes(a.id));
-  const resolvedRecoveryActivity =
-    offlineActivities.find((a) => a.id === group.recoveryActivityId) ??
-    offlineActivities.find((a) => a.id === 'walk');
-  const resolvedRecoveryActivityId = resolvedRecoveryActivity?.id ?? 'walk';
 
   const isCustomGroup =
     group.origin === 'custom' ||
@@ -182,30 +187,31 @@ export default function RiskGroupDetailScreen() {
       setIsSaving(true);
       setSaveError(null);
 
-      // If allowance changed, update through updateRiskGroupAllowance
-      if (draft.sessionThresholdMinutes !== currentAllowanceMinutes) {
-        const res = await updateRiskGroupAllowance(group.id, draft.sessionThresholdMinutes);
-        if (!res.ok) {
-          const msgs: Record<string, string> = {
-            'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
-            'increase-too-large': 'Group allowance increase cannot exceed 15 minutes at a time.',
-            'invalid-step': 'Group allowance must be adjusted in 15-minute intervals.',
-            'below-minimum': 'Group allowance cannot be negative.',
-            'group-not-found': 'Risk Group not found.',
-          };
-          setSaveError(msgs[res.reason || ''] || 'Unable to update group allowance.');
-          setIsSaving(false);
-          return;
-        }
-      }
-
-      await saveRiskGroup(group.id, {
+      const res = await saveRiskGroupConfiguration(group.id, {
+        ...draft,
         name: trimmedName,
         description: draft.description.trim(),
-        sessionThresholdMinutes: draft.sessionThresholdMinutes,
-        cooldownMinutes: draft.cooldownMinutes,
       });
 
+      if (!res.ok) {
+        const msgs: Record<string, string> = {
+          'name-required': 'Risk Group name cannot be empty.',
+          'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
+          'increase-too-large': 'Group allowance increase cannot exceed 15 minutes at a time.',
+          'invalid-step': 'Group allowance must be adjusted in 15-minute intervals.',
+          'below-minimum': 'Group allowance cannot be negative.',
+          'group-not-found': 'Risk Group not found.',
+          'persistence-failed': 'Failed to save group changes.',
+        };
+        setSaveError(msgs[res.reason] || 'Unable to update group.');
+        return;
+      }
+
+      setDraft((d) => ({
+        ...d,
+        name: trimmedName,
+        description: d.description.trim(),
+      }));
       setIsEditingDetails(false);
     } catch {
       setSaveError('Failed to save group changes.');
@@ -217,9 +223,12 @@ export default function RiskGroupDetailScreen() {
   const handleDiscard = () => {
     setDraft({
       name: group.name,
-      description: group.description,
-      sessionThresholdMinutes: currentAllowanceMinutes,
+      description: group.description ?? '',
+      allowanceMinutes: currentAllowanceMinutes,
       cooldownMinutes: group.cooldownMinutes,
+      recoveryActivityId: resolvedRecoveryActivityId,
+      morningProtected: morningBufferEnabled,
+      eveningProtected: eveningWindDownEnabled,
     });
     setIsEditingDetails(false);
     setSaveError(null);
@@ -254,15 +263,11 @@ export default function RiskGroupDetailScreen() {
   };
 
   const toggleMorning = (val: boolean) => {
-    if (morningWin) {
-      toggleGroupProtection(morningWin.id, group.id, val);
-    }
+    setDraft((d) => ({ ...d, morningProtected: val }));
   };
 
   const toggleEvening = (val: boolean) => {
-    if (eveningWin) {
-      toggleGroupProtection(eveningWin.id, group.id, val);
-    }
+    setDraft((d) => ({ ...d, eveningProtected: val }));
   };
 
   const renderAppIcon = (appId: string) => {
@@ -471,7 +476,7 @@ export default function RiskGroupDetailScreen() {
             </View>
             <View style={styles.allowanceStatCol}>
               <Text style={styles.allowanceStatLabel}>Allowance</Text>
-              <Text style={styles.allowanceStatValue}>{draft.sessionThresholdMinutes} min</Text>
+              <Text style={styles.allowanceStatValue}>{draft.allowanceMinutes} min</Text>
             </View>
             <View style={styles.allowanceStatCol}>
               <Text style={styles.allowanceStatLabel}>Remaining</Text>
@@ -489,45 +494,45 @@ export default function RiskGroupDetailScreen() {
             <TouchableOpacity
               style={[
                 styles.stepBtn,
-                (isAllowanceEditLocked || draft.sessionThresholdMinutes <= 0) && styles.stepBtnDisabled,
+                (isAllowanceEditLocked || draft.allowanceMinutes <= 0) && styles.stepBtnDisabled,
               ]}
-              disabled={isAllowanceEditLocked || draft.sessionThresholdMinutes <= 0}
+              disabled={isAllowanceEditLocked || draft.allowanceMinutes <= 0}
               onPress={() =>
                 setDraft((d) => ({
                   ...d,
-                  sessionThresholdMinutes: Math.max(0, d.sessionThresholdMinutes - 15),
+                  allowanceMinutes: Math.max(0, d.allowanceMinutes - 15),
                 }))
               }
             >
               <Minus
                 size={20}
-                color={isAllowanceEditLocked || draft.sessionThresholdMinutes <= 0 ? colors.textMuted : colors.forest}
+                color={isAllowanceEditLocked || draft.allowanceMinutes <= 0 ? colors.textMuted : colors.forest}
                 strokeWidth={2.5}
               />
             </TouchableOpacity>
 
             <Text style={styles.stepperNumber}>
-              {draft.sessionThresholdMinutes} <Text style={styles.stepperUnit}>min</Text>
+              {draft.allowanceMinutes} <Text style={styles.stepperUnit}>min</Text>
             </Text>
 
             <TouchableOpacity
               style={[
                 styles.stepBtn,
-                (isAllowanceEditLocked || draft.sessionThresholdMinutes >= currentAllowanceMinutes + 15) &&
+                (isAllowanceEditLocked || draft.allowanceMinutes >= currentAllowanceMinutes + 15) &&
                   styles.stepBtnDisabled,
               ]}
-              disabled={isAllowanceEditLocked || draft.sessionThresholdMinutes >= currentAllowanceMinutes + 15}
+              disabled={isAllowanceEditLocked || draft.allowanceMinutes >= currentAllowanceMinutes + 15}
               onPress={() =>
                 setDraft((d) => ({
                   ...d,
-                  sessionThresholdMinutes: Math.min(currentAllowanceMinutes + 15, d.sessionThresholdMinutes + 15),
+                  allowanceMinutes: Math.min(currentAllowanceMinutes + 15, d.allowanceMinutes + 15),
                 }))
               }
             >
               <Plus
                 size={20}
                 color={
-                  isAllowanceEditLocked || draft.sessionThresholdMinutes >= currentAllowanceMinutes + 15
+                  isAllowanceEditLocked || draft.allowanceMinutes >= currentAllowanceMinutes + 15
                     ? colors.textMuted
                     : colors.forest
                 }
@@ -617,12 +622,12 @@ export default function RiskGroupDetailScreen() {
 
           <View style={styles.activitiesList}>
             {offlineActivities.map((act) => {
-              const isChosen = act.id === resolvedRecoveryActivityId;
+              const isChosen = act.id === draft.recoveryActivityId;
               return (
                 <TouchableOpacity
                   key={act.id}
                   style={[styles.activityOption, isChosen && styles.activityOptionSelected]}
-                  onPress={() => updateRiskGroupRecoveryActivity(group.id, act.id)}
+                  onPress={() => setDraft((d) => ({ ...d, recoveryActivityId: act.id }))}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.activityEmoji}>{act.iconEmoji}</Text>
@@ -659,7 +664,7 @@ export default function RiskGroupDetailScreen() {
               </View>
             </View>
             <Switch
-              value={morningBufferEnabled}
+              value={draft.morningProtected}
               onValueChange={toggleMorning}
               trackColor={{ false: '#E2DCD1', true: colors.forest }}
               thumbColor="#FFFFFF"
@@ -679,7 +684,7 @@ export default function RiskGroupDetailScreen() {
               </View>
             </View>
             <Switch
-              value={eveningWindDownEnabled}
+              value={draft.eveningProtected}
               onValueChange={toggleEvening}
               trackColor={{ false: '#E2DCD1', true: colors.forest }}
               thumbColor="#FFFFFF"
@@ -697,7 +702,7 @@ export default function RiskGroupDetailScreen() {
               <Clock size={16} color={colors.amberDark} />
               <View style={{ marginTop: 6 }}>
                 <Text style={styles.logicBoxTitle}>
-                  {draft.sessionThresholdMinutes} min online
+                  {draft.allowanceMinutes} min online
                 </Text>
                 <Text style={styles.logicBoxSub}>Group Allowance</Text>
               </View>
@@ -749,8 +754,15 @@ export default function RiskGroupDetailScreen() {
       {isDirty && (
         <View style={[styles.dirtyBar, { paddingBottom: Math.max(16, insets.bottom + 8) }]}>
           <View style={styles.dirtyBarInfo}>
-            <Text style={styles.dirtyBarTitle}>Unsaved changes</Text>
-            <Text style={styles.dirtyBarSubtitle}>Staged group configuration</Text>
+            <Text style={styles.dirtyBarTitle}>
+              {saveError ? 'Save failed' : 'Unsaved changes'}
+            </Text>
+            <Text
+              style={[styles.dirtyBarSubtitle, saveError ? { color: '#DC2626' } : null]}
+              numberOfLines={1}
+            >
+              {saveError || 'Staged group configuration'}
+            </Text>
           </View>
           <View style={styles.dirtyBarActions}>
             <TouchableOpacity

@@ -12,6 +12,8 @@ import {
   CreateRiskGroupInput,
   RiskGroupPatch,
   DeleteRiskGroupResult,
+  RiskGroupConfigurationDraft,
+  SaveRiskGroupResult,
 } from '../types/domain';
 import {
   initialApps,
@@ -38,6 +40,9 @@ import {
 import {
   DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
   GroupAllowanceEditResult,
+  resolveGroupAllowanceMinutes,
+  resolveGroupRecoveryActivityId,
+  validateGroupAllowanceEdit,
 } from '../domain/rhythm/allowance';
 
 function getPlatformOS(): string {
@@ -186,14 +191,15 @@ interface PrototypeState {
     classification: AppClassification,
     riskGroupId?: string
   ) => Promise<void>;
-  updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => void;
+  updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => Promise<SaveRiskGroupResult>;
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
   toggleRoutineDay: (day: number) => void;
   toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
   createRiskGroup: (input: CreateRiskGroupInput) => Promise<string>;
+  saveRiskGroupConfiguration: (groupId: string, draft: RiskGroupConfigurationDraft) => Promise<SaveRiskGroupResult>;
   saveRiskGroup: (groupId: string, patch: RiskGroupPatch) => Promise<void>;
   deleteRiskGroup: (groupId: string, replacementGroupId?: string) => Promise<DeleteRiskGroupResult>;
-  addNewRiskGroup: (name: string, description: string) => string;
+  addNewRiskGroup: (name: string, description: string) => Promise<string>;
   selectIosRiskGroupApps: (groupId: string) => Promise<void>;
 
   setSearchQuery: (query: string) => void;
@@ -728,18 +734,37 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
-  updateRiskGroup: (groupId, updates) => {
-    set((state) => {
-      const updatedRiskGroups = state.riskGroups.map((g) =>
-        g.id === groupId ? { ...g, ...updates } : g
-      );
+  updateRiskGroup: async (groupId, updates) => {
+    const state = get();
+    const existing = state.riskGroups.find((g) => g.id === groupId);
+    if (!existing) {
+      return { ok: false, groupId, reason: 'group-not-found' };
+    }
+    const morningWin = state.routineWindows.find((w) => w.id === 'morning-buffer');
+    const eveningWin = state.routineWindows.find((w) => w.id === 'evening-wind-down');
+    const morningProtected = morningWin ? morningWin.protectedGroupIds.includes(groupId) : false;
+    const eveningProtected = eveningWin ? eveningWin.protectedGroupIds.includes(groupId) : false;
 
-      RhythmCoordinator.getInstance().updateConfig({
-        riskGroups: updatedRiskGroups,
-      }).catch(() => {});
+    const draft: RiskGroupConfigurationDraft & { sessionThresholdMinutes?: number } = {
+      name: updates.name !== undefined ? updates.name : existing.name,
+      description: updates.description !== undefined ? updates.description : (existing.description ?? ''),
+      allowanceMinutes:
+        updates.allowanceMinutes !== undefined
+          ? updates.allowanceMinutes
+          : updates.sessionThresholdMinutes !== undefined
+          ? updates.sessionThresholdMinutes
+          : resolveGroupAllowanceMinutes(existing),
+      sessionThresholdMinutes: updates.sessionThresholdMinutes,
+      cooldownMinutes: updates.cooldownMinutes !== undefined ? updates.cooldownMinutes : existing.cooldownMinutes,
+      recoveryActivityId:
+        updates.recoveryActivityId !== undefined
+          ? updates.recoveryActivityId
+          : resolveGroupRecoveryActivityId(existing),
+      morningProtected,
+      eveningProtected,
+    };
 
-      return { riskGroups: updatedRiskGroups };
-    });
+    return get().saveRiskGroupConfiguration(groupId, draft);
   },
 
   updateRoutineWindow: (windowId, updates) => {
@@ -807,8 +832,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       get().riskGroups.map((g) => g.id)
     );
 
-    const threshold = input.sessionThresholdMinutes ?? 30;
-    const cooldown = input.cooldownMinutes ?? 60;
+    const allowanceMinutes = input.allowanceMinutes ?? 30;
+    const cooldownMinutes = input.cooldownMinutes ?? 60;
 
     const next: RiskGroup = {
       id,
@@ -818,9 +843,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       iconColor: '#164B38',
       iconBg: '#E8EFE5',
       appIds: [],
-      allowanceMinutes: threshold,
-      sessionThresholdMinutes: threshold,
-      cooldownMinutes: cooldown,
+      allowanceMinutes,
+      cooldownMinutes,
       recoveryActivityId: 'walk',
       currentSessionMinutes: 0,
       isBufferingToday: false,
@@ -833,32 +857,141 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     return id;
   },
 
+  saveRiskGroupConfiguration: async (
+    groupId: string,
+    draft: RiskGroupConfigurationDraft
+  ): Promise<SaveRiskGroupResult> => {
+    const state = get();
+    const existing = state.riskGroups.find((g) => g.id === groupId);
+    if (!existing) {
+      return { ok: false, groupId, reason: 'group-not-found' };
+    }
+
+    const name = draft.name.trim();
+    if (!name) {
+      return { ok: false, groupId, reason: 'name-required' };
+    }
+
+    const currentAllowance = resolveGroupAllowanceMinutes(existing);
+    const allowanceChanged = draft.allowanceMinutes !== currentAllowance;
+    const todayKey = getLocalDateKey();
+
+    if (allowanceChanged) {
+      const validation = validateGroupAllowanceEdit({
+        currentMinutes: currentAllowance,
+        requestedMinutes: draft.allowanceMinutes,
+        lastEditedDateKey: existing.lastAllowanceEditedDateKey,
+        todayDateKey: todayKey,
+      });
+      if (!validation.ok) {
+        return {
+          ok: false,
+          groupId,
+          reason: validation.reason ?? 'unavailable',
+        };
+      }
+    }
+
+    const updatedRiskGroups = state.riskGroups.map((group) => {
+      if (group.id !== groupId) return group;
+      const nextGroup: RiskGroup = {
+        ...group,
+        name,
+        description: draft.description.trim(),
+        allowanceMinutes: draft.allowanceMinutes,
+        cooldownMinutes: draft.cooldownMinutes,
+        recoveryActivityId: draft.recoveryActivityId,
+        lastAllowanceEditedDateKey: allowanceChanged ? todayKey : group.lastAllowanceEditedDateKey,
+      };
+      if (
+        group.sessionThresholdMinutes !== undefined ||
+        (draft as any).sessionThresholdMinutes !== undefined
+      ) {
+        nextGroup.sessionThresholdMinutes = draft.allowanceMinutes;
+      }
+      return nextGroup;
+    });
+
+    const updatedWindows = state.routineWindows.map((win) => {
+      let protectedGroupIds = [...win.protectedGroupIds];
+      if (win.id === 'morning-buffer') {
+        if (draft.morningProtected && !protectedGroupIds.includes(groupId)) {
+          protectedGroupIds.push(groupId);
+        } else if (!draft.morningProtected && protectedGroupIds.includes(groupId)) {
+          protectedGroupIds = protectedGroupIds.filter((id) => id !== groupId);
+        }
+      } else if (win.id === 'evening-wind-down') {
+        if (draft.eveningProtected && !protectedGroupIds.includes(groupId)) {
+          protectedGroupIds.push(groupId);
+        } else if (!draft.eveningProtected && protectedGroupIds.includes(groupId)) {
+          protectedGroupIds = protectedGroupIds.filter((id) => id !== groupId);
+        }
+      }
+      return { ...win, protectedGroupIds };
+    });
+
+    try {
+      if (allowanceChanged) {
+        const { storage } = getPlatformServices();
+        await storage.appendHistoryEvent({
+          type: 'group-allowance-edited',
+          groupId,
+          previousMinutes: currentAllowance,
+          nextMinutes: draft.allowanceMinutes,
+          timestamp: Date.now(),
+        });
+      }
+
+      await RhythmCoordinator.getInstance().updateConfig({
+        riskGroups: updatedRiskGroups,
+        routineWindows: updatedWindows,
+      });
+    } catch {
+      return { ok: false, groupId, reason: 'persistence-failed' };
+    }
+
+    set({
+      riskGroups: updatedRiskGroups,
+      routineWindows: updatedWindows,
+    });
+
+    return { ok: true, groupId };
+  },
+
   saveRiskGroup: async (groupId: string, patch: RiskGroupPatch) => {
     const state = get();
     const existing = state.riskGroups.find((g) => g.id === groupId);
     if (!existing) {
       throw new Error('group-not-found');
     }
+    const morningWin = state.routineWindows.find((w) => w.id === 'morning-buffer');
+    const eveningWin = state.routineWindows.find((w) => w.id === 'evening-wind-down');
+    const morningProtected = morningWin ? morningWin.protectedGroupIds.includes(groupId) : false;
+    const eveningProtected = eveningWin ? eveningWin.protectedGroupIds.includes(groupId) : false;
 
-    const normalizedPatch: Partial<RiskGroup> = { ...patch };
-    if (normalizedPatch.name !== undefined) {
-      normalizedPatch.name = normalizedPatch.name.trim();
-    }
-    if (normalizedPatch.description !== undefined) {
-      normalizedPatch.description = normalizedPatch.description.trim();
-    }
-    if (normalizedPatch.sessionThresholdMinutes !== undefined && normalizedPatch.allowanceMinutes === undefined) {
-      normalizedPatch.allowanceMinutes = normalizedPatch.sessionThresholdMinutes;
-    } else if (normalizedPatch.allowanceMinutes !== undefined && normalizedPatch.sessionThresholdMinutes === undefined) {
-      normalizedPatch.sessionThresholdMinutes = normalizedPatch.allowanceMinutes;
-    }
+    const draft: RiskGroupConfigurationDraft & { sessionThresholdMinutes?: number } = {
+      name: patch.name !== undefined ? patch.name : existing.name,
+      description: patch.description !== undefined ? patch.description : (existing.description ?? ''),
+      allowanceMinutes:
+        patch.allowanceMinutes !== undefined
+          ? patch.allowanceMinutes
+          : (patch as any).sessionThresholdMinutes !== undefined
+          ? (patch as any).sessionThresholdMinutes
+          : resolveGroupAllowanceMinutes(existing),
+      sessionThresholdMinutes: (patch as any).sessionThresholdMinutes,
+      cooldownMinutes: patch.cooldownMinutes !== undefined ? patch.cooldownMinutes : existing.cooldownMinutes,
+      recoveryActivityId:
+        patch.recoveryActivityId !== undefined
+          ? patch.recoveryActivityId
+          : resolveGroupRecoveryActivityId(existing),
+      morningProtected,
+      eveningProtected,
+    };
 
-    const updatedRiskGroups = state.riskGroups.map((group) =>
-      group.id === groupId ? { ...group, ...normalizedPatch } : group
-    );
-
-    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedRiskGroups });
-    set({ riskGroups: updatedRiskGroups });
+    const res = await get().saveRiskGroupConfiguration(groupId, draft);
+    if (!res.ok) {
+      throw new Error(res.reason);
+    }
   },
 
   deleteRiskGroup: async (
@@ -953,6 +1086,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       routineWindows: updatedWindows,
     });
 
+    // Dispatch RISK_GROUP_DELETED to engine to purge active cooldowns, leases, usage, and session
+    await RhythmCoordinator.getInstance().dispatch({
+      type: 'RISK_GROUP_DELETED',
+      groupId,
+      timestamp: Date.now(),
+    });
+
     set({
       apps: updatedApps,
       riskGroups: updatedRiskGroups,
@@ -964,35 +1104,12 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     return { ok: true };
   },
 
-  addNewRiskGroup: (name, description) => {
-    const existingIds = get().riskGroups.map((g) => g.id);
-    const id = createUniqueGroupId(name, existingIds);
-
-    const newGroup: RiskGroup = {
-      id,
-      name: name.trim(),
-      description: description.trim() || 'Custom protected attention group',
-      iconName: 'folder-heart',
-      iconColor: '#164B38',
-      iconBg: '#E8EFE5',
-      appIds: [],
+  addNewRiskGroup: async (name: string, description: string): Promise<string> => {
+    return get().createRiskGroup({
+      name,
+      description,
       allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-      sessionThresholdMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-      cooldownMinutes: 60,
-      recoveryActivityId: 'walk',
-      currentSessionMinutes: 0,
-      isBufferingToday: false,
-      origin: 'custom',
-    };
-
-    const nextGroups = [...get().riskGroups, newGroup];
-    set({ riskGroups: nextGroups });
-
-    RhythmCoordinator.getInstance().updateConfig({
-      riskGroups: nextGroups,
-    }).catch(() => {});
-
-    return id;
+    });
   },
 
   selectIosRiskGroupApps: async (groupId: string) => {

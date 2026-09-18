@@ -124,6 +124,7 @@ export function formatSecondsToHHMMSS(totalSeconds: number): string {
 export interface CooldownDisplayInfo {
   activeGroup?: RiskGroup;
   groupName: string;
+  allowanceMinutes?: number;
   sessionThresholdMinutes?: number;
   cooldownMinutes?: number;
   title: string;
@@ -142,17 +143,18 @@ export function resolveCooldownInfo(
     ? riskGroups.find((g) => g.id === activeRiskGroupId)
     : undefined;
 
-  const threshold = activeGroup ? resolveGroupAllowanceMinutes(activeGroup) : undefined;
+  const allowance = activeGroup ? resolveGroupAllowanceMinutes(activeGroup) : undefined;
   const recovery = activeGroup?.cooldownMinutes;
 
   return {
     activeGroup,
     groupName: activeGroup ? activeGroup.name : 'Protected Apps',
-    sessionThresholdMinutes: threshold,
+    allowanceMinutes: allowance,
+    sessionThresholdMinutes: allowance,
     cooldownMinutes: recovery,
     title: activeGroup ? `${activeGroup.name} cooldown` : 'Recovery break active',
     subtitle: activeGroup
-      ? `${threshold} min session reached · ${recovery} min recovery`
+      ? `${allowance} min group allowance reached · ${recovery} min recovery`
       : 'Recovery break active',
   };
 }

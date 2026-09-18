@@ -501,6 +501,23 @@ export class RhythmCoordinator {
     return { ok: true, groupId, activityId: nextActivityId };
   }
 
+  /**
+   * Dispatches RISK_GROUP_DELETED to engine, purges runtime cooldowns,
+   * leases, usage, and session, syncs native state, and persists.
+   */
+  public async deleteRiskGroup(groupId: string, nowMs: number = Date.now()): Promise<void> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+    }
+    if (!this.engine || !this.config) return;
+
+    await this.dispatch({
+      type: 'RISK_GROUP_DELETED',
+      groupId,
+      timestamp: nowMs,
+    });
+  }
+
   private async getKnownRecoveryActivityIds(): Promise<string[]> {
     try {
       const mod = await import('../data/mockData').catch(() => null);

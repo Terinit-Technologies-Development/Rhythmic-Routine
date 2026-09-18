@@ -127,14 +127,40 @@ export type RiskGroupOrigin = 'seeded' | 'custom';
 export interface CreateRiskGroupInput {
   name: string;
   description?: string;
-  sessionThresholdMinutes?: number;
+  allowanceMinutes?: number;
   cooldownMinutes?: number;
 }
+
+export interface RiskGroupConfigurationDraft {
+  name: string;
+  description: string;
+  allowanceMinutes: number;
+  cooldownMinutes: number;
+  recoveryActivityId: string;
+  morningProtected: boolean;
+  eveningProtected: boolean;
+}
+
+export type SaveRiskGroupResult =
+  | { ok: true; groupId: string }
+  | {
+      ok: false;
+      groupId: string;
+      reason:
+        | 'group-not-found'
+        | 'name-required'
+        | 'already-edited-today'
+        | 'increase-too-large'
+        | 'invalid-step'
+        | 'below-minimum'
+        | 'persistence-failed'
+        | 'unavailable';
+    };
 
 export type RiskGroupPatch = Partial<
   Pick<
     RiskGroup,
-    'name' | 'description' | 'sessionThresholdMinutes' | 'cooldownMinutes' | 'allowanceMinutes' | 'recoveryActivityId'
+    'name' | 'description' | 'allowanceMinutes' | 'cooldownMinutes' | 'recoveryActivityId'
   >
 >;
 

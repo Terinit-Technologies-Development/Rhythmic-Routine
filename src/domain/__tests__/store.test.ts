@@ -56,10 +56,10 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     });
   });
 
-  test('Risk Group threshold and cooldown propagation', () => {
+  test('Risk Group threshold and cooldown propagation', async () => {
     const store = usePrototypeStore.getState();
 
-    store.updateRiskGroup('social', {
+    await store.updateRiskGroup('social', {
       sessionThresholdMinutes: 45,
       cooldownMinutes: 120,
     });
@@ -70,13 +70,13 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(social?.cooldownMinutes, 120);
   });
 
-  test('Custom Risk Group creation with unique ID', () => {
+  test('Custom Risk Group creation with unique ID', async () => {
     const store = usePrototypeStore.getState();
 
-    const id1 = store.addNewRiskGroup('News Feeds', 'Daily news feeds');
+    const id1 = await store.addNewRiskGroup('News Feeds', 'Daily news feeds');
     assert.equal(id1, 'news-feeds');
 
-    const id2 = store.addNewRiskGroup('News Feeds', 'Duplicate name test');
+    const id2 = await store.addNewRiskGroup('News Feeds', 'Duplicate name test');
     assert.equal(id2, 'news-feeds-2');
 
     const createdGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'news-feeds');

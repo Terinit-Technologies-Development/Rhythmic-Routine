@@ -27,7 +27,7 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [sessionThresholdMinutes, setSessionThresholdMinutes] = useState(30);
+  const [allowanceMinutes, setAllowanceMinutes] = useState(30);
   const [cooldownMinutes, setCooldownMinutes] = useState(60);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +46,13 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
       const id = await createRiskGroup({
         name: trimmed,
         description: description.trim() || undefined,
-        sessionThresholdMinutes,
+        allowanceMinutes,
         cooldownMinutes,
       });
 
       setName('');
       setDescription('');
-      setSessionThresholdMinutes(30);
+      setAllowanceMinutes(30);
       setCooldownMinutes(60);
       onClose();
       router.push(`/risk-groups/${id}` as any);
@@ -118,20 +118,20 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
             </View>
 
             <View style={styles.configRow}>
-              {/* Session Allowance Control */}
+              {/* Group Allowance Control */}
               <View style={styles.configCol}>
-                <Text style={styles.label}>Session Limit</Text>
+                <Text style={styles.label}>Group Allowance</Text>
                 <View style={styles.stepper}>
                   <TouchableOpacity
                     style={styles.stepBtn}
-                    onPress={() => setSessionThresholdMinutes((m) => Math.max(15, m - 15))}
+                    onPress={() => setAllowanceMinutes((m) => Math.max(15, m - 15))}
                   >
                     <Minus size={16} color={colors.forest} />
                   </TouchableOpacity>
-                  <Text style={styles.stepValue}>{sessionThresholdMinutes}m</Text>
+                  <Text style={styles.stepValue}>{allowanceMinutes}m</Text>
                   <TouchableOpacity
                     style={styles.stepBtn}
-                    onPress={() => setSessionThresholdMinutes((m) => Math.min(180, m + 15))}
+                    onPress={() => setAllowanceMinutes((m) => Math.min(180, m + 15))}
                   >
                     <Plus size={16} color={colors.forest} />
                   </TouchableOpacity>
