@@ -53,19 +53,45 @@ export interface ApprovalRequest {
   partnerId: string;
 }
 
-export type ProtectedMutation<TPayload = any> = {
+export type ManagePartnerMutationPayload =
+  | {
+      action: 'create';
+      name: string;
+      relationshipLabel?: string;
+      secretRef: string;
+    }
+  | {
+      action: 'update';
+      partnerId: string;
+      updates: {
+        name?: string;
+        relationshipLabel?: string;
+        enabled?: boolean;
+      };
+    }
+  | {
+      action: 'remove';
+      partnerId: string;
+    }
+  | {
+      action: 'replace-password';
+      partnerId: string;
+      secretRef: string;
+    };
+
+export interface ProtectedMutation<TPayload = unknown> {
   operation: AccountabilityOperation;
   summary: string;
   payload: TPayload;
-};
+}
 
-export type PendingApproval<TPayload = any> = {
+export interface PendingApproval<TPayload = unknown> {
   id: string;
   operation: AccountabilityOperation;
   summary: string;
   payload: TPayload;
   requestedAt: number;
-};
+}
 
 export interface AttemptState {
   failures: number;

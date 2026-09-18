@@ -122,6 +122,10 @@ export class InMemorySecureCredentialProvider implements SecureCredentialProvide
     return this.store.has(ref);
   }
 
+  get size(): number {
+    return this.store.size;
+  }
+
   clear(): void {
     this.store.clear();
   }

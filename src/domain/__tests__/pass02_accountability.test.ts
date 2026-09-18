@@ -1,6 +1,9 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { usePrototypeStore } from '../../store/usePrototypeStore';
+import {
+  usePrototypeStore,
+  __getTransientSecretCountForTests,
+} from '../../store/usePrototypeStore';
 import {
   requiresPartnerApproval,
   validatePartnerPassword,
@@ -13,6 +16,7 @@ import {
 } from '../../application/AccountabilityService';
 import { getPlatformServices } from '../../platform/PlatformServices';
 import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
+import { RhythmCoordinator } from '../../application/RhythmCoordinator';
 
 describe('Pass 02 — Accountability Core & Secure Authorization', () => {
   beforeEach(async () => {
@@ -349,20 +353,18 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     const store = usePrototypeStore.getState();
 
     // 1. When mode is OFF: executes immediately
-    let executedOff = false;
-    store.registerMutationExecutor('change-app-classification', async () => {
-      executedOff = true;
-    });
-
     const resultOff = await store.requestProtectedMutation({
-      operation: 'change-app-classification',
-      summary: 'Change Instagram to Risk',
-      payload: { appId: 'instagram', classification: 'risk' },
+      operation: 'change-daily-allowance',
+      summary: 'Change allowance to 45m',
+      payload: { groupId: 'social', allowanceMinutes: 45 },
     });
 
     assert.equal(resultOff.status, 'executed');
-    assert.equal(executedOff, true);
-    assert.equal(store.pendingApproval, null);
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')?.allowanceMinutes,
+      45
+    );
 
     // 2. Set up partner and enable mode
     const partner = await store.createAccountabilityPartner({
@@ -373,49 +375,53 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     assert.equal(usePrototypeStore.getState().accountability.enabled, true);
 
     // 3. When mode is ON: queues pending approval
-    let executedOn = false;
-    store.registerMutationExecutor('change-daily-allowance', async () => {
-      executedOn = true;
-    });
-
     const resultOn = await store.requestProtectedMutation({
       operation: 'change-daily-allowance',
       summary: 'Increase allowance to 60m',
-      payload: { groupId: 'social', allowanceMinutes: 60 },
+      payload: { groupId: 'entertainment', allowanceMinutes: 60 },
     });
 
     assert.equal(resultOn.status, 'pending-approval');
-    assert.equal(executedOn, false); // Not executed yet
     assert.ok(usePrototypeStore.getState().pendingApproval);
     assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'change-daily-allowance');
+    // Allowance should still be 45 (not executed yet)
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      45
+    );
 
     // 4. Failed approval leaves mutation pending and unexecuted
     const failApprove = await store.approveProtectedMutation(partner.id, 'wrong-password');
     assert.equal(failApprove.ok, false);
-    assert.equal(executedOn, false);
     assert.ok(usePrototypeStore.getState().pendingApproval);
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      45
+    );
 
     // 5. Successful approval runs executor and clears pending approval
     const okApprove = await store.approveProtectedMutation(partner.id, 'gateway-password-1');
     assert.equal(okApprove.ok, true);
-    assert.equal(executedOn, true);
     assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      60
+    );
 
     // 6. Cancellation clears pending approval without executing
-    let executedCancel = false;
-    store.registerMutationExecutor('create-risk-group', async () => {
-      executedCancel = true;
-    });
     await store.requestProtectedMutation({
-      operation: 'create-risk-group',
-      summary: 'Create Shopping group',
-      payload: { name: 'Shopping' },
+      operation: 'change-daily-allowance',
+      summary: 'Change allowance to 90m',
+      payload: { groupId: 'entertainment', allowanceMinutes: 90 },
     });
     assert.ok(usePrototypeStore.getState().pendingApproval);
 
     store.cancelPendingApproval();
     assert.equal(usePrototypeStore.getState().pendingApproval, null);
-    assert.equal(executedCancel, false);
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      60
+    );
   });
 
   test('15. password validation rules', () => {
@@ -438,5 +444,245 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     const enabled = getEnabledPartners(settings);
     assert.equal(enabled.length, 2);
     assert.deepEqual(enabled.map((p) => p.id), ['1', '3']);
+  });
+
+  test('17. raw executor APIs are not public', () => {
+    const store = usePrototypeStore.getState() as any;
+    assert.equal(store.executeProtectedMutation, undefined);
+    assert.equal(store.registerMutationExecutor, undefined);
+  });
+
+  test('18. partner creation password never enters pending state', async () => {
+    const store = usePrototypeStore.getState();
+    const p1 = await store.createAccountabilityPartner({
+      name: 'Partner 1',
+      password: 'password-123456',
+    });
+    await store.enableAccountability(p1.id, 'password-123456');
+
+    const secret = 'brand-new-partner-secret';
+    await store.createAccountabilityPartner({
+      name: 'Partner 2',
+      password: secret,
+    });
+
+    const pending = usePrototypeStore.getState().pendingApproval;
+    assert.ok(pending);
+    const serialized = JSON.stringify(pending);
+    assert.equal(serialized.includes(secret), false);
+    assert.equal(serialized.includes('password'), false);
+  });
+
+  test('19. replacement password never enters pending state', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Sole Partner',
+      password: 'initial-password-1',
+    });
+    await store.enableAccountability(partner.id, 'initial-password-1');
+
+    const secret = 'replacement-super-secret';
+    await store.replaceAccountabilityPartnerPassword(partner.id, secret);
+
+    const pending = usePrototypeStore.getState().pendingApproval;
+    assert.ok(pending);
+    assert.equal(JSON.stringify(pending).includes(secret), false);
+  });
+
+  test('20. cancellation clears transient secret', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Sole Partner',
+      password: 'initial-password-1',
+    });
+    await store.enableAccountability(partner.id, 'initial-password-1');
+
+    await store.replaceAccountabilityPartnerPassword(partner.id, 'replacement-pw-secret');
+    assert.equal(__getTransientSecretCountForTests(), 1);
+
+    store.cancelPendingApproval();
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(__getTransientSecretCountForTests(), 0);
+  });
+
+  test('21. failed protected partner creation removes credential', async () => {
+    const store = usePrototypeStore.getState();
+    const p1 = await store.createAccountabilityPartner({
+      name: 'Partner 1',
+      password: 'initial-password-1',
+    });
+    await store.enableAccountability(p1.id, 'initial-password-1');
+
+    const { credentials } = getPlatformServices();
+    const initialCredentialCount = credentials instanceof InMemorySecureCredentialProvider ? credentials.size : 0;
+
+    await store.createAccountabilityPartner({
+      name: 'Partner 2',
+      password: 'candidate-password-2',
+    });
+
+    // Mock coordinator updateConfig to fail
+    const coordinator = RhythmCoordinator.getInstance();
+    const originalUpdate = coordinator.updateConfig.bind(coordinator);
+    coordinator.updateConfig = async () => {
+      throw new Error('Disk failure');
+    };
+
+    try {
+      await assert.rejects(
+        async () => {
+          await store.approveProtectedMutation(p1.id, 'initial-password-1');
+        },
+        /Disk failure/
+      );
+
+      // Verify rollback
+      const state = usePrototypeStore.getState();
+      assert.equal(state.accountability.partners.length, 1);
+      assert.equal(state.accountability.partners[0].id, p1.id);
+      assert.equal(state.pendingApproval, null);
+      assert.equal(__getTransientSecretCountForTests(), 0);
+
+      if (credentials instanceof InMemorySecureCredentialProvider) {
+        assert.equal(credentials.size, initialCredentialCount);
+      }
+    } finally {
+      coordinator.updateConfig = originalUpdate;
+    }
+  });
+
+  test('22. failed direct partner creation removes credential', async () => {
+    const store = usePrototypeStore.getState();
+    const { credentials } = getPlatformServices();
+    const initialCredentialCount = credentials instanceof InMemorySecureCredentialProvider ? credentials.size : 0;
+
+    const coordinator = RhythmCoordinator.getInstance();
+    const originalUpdate = coordinator.updateConfig.bind(coordinator);
+    coordinator.updateConfig = async () => {
+      throw new Error('Database locked');
+    };
+
+    try {
+      await assert.rejects(
+        async () => {
+          await store.createAccountabilityPartner({
+            name: 'Doomed Partner',
+            password: 'doomed-password-1',
+          });
+        },
+        /Database locked/
+      );
+
+      const state = usePrototypeStore.getState();
+      assert.equal(state.accountability.partners.length, 0);
+      if (credentials instanceof InMemorySecureCredentialProvider) {
+        assert.equal(credentials.size, initialCredentialCount);
+      }
+    } finally {
+      coordinator.updateConfig = originalUpdate;
+    }
+  });
+
+  test('23. failed metadata removal does not delete credential first', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Partner To Keep',
+      password: 'partner-password-abc',
+    });
+
+    const coordinator = RhythmCoordinator.getInstance();
+    const originalUpdate = coordinator.updateConfig.bind(coordinator);
+    coordinator.updateConfig = async () => {
+      throw new Error('Storage write failed');
+    };
+
+    try {
+      await assert.rejects(
+        async () => {
+          await store.deleteAccountabilityPartner(partner.id);
+        },
+        /Storage write failed/
+      );
+
+      // Partner still in metadata
+      const state = usePrototypeStore.getState();
+      assert.equal(state.accountability.partners.length, 1);
+      assert.equal(state.accountability.partners[0].id, partner.id);
+
+      // Credential still verifies
+      const service = getAccountabilityService();
+      const verifyRes = await service.verifyApproval(
+        { operation: 'disable-accountability', summary: 'test', partnerId: partner.id },
+        'partner-password-abc',
+        partner
+      );
+      assert.equal(verifyRes.ok, true);
+    } finally {
+      coordinator.updateConfig = originalUpdate;
+    }
+  });
+
+  test('24. successful partner deletion removes metadata then credential', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Partner To Delete',
+      password: 'partner-password-xyz',
+    });
+
+    await store.deleteAccountabilityPartner(partner.id);
+
+    // Removed from store and storage
+    const state = usePrototypeStore.getState();
+    assert.equal(state.accountability.partners.length, 0);
+
+    const { storage } = getPlatformServices();
+    const prefs = await storage.loadPreferences();
+    assert.equal(prefs?.accountability?.partners.length, 0);
+
+    // Credential no longer verifies
+    const service = getAccountabilityService();
+    const verifyRes = await service.verifyApproval(
+      { operation: 'disable-accountability', summary: 'test', partnerId: partner.id },
+      'partner-password-xyz',
+      partner
+    );
+    assert.equal(verifyRes.ok, false);
+  });
+
+  test('25. pending operation cannot be overwritten', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Partner 1',
+      password: 'password-123456',
+    });
+    await store.enableAccountability(partner.id, 'password-123456');
+
+    // Queue operation 1
+    const res1 = await store.requestProtectedMutation({
+      operation: 'change-daily-allowance',
+      summary: 'Change allowance to 60m',
+      payload: { groupId: 'social', allowanceMinutes: 60 },
+    });
+    assert.equal(res1.status, 'pending-approval');
+    const firstPending = usePrototypeStore.getState().pendingApproval;
+    assert.ok(firstPending);
+    assert.equal(firstPending.operation, 'change-daily-allowance');
+
+    // Attempt operation 2 -> must reject
+    await assert.rejects(
+      async () => {
+        await store.requestProtectedMutation({
+          operation: 'reset-local-state',
+          summary: 'Reset state',
+          payload: {},
+        });
+      },
+      /already awaiting approval/
+    );
+
+    // First pending operation remains unchanged
+    const currentPending = usePrototypeStore.getState().pendingApproval;
+    assert.equal(currentPending?.id, firstPending.id);
+    assert.equal(currentPending?.operation, 'change-daily-allowance');
   });
 });
