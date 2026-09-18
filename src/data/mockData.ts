@@ -289,6 +289,7 @@ export const initialRiskGroups: RiskGroup[] = [
     recoveryActivityId: 'walk',
     currentSessionMinutes: 18,
     isBufferingToday: true,
+    origin: 'seeded',
   },
   {
     id: 'entertainment',
@@ -303,6 +304,7 @@ export const initialRiskGroups: RiskGroup[] = [
     recoveryActivityId: 'walk',
     currentSessionMinutes: 0,
     isBufferingToday: false,
+    origin: 'seeded',
   },
 ];
 

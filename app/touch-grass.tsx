@@ -22,9 +22,15 @@ export default function TouchGrassScreen() {
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const group = activeRiskGroupId
+    ? riskGroups.find((g) => g.id === activeRiskGroupId)
+    : undefined;
+  const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
+  const recovery = group?.cooldownMinutes;
 
-  const group = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
-  const configuredActivity = offlineActivities.find((a) => a.id === group?.recoveryActivityId);
+  const configuredActivity = group?.recoveryActivityId
+    ? offlineActivities.find((a) => a.id === group.recoveryActivityId)
+    : undefined;
   const displayActivities = configuredActivity
     ? [configuredActivity, ...offlineActivities.filter((a) => a.id !== configuredActivity.id)].slice(0, 4)
     : offlineActivities.slice(0, 4);
@@ -48,10 +54,13 @@ export default function TouchGrassScreen() {
             <Sprout size={24} color={colors.forest} strokeWidth={2.3} />
           </View>
 
-          <Text style={styles.title}>Touch grass 🌱</Text>
+          <Text style={styles.title}>
+            {group ? `${group.name} Cooldown 🌱` : 'Touch grass 🌱'}
+          </Text>
           <Text style={styles.subtitle}>
-            You’ve been in {group.name} for {resolveGroupAllowanceMinutes(group)} minutes.{'\n'}
-            Come back in {hrs > 0 ? `${hrs}h ` : ''}{mins}m.
+            {group
+              ? `${threshold} min session reached · ${recovery} min recovery break.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
+              : `Recovery break active.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`}
           </Text>
         </View>
 

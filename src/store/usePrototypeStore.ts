@@ -9,6 +9,9 @@ import {
   RiskGroup,
   RoutineWindow,
   DailyUsageSnapshot,
+  CreateRiskGroupInput,
+  RiskGroupPatch,
+  DeleteRiskGroupResult,
 } from '../types/domain';
 import {
   initialApps,
@@ -187,6 +190,9 @@ interface PrototypeState {
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
   toggleRoutineDay: (day: number) => void;
   toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
+  createRiskGroup: (input: CreateRiskGroupInput) => Promise<string>;
+  saveRiskGroup: (groupId: string, patch: RiskGroupPatch) => Promise<void>;
+  deleteRiskGroup: (groupId: string, replacementGroupId?: string) => Promise<DeleteRiskGroupResult>;
   addNewRiskGroup: (name: string, description: string) => string;
   selectIosRiskGroupApps: (groupId: string) => Promise<void>;
 
@@ -792,23 +798,191 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
+  createRiskGroup: async (input: CreateRiskGroupInput) => {
+    const name = input.name.trim();
+    if (!name) throw new Error('risk-group-name-required');
+
+    const id = createUniqueGroupId(
+      name,
+      get().riskGroups.map((g) => g.id)
+    );
+
+    const threshold = input.sessionThresholdMinutes ?? 30;
+    const cooldown = input.cooldownMinutes ?? 60;
+
+    const next: RiskGroup = {
+      id,
+      name,
+      description: input.description?.trim() || 'Custom protected attention group',
+      iconName: 'folder-heart',
+      iconColor: '#164B38',
+      iconBg: '#E8EFE5',
+      appIds: [],
+      allowanceMinutes: threshold,
+      sessionThresholdMinutes: threshold,
+      cooldownMinutes: cooldown,
+      recoveryActivityId: 'walk',
+      currentSessionMinutes: 0,
+      isBufferingToday: false,
+      origin: 'custom',
+    };
+
+    const nextGroups = [...get().riskGroups, next];
+    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: nextGroups });
+    set({ riskGroups: nextGroups });
+    return id;
+  },
+
+  saveRiskGroup: async (groupId: string, patch: RiskGroupPatch) => {
+    const state = get();
+    const existing = state.riskGroups.find((g) => g.id === groupId);
+    if (!existing) {
+      throw new Error('group-not-found');
+    }
+
+    const normalizedPatch: Partial<RiskGroup> = { ...patch };
+    if (normalizedPatch.name !== undefined) {
+      normalizedPatch.name = normalizedPatch.name.trim();
+    }
+    if (normalizedPatch.description !== undefined) {
+      normalizedPatch.description = normalizedPatch.description.trim();
+    }
+    if (normalizedPatch.sessionThresholdMinutes !== undefined && normalizedPatch.allowanceMinutes === undefined) {
+      normalizedPatch.allowanceMinutes = normalizedPatch.sessionThresholdMinutes;
+    } else if (normalizedPatch.allowanceMinutes !== undefined && normalizedPatch.sessionThresholdMinutes === undefined) {
+      normalizedPatch.sessionThresholdMinutes = normalizedPatch.allowanceMinutes;
+    }
+
+    const updatedRiskGroups = state.riskGroups.map((group) =>
+      group.id === groupId ? { ...group, ...normalizedPatch } : group
+    );
+
+    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedRiskGroups });
+    set({ riskGroups: updatedRiskGroups });
+  },
+
+  deleteRiskGroup: async (
+    groupId: string,
+    replacementGroupId?: string
+  ): Promise<DeleteRiskGroupResult> => {
+    const state = get();
+    const target = state.riskGroups.find((g) => g.id === groupId);
+    if (!target) {
+      return { ok: false, reason: 'group-not-found' };
+    }
+
+    const isSeeded = target.origin === 'seeded' || target.id === 'social' || target.id === 'entertainment';
+    if (isSeeded) {
+      return { ok: false, reason: 'cannot-delete-seeded-group' };
+    }
+
+    // Find apps that belong to this group (by app.riskGroupId or target.appIds)
+    const members = state.apps.filter(
+      (a) => a.riskGroupId === groupId || target.appIds.includes(a.id)
+    );
+
+    if (members.length > 0) {
+      if (!replacementGroupId) {
+        return { ok: false, reason: 'replacement-required' };
+      }
+      if (replacementGroupId === groupId) {
+        return { ok: false, reason: 'invalid-replacement-group' };
+      }
+      const replacement = state.riskGroups.find((g) => g.id === replacementGroupId);
+      if (!replacement) {
+        return { ok: false, reason: 'invalid-replacement-group' };
+      }
+    } else if (replacementGroupId) {
+      if (replacementGroupId === groupId) {
+        return { ok: false, reason: 'invalid-replacement-group' };
+      }
+      const replacement = state.riskGroups.find((g) => g.id === replacementGroupId);
+      if (!replacement) {
+        return { ok: false, reason: 'invalid-replacement-group' };
+      }
+    }
+
+    // 1. Reassign member apps
+    const memberAppIds = new Set(members.map((a) => a.id));
+    const updatedApps = state.apps.map((app) => {
+      if (memberAppIds.has(app.id)) {
+        return {
+          ...app,
+          riskGroupId: replacementGroupId,
+        };
+      }
+      return app;
+    });
+
+    // 2. Remove group from riskGroups & append to replacement group appIds
+    const updatedRiskGroups = state.riskGroups
+      .filter((g) => g.id !== groupId)
+      .map((g) => {
+        if (replacementGroupId && g.id === replacementGroupId) {
+          const combinedAppIds = Array.from(
+            new Set([...g.appIds, ...members.map((a) => a.id)])
+          );
+          return { ...g, appIds: combinedAppIds };
+        }
+        return g;
+      });
+
+    // 3. Remove group id from routine window protection arrays
+    const updatedWindows = state.routineWindows.map((w) => ({
+      ...w,
+      protectedGroupIds: w.protectedGroupIds.filter((id) => id !== groupId),
+    }));
+
+    // 4. Safely reconcile activeRiskGroupId
+    let nextActiveRiskGroupId = state.activeRiskGroupId;
+    if (nextActiveRiskGroupId === groupId) {
+      nextActiveRiskGroupId = replacementGroupId || updatedRiskGroups[0]?.id || 'social';
+    }
+
+    // 5. Clean up snapshots
+    let updatedSnapshots = state.groupUsageSnapshots;
+    if (updatedSnapshots && updatedSnapshots[groupId]) {
+      updatedSnapshots = { ...updatedSnapshots };
+      delete updatedSnapshots[groupId];
+    }
+
+    // Persist one coherent config update
+    await RhythmCoordinator.getInstance().updateConfig({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+      routineWindows: updatedWindows,
+    });
+
+    set({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+      routineWindows: updatedWindows,
+      activeRiskGroupId: nextActiveRiskGroupId,
+      groupUsageSnapshots: updatedSnapshots,
+    });
+
+    return { ok: true };
+  },
+
   addNewRiskGroup: (name, description) => {
     const existingIds = get().riskGroups.map((g) => g.id);
     const id = createUniqueGroupId(name, existingIds);
 
     const newGroup: RiskGroup = {
       id,
-      name,
-      description,
+      name: name.trim(),
+      description: description.trim() || 'Custom protected attention group',
       iconName: 'folder-heart',
       iconColor: '#164B38',
       iconBg: '#E8EFE5',
       appIds: [],
       allowanceMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+      sessionThresholdMinutes: DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
       cooldownMinutes: 60,
       recoveryActivityId: 'walk',
       currentSessionMinutes: 0,
       isBufferingToday: false,
+      origin: 'custom',
     };
 
     const nextGroups = [...get().riskGroups, newGroup];

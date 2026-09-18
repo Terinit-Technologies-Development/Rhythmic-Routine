@@ -6,10 +6,16 @@ import {
   StyleSheet,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  ActivityIndicator,
 } from 'react-native';
-import { FolderPlus, X } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
+import { FolderPlus, X, Minus, Plus } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface Props {
   visible: boolean;
@@ -17,78 +23,169 @@ interface Props {
 }
 
 export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const addNewRiskGroup = usePrototypeStore((s) => s.addNewRiskGroup);
+  const [sessionThresholdMinutes, setSessionThresholdMinutes] = useState(30);
+  const [cooldownMinutes, setCooldownMinutes] = useState(60);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const createRiskGroup = usePrototypeStore((s) => s.createRiskGroup);
 
   if (!visible) return null;
 
-  const handleCreate = () => {
-    if (!name.trim()) return;
-    addNewRiskGroup(name.trim(), description.trim() || 'Custom protected attention group');
-    setName('');
-    setDescription('');
-    onClose();
+  const handleCreate = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || isSubmitting) return;
+
+    try {
+      setIsSubmitting(true);
+      setError(null);
+      const id = await createRiskGroup({
+        name: trimmed,
+        description: description.trim() || undefined,
+        sessionThresholdMinutes,
+        cooldownMinutes,
+      });
+
+      setName('');
+      setDescription('');
+      setSessionThresholdMinutes(30);
+      setCooldownMinutes(60);
+      onClose();
+      router.push(`/risk-groups/${id}` as any);
+    } catch {
+      setError('Unable to create risk group. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <View style={styles.overlay}>
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View style={StyleSheet.absoluteFill} />
-      </TouchableWithoutFeedback>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={StyleSheet.absoluteFill}
+    >
+      <View style={styles.overlay}>
+        <TouchableWithoutFeedback onPress={onClose}>
+          <View style={StyleSheet.absoluteFill} />
+        </TouchableWithoutFeedback>
 
-      <View style={styles.modalCard}>
-        <View style={styles.header}>
-          <View style={styles.titleRow}>
-            <FolderPlus size={20} color={colors.forest} />
-            <Text style={styles.title}>Create Protected Group</Text>
+        <View
+          style={[
+            styles.modalCard,
+            { paddingBottom: Math.max(20, insets.bottom + 12) },
+          ]}
+        >
+          <View style={styles.header}>
+            <View style={styles.titleRow}>
+              <FolderPlus size={20} color={colors.forest} />
+              <Text style={styles.title}>Create Protected Group</Text>
+            </View>
+            <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+              <X size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-            <X size={20} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </View>
 
-        <Text style={styles.subtitle}>
-          Group related distracting apps together to manage their usage rhythm collectively.
-        </Text>
+          <Text style={styles.subtitle}>
+            Group related distracting apps together to manage their usage rhythm collectively.
+          </Text>
 
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>Group Name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Short Video, News & Feeds, Gaming"
-            placeholderTextColor={colors.textMuted}
-            value={name}
-            onChangeText={setName}
-          />
-        </View>
+          <ScrollView style={styles.scrollBody} showsVerticalScrollIndicator={false}>
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Group Name</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Gaming, Shopping, Short Video"
+                placeholderTextColor={colors.textMuted}
+                value={name}
+                onChangeText={setName}
+                autoFocus={true}
+              />
+            </View>
 
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>Description (Optional)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Video feeds and quick clips"
-            placeholderTextColor={colors.textMuted}
-            value={description}
-            onChangeText={setDescription}
-          />
-        </View>
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Description (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Video feeds and quick clips"
+                placeholderTextColor={colors.textMuted}
+                value={description}
+                onChangeText={setDescription}
+              />
+            </View>
 
-        <View style={styles.footer}>
-          <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-            <Text style={styles.cancelBtnText}>Cancel</Text>
-          </TouchableOpacity>
+            <View style={styles.configRow}>
+              {/* Session Allowance Control */}
+              <View style={styles.configCol}>
+                <Text style={styles.label}>Session Limit</Text>
+                <View style={styles.stepper}>
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    onPress={() => setSessionThresholdMinutes((m) => Math.max(15, m - 15))}
+                  >
+                    <Minus size={16} color={colors.forest} />
+                  </TouchableOpacity>
+                  <Text style={styles.stepValue}>{sessionThresholdMinutes}m</Text>
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    onPress={() => setSessionThresholdMinutes((m) => Math.min(180, m + 15))}
+                  >
+                    <Plus size={16} color={colors.forest} />
+                  </TouchableOpacity>
+                </View>
+              </View>
 
-          <TouchableOpacity
-            style={[styles.createBtn, !name.trim() && styles.createBtnDisabled]}
-            disabled={!name.trim()}
-            onPress={handleCreate}
-          >
-            <Text style={styles.createBtnText}>Create Group</Text>
-          </TouchableOpacity>
+              {/* Cooldown Duration Control */}
+              <View style={styles.configCol}>
+                <Text style={styles.label}>Cooldown</Text>
+                <View style={styles.stepper}>
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    onPress={() => setCooldownMinutes((m) => Math.max(15, m - 15))}
+                  >
+                    <Minus size={16} color={colors.forest} />
+                  </TouchableOpacity>
+                  <Text style={styles.stepValue}>{cooldownMinutes}m</Text>
+                  <TouchableOpacity
+                    style={styles.stepBtn}
+                    onPress={() => setCooldownMinutes((m) => Math.min(240, m + 15))}
+                  >
+                    <Plus size={16} color={colors.forest} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            {error && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            )}
+          </ScrollView>
+
+          <View style={styles.footer}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.createBtn, (!name.trim() || isSubmitting) && styles.createBtnDisabled]}
+              disabled={!name.trim() || isSubmitting}
+              onPress={handleCreate}
+            >
+              {isSubmitting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.createBtnText}>Create Group</Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -104,9 +201,11 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 440,
+    maxHeight: '90%',
     backgroundColor: '#FFFFFF',
     borderRadius: radii.xxl,
-    padding: 22,
+    paddingHorizontal: 22,
+    paddingTop: 22,
     zIndex: 10000,
     ...shadows.elevated,
   },
@@ -137,6 +236,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 18,
   },
+  scrollBody: {
+    flexShrink: 1,
+  },
   formGroup: {
     marginBottom: 14,
   },
@@ -156,10 +258,56 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text,
   },
+  configRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 14,
+  },
+  configCol: {
+    flex: 1,
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FAF8F4',
+    borderWidth: 1,
+    borderColor: '#EAE5DB',
+    borderRadius: radii.md,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  stepBtn: {
+    padding: 4,
+    borderRadius: radii.sm,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E8E3D7',
+  },
+  stepValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  errorBox: {
+    backgroundColor: '#FDF2F2',
+    borderWidth: 1,
+    borderColor: '#F8B4B4',
+    borderRadius: radii.md,
+    padding: 10,
+    marginBottom: 10,
+  },
+  errorText: {
+    fontSize: 12,
+    color: '#9B1C1C',
+  },
   footer: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#EFEAE0',
   },
   cancelBtn: {
     flex: 1,

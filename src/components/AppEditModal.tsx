@@ -6,7 +6,10 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, X, ShieldAlert, CheckCircle2, Scale, HelpCircle } from 'lucide-react-native';
 import { AppClassification, DeviceApp } from '../types/domain';
 import { colors, radii, shadows } from '../theme/tokens';
@@ -23,11 +26,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const updateAppClassification = usePrototypeStore((s) => s.updateAppClassification);
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
 
+  const insets = useSafeAreaInsets();
   const [classification, setClassification] = useState<AppClassification>(
     selectedApp.classification
   );
   const [selectedGroupId, setSelectedGroupId] = useState<string>(
-    selectedApp.riskGroupId || 'social'
+    selectedApp.riskGroupId || riskGroups[0]?.id || 'social'
   );
 
   const selectedGroup =
@@ -87,7 +91,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   ];
 
   return (
-    <View style={styles.modalCard}>
+    <View
+      style={[
+        styles.modalCard,
+        { paddingBottom: Math.max(20, insets.bottom + 12) },
+      ]}
+    >
       {/* Top Header */}
       <View style={styles.header}>
         <View>
@@ -204,17 +213,22 @@ export const AppEditModal: React.FC = () => {
   if (!appEdit.visible || !selectedApp) return null;
 
   return (
-    <View style={styles.overlay}>
-      <TouchableWithoutFeedback onPress={closeAppEdit}>
-        <View style={StyleSheet.absoluteFill} />
-      </TouchableWithoutFeedback>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={StyleSheet.absoluteFill}
+    >
+      <View style={styles.overlay}>
+        <TouchableWithoutFeedback onPress={closeAppEdit}>
+          <View style={StyleSheet.absoluteFill} />
+        </TouchableWithoutFeedback>
 
-      <AppEditForm
-        key={selectedApp.id}
-        selectedApp={selectedApp}
-        onClose={closeAppEdit}
-      />
-    </View>
+        <AppEditForm
+          key={selectedApp.id}
+          selectedApp={selectedApp}
+          onClose={closeAppEdit}
+        />
+      </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -235,7 +249,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xxl,
     paddingHorizontal: 22,
     paddingTop: 20,
-    paddingBottom: 28,
     zIndex: 10000,
     ...shadows.elevated,
   },
@@ -265,6 +278,7 @@ const styles = StyleSheet.create({
   },
   body: {
     maxHeight: 460,
+    flexShrink: 1,
   },
   sectionTitle: {
     fontSize: 14,

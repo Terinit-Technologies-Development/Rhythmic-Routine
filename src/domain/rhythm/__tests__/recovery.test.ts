@@ -153,8 +153,13 @@ describe('Pass 03: Recovery Engine & Re-entry Gate', () => {
       name: 'Twitter',
       classification: 'risk',
       riskGroupId: 'social',
-      dailyRiskAllowance: { allowedMinutes: 30 },
-      packageName: 'com.twitter.android',
+      dailyRiskAllowance: { allowanceMinutes: 30 },
+      iconName: 'twitter',
+      iconColor: '#1DA1F2',
+      iconBg: '#E8F5FD',
+      defaultCategory: 'Social',
+      usageTodayMinutes: 0,
+      sessionMinutes: 0,
     };
 
     test('startCooldown creates cooldown with attached recovery session ID and metadata', () => {

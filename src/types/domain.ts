@@ -118,7 +118,36 @@ export interface RiskGroup {
   nativeSelectionRef?: string;     // Reference to native iOS FamilyActivitySelection
   nativeSelectionCount?: number;   // Number of selections configured in FamilyActivitySelection
   nativeSelectionRevision?: number; // Monotonically increasing revision of the selection content
+  /** v1.1.0: tracks whether the risk group is seeded (starter) or custom (user-created). */
+  origin?: 'seeded' | 'custom';
 }
+
+export type RiskGroupOrigin = 'seeded' | 'custom';
+
+export interface CreateRiskGroupInput {
+  name: string;
+  description?: string;
+  sessionThresholdMinutes?: number;
+  cooldownMinutes?: number;
+}
+
+export type RiskGroupPatch = Partial<
+  Pick<
+    RiskGroup,
+    'name' | 'description' | 'sessionThresholdMinutes' | 'cooldownMinutes' | 'allowanceMinutes' | 'recoveryActivityId'
+  >
+>;
+
+export type DeleteRiskGroupResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | 'group-not-found'
+        | 'cannot-delete-seeded-group'
+        | 'replacement-required'
+        | 'invalid-replacement-group';
+    };
 
 /**
  * v1.0.2: one runtime usage record per Risk Group (not per app).

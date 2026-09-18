@@ -15,6 +15,7 @@ import {
   getRiskGroup,
   getRoutineTargetTime,
   getRoutineWindow,
+  resolveCooldownInfo,
 } from '../domain/selectors';
 import { useRemainingSeconds } from '../domain/timer';
 import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
@@ -44,7 +45,7 @@ export const RhythmStateHeroCard: React.FC = () => {
       case 'morning-buffer':
         return {
           title: 'Morning Buffer',
-          subtitle: `Social apps unlock at ${morningUnlock}`,
+          subtitle: `Protected apps unlock at ${morningUnlock}`,
           badgeText: 'Buffering',
           badgeIcon: Lock,
           badgeBg: '#E8EFE5',
@@ -83,10 +84,11 @@ export const RhythmStateHeroCard: React.FC = () => {
           ArtworkComponent: OpenDayLandscape,
           onPress: () => router.push(`/risk-groups/${activeGroup?.id}` as any),
         };
-      case 'cooldown':
+      case 'cooldown': {
+        const cooldownInfo = resolveCooldownInfo(riskGroups, activeRiskGroupId);
         return {
-          title: 'Touch Grass 🌱',
-          subtitle: `${allowanceMinutes} min allowance reached`,
+          title: cooldownInfo.title,
+          subtitle: cooldownInfo.subtitle,
           badgeText: 'Cooldown in progress',
           badgeIcon: Lock,
           badgeBg: colors.skyLight,
@@ -97,6 +99,7 @@ export const RhythmStateHeroCard: React.FC = () => {
           ArtworkComponent: TouchGrassMeadowLandscape,
           onPress: () => router.push('/touch-grass'),
         };
+      }
       case 'evening-wind-down':
         return {
           title: 'Evening Wind-Down',
