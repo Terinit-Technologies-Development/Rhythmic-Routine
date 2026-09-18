@@ -371,6 +371,7 @@ export class RhythmCoordinator {
       appClassifications,
       sessionResetGapMs: candidateConfig.sessionResetGapMs ?? 5 * 60 * 1000,
       onboardingCompleted: true,
+      accountability: candidateConfig.accountability ?? { enabled: false, partners: [] },
     });
 
     // Commit in-memory config only after preference persistence succeeds.

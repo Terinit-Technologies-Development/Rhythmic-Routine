@@ -71,7 +71,18 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     }, {}),
     sessionResetGapMs: 5 * 60 * 1000,
     onboardingCompleted: true,
+    accountability: {
+      enabled: false,
+      partners: [],
+    },
   };
+
+  if (!preferences.accountability) {
+    preferences.accountability = {
+      enabled: false,
+      partners: [],
+    };
+  }
 
   let configMigrationMutated = false;
   // True when persisted state used the v1.0.1 model (legacy group threshold
@@ -178,6 +189,7 @@ export async function bootstrapRhythm(options: BootstrapOptions = {}): Promise<B
     riskGroups: preferences.riskGroups,
     apps,
     sessionResetGapMs: preferences.sessionResetGapMs,
+    accountability: preferences.accountability,
   };
 
   const now = Date.now();

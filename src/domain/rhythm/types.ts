@@ -1,5 +1,6 @@
 import {
   AccessLease,
+  AccountabilitySettings,
   AppClassification,
   DailyAppUsage,
   DailyRiskAllowancePolicy,
@@ -13,6 +14,7 @@ import {
 
 export {
   AccessLease,
+  AccountabilitySettings,
   EMERGENCY_ACCESS_MINUTES,
   DailyAppUsage,
   DailyRiskAllowancePolicy,
@@ -87,6 +89,7 @@ export interface RhythmConfiguration {
   riskGroups: RiskGroup[];
   apps: DeviceApp[];
   sessionResetGapMs?: number;
+  accountability?: AccountabilitySettings;
 }
 
 export interface RhythmPreferences {
@@ -103,6 +106,7 @@ export interface RhythmPreferences {
   >;
   sessionResetGapMs: number;
   onboardingCompleted: boolean;
+  accountability?: AccountabilitySettings;
 }
 
 export type RhythmHistoryEvent =

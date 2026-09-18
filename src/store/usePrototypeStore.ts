@@ -44,6 +44,22 @@ import {
   resolveGroupRecoveryActivityId,
   validateGroupAllowanceEdit,
 } from '../domain/rhythm/allowance';
+import {
+  AccountabilityOperation,
+  AccountabilityPartner,
+  AccountabilitySettings,
+  ApprovalResult,
+  PendingApproval,
+  ProtectedMutation,
+} from '../domain/accountability/types';
+import {
+  requiresPartnerApproval,
+  getEnabledPartners,
+} from '../domain/accountability/policy';
+import {
+  getAccountabilityService,
+  resetAccountabilityService,
+} from '../application/AccountabilityService';
 
 function getPlatformOS(): string {
   if (typeof process !== 'undefined' && process.env?.RHYTHM_PLATFORM_OVERRIDE) {
@@ -215,10 +231,174 @@ interface PrototypeState {
   closeAppEdit: () => void;
 
   completeOnboarding: () => void;
+
+  // Accountability
+  accountability: AccountabilitySettings;
+  pendingApproval: PendingApproval | null;
+
+  // Protected mutation gateway & accountability actions
+  requestProtectedMutation: <T>(
+    mutation: ProtectedMutation<T>
+  ) => Promise<{ status: 'executed' | 'pending-approval' }>;
+  approveProtectedMutation: (
+    partnerId: string,
+    password: string
+  ) => Promise<ApprovalResult>;
+  cancelPendingApproval: () => void;
+  registerMutationExecutor: (
+    operation: AccountabilityOperation,
+    executor: (payload: any) => Promise<any>
+  ) => void;
+  executeProtectedMutation: (
+    operation: AccountabilityOperation,
+    payload: any
+  ) => Promise<any>;
+
+  createAccountabilityPartner: (params: {
+    name: string;
+    relationshipLabel?: string;
+    password: string;
+  }) => Promise<AccountabilityPartner>;
+  updateAccountabilityPartner: (
+    partnerId: string,
+    updates: {
+      name?: string;
+      relationshipLabel?: string;
+      enabled?: boolean;
+    }
+  ) => Promise<AccountabilityPartner>;
+  deleteAccountabilityPartner: (partnerId: string) => Promise<void>;
+  replaceAccountabilityPartnerPassword: (
+    partnerId: string,
+    newPassword: string
+  ) => Promise<void>;
+  enableAccountability: (
+    partnerId: string,
+    password: string
+  ) => Promise<ApprovalResult>;
+  disableAccountability: (
+    partnerId: string,
+    password: string
+  ) => Promise<ApprovalResult>;
 }
 
 // Initial demo timer: 01:18:24 remaining until morning unlock
 const INITIAL_TIMER_MS = (1 * 3600 + 18 * 60 + 24) * 1000;
+
+const mutationExecutors = new Map<AccountabilityOperation, (payload: any) => Promise<any>>();
+
+function registerDefaultMutationExecutors(
+  get: () => PrototypeState,
+  set: (partial: Partial<PrototypeState> | ((state: PrototypeState) => Partial<PrototypeState>)) => void
+) {
+  if (mutationExecutors.size > 0) return;
+
+  mutationExecutors.set('enable-accountability', async () => {
+    const state = get();
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      enabled: true,
+    };
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+  });
+
+  mutationExecutors.set('disable-accountability', async () => {
+    const state = get();
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      enabled: false,
+    };
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+  });
+
+  mutationExecutors.set('change-app-classification', async ({ appId, classification, riskGroupId }) => {
+    await get().updateAppClassification(appId, classification, riskGroupId);
+  });
+
+  mutationExecutors.set('change-daily-allowance', async ({ groupId, allowanceMinutes }) => {
+    await get().updateRiskGroupAllowance(groupId, allowanceMinutes);
+  });
+
+  mutationExecutors.set('create-risk-group', async (input) => {
+    return await get().createRiskGroup(input);
+  });
+
+  mutationExecutors.set('edit-risk-group', async ({ groupId, draft }) => {
+    return await get().saveRiskGroupConfiguration(groupId, draft);
+  });
+
+  mutationExecutors.set('delete-risk-group', async ({ groupId, replacementGroupId }) => {
+    return await get().deleteRiskGroup(groupId, replacementGroupId);
+  });
+
+  mutationExecutors.set('edit-risk-group-protection', async ({ windowId, groupId, enabled }) => {
+    get().toggleGroupProtection(windowId, groupId, enabled);
+  });
+
+  mutationExecutors.set('start-access-lease', async ({ groupId, durationMinutes }) => {
+    await get().startAccessLease(groupId, durationMinutes);
+  });
+
+  mutationExecutors.set('reset-local-state', async () => {
+    await get().resetDemo();
+  });
+
+  mutationExecutors.set('manage-accountability-partner', async ({ action, partnerId, updates, newPassword, createParams }) => {
+    const service = getAccountabilityService();
+    const state = get();
+    let nextPartners = [...state.accountability.partners];
+
+    if (action === 'create' && createParams) {
+      const partner = await service.createPartner(createParams);
+      nextPartners.push(partner);
+    } else if (action === 'update' && partnerId && updates) {
+      const existing = nextPartners.find((p) => p.id === partnerId);
+      if (existing) {
+        if (state.accountability.enabled && updates.enabled === false && existing.enabled) {
+          const remainingEnabled = nextPartners.filter((p) => p.id !== partnerId && p.enabled);
+          if (remainingEnabled.length === 0) {
+            throw new Error('Cannot disable the last enabled partner while Accountability Mode is active.');
+          }
+        }
+        const updated = service.updatePartnerMetadata(existing, updates);
+        nextPartners = nextPartners.map((p) => (p.id === partnerId ? updated : p));
+      }
+    } else if (action === 'remove' && partnerId) {
+      const existing = nextPartners.find((p) => p.id === partnerId);
+      if (existing) {
+        if (state.accountability.enabled) {
+          const remainingEnabled = nextPartners.filter((p) => p.id !== partnerId && p.enabled);
+          if (remainingEnabled.length === 0) {
+            throw new Error('Cannot remove the last enabled partner while Accountability Mode is active.');
+          }
+        }
+        await service.removePartner(existing);
+        nextPartners = nextPartners.filter((p) => p.id !== partnerId);
+      }
+    } else if (action === 'replace-password' && partnerId && newPassword) {
+      const existing = nextPartners.find((p) => p.id === partnerId);
+      if (existing) {
+        const updated = await service.replacePartnerPassword(existing, newPassword);
+        nextPartners = nextPartners.map((p) => (p.id === partnerId ? updated : p));
+      }
+    }
+
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      partners: nextPartners,
+    };
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+  });
+}
 
 export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   rhythmState: 'morning-buffer',
@@ -243,6 +423,12 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     restrictionCapability: 'foundation-only',
   },
 
+  accountability: {
+    enabled: false,
+    partners: [],
+  },
+  pendingApproval: null,
+
   searchQuery: '',
   filterClassification: 'all',
 
@@ -252,6 +438,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   appEdit: { visible: false },
 
   initializeApps: async () => {
+    registerDefaultMutationExecutors(get, set);
     try {
       const coordinator = RhythmCoordinator.getInstance();
       const runtime = await coordinator.initialize();
@@ -275,6 +462,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         apps: config?.apps ?? get().apps,
         riskGroups: config?.riskGroups ?? get().riskGroups,
         routineWindows: config?.routineWindows ?? get().routineWindows,
+        accountability: config?.accountability ?? get().accountability,
         rhythmState: runtime.state,
         activeTimerEndsAt: primaryCooldown?.endsAt || (runtime.state === 'morning-buffer' ? Date.now() + INITIAL_TIMER_MS : undefined),
         activeRiskGroupId: primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
@@ -626,6 +814,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   resetDemo: async () => {
+    registerDefaultMutationExecutors(get, set);
+    resetAccountabilityService();
     const coordinator = RhythmCoordinator.getInstance();
     const { storage } = getPlatformServices();
     await storage.clearAll();
@@ -645,6 +835,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       riskGroups: config?.riskGroups ?? [...initialRiskGroups],
       routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
       offlineActivities: [...defaultOfflineActivities],
+      accountability: config?.accountability ?? { enabled: false, partners: [] },
+      pendingApproval: null,
       insightMetrics: getPlatformOS() === 'web' ? { ...initialInsightMetrics } : { ...emptyInsightMetrics },
       weeklySummary: undefined,
       todaySummary: undefined,
@@ -1183,5 +1375,325 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   completeOnboarding: () => {
     get().setRhythmState('morning-buffer');
     set({ hasCompletedOnboarding: true });
+  },
+
+  // Protected mutation gateway
+  requestProtectedMutation: async <T>(
+    mutation: ProtectedMutation<T>
+  ): Promise<{ status: 'executed' | 'pending-approval' }> => {
+    registerDefaultMutationExecutors(get, set);
+    const state = get();
+    const requires = requiresPartnerApproval(state.accountability, mutation.operation);
+    if (!requires) {
+      const executor = mutationExecutors.get(mutation.operation);
+      if (executor) {
+        await executor(mutation.payload);
+      }
+      return { status: 'executed' };
+    }
+
+    const enabledPartners = getEnabledPartners(state.accountability);
+    if (enabledPartners.length === 0 && mutation.operation !== 'enable-accountability') {
+      throw new Error('No enabled accountability partners available to approve this operation');
+    }
+
+    const pending: PendingApproval<T> = {
+      id: `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      operation: mutation.operation,
+      summary: mutation.summary,
+      payload: mutation.payload,
+      requestedAt: Date.now(),
+    };
+
+    set({ pendingApproval: pending });
+    return { status: 'pending-approval' };
+  },
+
+  approveProtectedMutation: async (
+    partnerId: string,
+    password: string
+  ): Promise<ApprovalResult> => {
+    registerDefaultMutationExecutors(get, set);
+    const state = get();
+    const pending = state.pendingApproval;
+    if (!pending) {
+      return { ok: false, reason: 'partner-not-found' };
+    }
+
+    const partner = state.accountability.partners.find((p) => p.id === partnerId);
+    const service = getAccountabilityService();
+
+    const result = await service.verifyApproval(
+      {
+        operation: pending.operation,
+        summary: pending.summary,
+        partnerId,
+      },
+      password,
+      partner
+    );
+
+    if (result.ok) {
+      set({ pendingApproval: null });
+      const executor = mutationExecutors.get(pending.operation);
+      if (executor) {
+        await executor(pending.payload);
+      }
+    }
+
+    return result;
+  },
+
+  cancelPendingApproval: () => {
+    set({ pendingApproval: null });
+  },
+
+  registerMutationExecutor: (
+    operation: AccountabilityOperation,
+    executor: (payload: any) => Promise<any>
+  ) => {
+    mutationExecutors.set(operation, executor);
+  },
+
+  executeProtectedMutation: async (
+    operation: AccountabilityOperation,
+    payload: any
+  ): Promise<any> => {
+    registerDefaultMutationExecutors(get, set);
+    const executor = mutationExecutors.get(operation);
+    if (executor) {
+      return await executor(payload);
+    }
+  },
+
+  // Partner Management Actions
+  createAccountabilityPartner: async (params: {
+    name: string;
+    relationshipLabel?: string;
+    password: string;
+  }): Promise<AccountabilityPartner> => {
+    const state = get();
+    if (state.accountability.enabled) {
+      await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Add accountability partner "${params.name}"`,
+        payload: { action: 'create', createParams: params },
+      });
+      const now = Date.now();
+      return {
+        id: 'pending',
+        name: params.name,
+        relationshipLabel: params.relationshipLabel,
+        credentialRef: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        enabled: true,
+      };
+    }
+
+    const service = getAccountabilityService();
+    const partner = await service.createPartner(params);
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      partners: [...state.accountability.partners, partner],
+    };
+
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+    return partner;
+  },
+
+  updateAccountabilityPartner: async (
+    partnerId: string,
+    updates: {
+      name?: string;
+      relationshipLabel?: string;
+      enabled?: boolean;
+    }
+  ): Promise<AccountabilityPartner> => {
+    const state = get();
+    const existing = state.accountability.partners.find((p) => p.id === partnerId);
+    if (!existing) {
+      throw new Error('Partner not found');
+    }
+
+    if (state.accountability.enabled) {
+      if (updates.enabled === false && existing.enabled) {
+        const remainingEnabled = state.accountability.partners.filter((p) => p.id !== partnerId && p.enabled);
+        if (remainingEnabled.length === 0) {
+          throw new Error('Cannot disable the last enabled partner while Accountability Mode is active.');
+        }
+      }
+      await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Update partner "${existing.name}"`,
+        payload: { action: 'update', partnerId, updates },
+      });
+      return existing;
+    }
+
+    const service = getAccountabilityService();
+    const updated = service.updatePartnerMetadata(existing, updates);
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      partners: state.accountability.partners.map((p) =>
+        p.id === partnerId ? updated : p
+      ),
+    };
+
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+    return updated;
+  },
+
+  deleteAccountabilityPartner: async (partnerId: string): Promise<void> => {
+    const state = get();
+    const existing = state.accountability.partners.find((p) => p.id === partnerId);
+    if (!existing) {
+      throw new Error('Partner not found');
+    }
+
+    if (state.accountability.enabled) {
+      const remainingEnabled = state.accountability.partners.filter((p) => p.id !== partnerId && p.enabled);
+      if (remainingEnabled.length === 0) {
+        throw new Error('Cannot remove the last enabled partner while Accountability Mode is active.');
+      }
+      await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Remove accountability partner "${existing.name}"`,
+        payload: { action: 'remove', partnerId },
+      });
+      return;
+    }
+
+    const service = getAccountabilityService();
+    await service.removePartner(existing);
+
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      partners: state.accountability.partners.filter((p) => p.id !== partnerId),
+    };
+
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+  },
+
+  replaceAccountabilityPartnerPassword: async (
+    partnerId: string,
+    newPassword: string
+  ): Promise<void> => {
+    const state = get();
+    const existing = state.accountability.partners.find((p) => p.id === partnerId);
+    if (!existing) {
+      throw new Error('Partner not found');
+    }
+
+    if (state.accountability.enabled) {
+      await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Change password for partner "${existing.name}"`,
+        payload: { action: 'replace-password', partnerId, newPassword },
+      });
+      return;
+    }
+
+    const service = getAccountabilityService();
+    const updated = await service.replacePartnerPassword(existing, newPassword);
+    const nextAccountability: AccountabilitySettings = {
+      ...state.accountability,
+      partners: state.accountability.partners.map((p) =>
+        p.id === partnerId ? updated : p
+      ),
+    };
+
+    await RhythmCoordinator.getInstance().updateConfig({
+      accountability: nextAccountability,
+    });
+    set({ accountability: nextAccountability });
+  },
+
+  enableAccountability: async (
+    partnerId: string,
+    password: string
+  ): Promise<ApprovalResult> => {
+    const state = get();
+    const enabledPartners = getEnabledPartners(state.accountability);
+    if (enabledPartners.length === 0) {
+      return { ok: false, reason: 'no-enabled-partners' };
+    }
+
+    const partner = state.accountability.partners.find((p) => p.id === partnerId);
+    if (!partner || !partner.enabled) {
+      return { ok: false, reason: partner ? 'partner-disabled' : 'partner-not-found' };
+    }
+
+    const service = getAccountabilityService();
+    const result = await service.verifyApproval(
+      {
+        operation: 'enable-accountability',
+        summary: 'Enable Accountability Mode',
+        partnerId,
+      },
+      password,
+      partner
+    );
+
+    if (result.ok) {
+      const nextAccountability: AccountabilitySettings = {
+        ...state.accountability,
+        enabled: true,
+      };
+      await RhythmCoordinator.getInstance().updateConfig({
+        accountability: nextAccountability,
+      });
+      set({ accountability: nextAccountability });
+    }
+
+    return result;
+  },
+
+  disableAccountability: async (
+    partnerId: string,
+    password: string
+  ): Promise<ApprovalResult> => {
+    const state = get();
+    if (!state.accountability.enabled) {
+      return { ok: true, partnerId };
+    }
+
+    const partner = state.accountability.partners.find((p) => p.id === partnerId);
+    if (!partner || !partner.enabled) {
+      return { ok: false, reason: partner ? 'partner-disabled' : 'partner-not-found' };
+    }
+
+    const service = getAccountabilityService();
+    const result = await service.verifyApproval(
+      {
+        operation: 'disable-accountability',
+        summary: 'Disable Accountability Mode',
+        partnerId,
+      },
+      password,
+      partner
+    );
+
+    if (result.ok) {
+      const nextAccountability: AccountabilitySettings = {
+        ...state.accountability,
+        enabled: false,
+      };
+      await RhythmCoordinator.getInstance().updateConfig({
+        accountability: nextAccountability,
+      });
+      set({ accountability: nextAccountability });
+    }
+
+    return result;
   },
 }));

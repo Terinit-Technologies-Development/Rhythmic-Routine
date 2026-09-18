@@ -20,6 +20,7 @@ import {
   Key,
   Info,
   ShieldAlert,
+  Users,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
@@ -37,6 +38,7 @@ export default function SettingsScreen() {
   const permissionState = usePrototypeStore((s) => s.permissionState);
   const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
   const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
+  const accountability = usePrototypeStore((s) => s.accountability);
 
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
@@ -128,6 +130,35 @@ export default function SettingsScreen() {
             Operates on a pure TypeScript Rhythm Engine, multi-group concurrent cooldowns,
             continuous Risk Group session accounting, SQLite persistence, and truthful platform capability reporting.
           </Text>
+        </View>
+
+        {/* Accountability Protection */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View style={[styles.iconCircle, { backgroundColor: accountability?.enabled ? '#E8F5E9' : '#F4EFE6' }]}>
+              <Users size={22} color={accountability?.enabled ? colors.forest : colors.forestDark} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Accountability Protection</Text>
+              <Text style={styles.cardSub}>
+                {accountability?.enabled
+                  ? `Active • ${accountability.partners.filter((p) => p.enabled).length} active partner${accountability.partners.filter((p) => p.enabled).length === 1 ? '' : 's'}`
+                  : (accountability?.partners?.length ?? 0) > 0
+                  ? `Configured (${accountability?.partners.length} partner${accountability?.partners.length === 1 ? '' : 's'}) • Mode Off`
+                  : 'Disabled • No partner configured'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.cardText}>
+            Require trusted partner approval to modify routine windows, risk group allowances, or delete protected groups.
+          </Text>
+          <TouchableOpacity
+            style={[styles.permissionBtn, { marginTop: 12 }]}
+            activeOpacity={0.8}
+            onPress={() => router.push('/accountability')}
+          >
+            <Text style={styles.permissionBtnText}>Configure Accountability</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Device Permissions & Authorization */}

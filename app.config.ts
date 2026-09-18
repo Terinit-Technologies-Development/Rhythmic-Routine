@@ -50,6 +50,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-router',
     'expo-status-bar',
     'expo-sqlite',
+    'expo-secure-store',
     './plugins/withRhythmScreenTime',
     './plugins/withRhythmAndroidQaBuild',
   ],

@@ -277,3 +277,5 @@ export interface AccessLease {
   endsAt: number;
   reason: 'emergency' | 'intentional';
 }
+
+export * from '../domain/accountability/types';
