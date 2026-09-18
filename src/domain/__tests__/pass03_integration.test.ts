@@ -1,0 +1,505 @@
+import { describe, test, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { usePrototypeStore } from '../../store/usePrototypeStore';
+import { resetAccountabilityService } from '../../application/AccountabilityService';
+import { getPlatformServices } from '../../platform/PlatformServices';
+import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
+import { AppPolicyPayload } from '../accountability/types';
+import { buildAppPolicySummary } from '../accountability/policy';
+import { RiskGroupConfigurationDraft } from '../../types/domain';
+
+describe('Pass 03 — Protected Workflows & Full Integration', () => {
+  beforeEach(async () => {
+    const { credentials } = getPlatformServices();
+    if (credentials instanceof InMemorySecureCredentialProvider) {
+      credentials.clear();
+    }
+    resetAccountabilityService();
+    await usePrototypeStore.getState().resetDemo();
+  });
+
+  test('1. app classification requires approval when mode ON', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const app = store.apps.find((a) => a.id === 'instagram')!;
+    assert.equal(app.classification, 'risk');
+
+    const payload: AppPolicyPayload = {
+      appId: 'instagram',
+      classification: 'normal',
+    };
+
+    const result = await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: buildAppPolicySummary(app, payload, store.riskGroups),
+      payload,
+    });
+
+    assert.equal(result.status, 'pending-approval');
+    assert.ok(usePrototypeStore.getState().pendingApproval);
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'instagram')?.classification,
+      'risk'
+    );
+  });
+
+  test('2. wrong password or cancel leaves app classification unchanged', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const app = store.apps.find((a) => a.id === 'instagram')!;
+    const payload: AppPolicyPayload = {
+      appId: 'instagram',
+      classification: 'normal',
+    };
+
+    await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: buildAppPolicySummary(app, payload, store.riskGroups),
+      payload,
+    });
+
+    // Wrong password
+    const failRes = await store.approveProtectedMutation(partner.id, 'wrong-password');
+    assert.equal(failRes.ok, false);
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'instagram')?.classification,
+      'risk'
+    );
+    assert.ok(usePrototypeStore.getState().pendingApproval);
+
+    // Cancel
+    store.cancelPendingApproval();
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'instagram')?.classification,
+      'risk'
+    );
+  });
+
+  test('3. classification + allowance commits atomically exactly once after approval', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const app = store.apps.find((a) => a.id === 'netflix')!; // initially entertainment (45m allowance)
+    assert.equal(app.riskGroupId, 'entertainment');
+
+    const payload: AppPolicyPayload = {
+      appId: 'netflix',
+      classification: 'risk',
+      riskGroupId: 'entertainment',
+      dailyAllowanceMinutes: 60,
+    };
+
+    const res = await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: buildAppPolicySummary(app, payload, store.riskGroups),
+      payload,
+    });
+    assert.equal(res.status, 'pending-approval');
+
+    // Approve
+    const approveRes = await store.approveProtectedMutation(partner.id, 'password123');
+    assert.equal(approveRes.ok, true);
+
+    const updatedApp = usePrototypeStore.getState().apps.find((a) => a.id === 'netflix')!;
+    const updatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')!;
+
+    assert.equal(updatedApp.riskGroupId, 'entertainment');
+    assert.equal(updatedGroup.allowanceMinutes, 60);
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+  });
+
+  test('4. moving app to custom group preserves group membership invariant', async () => {
+    const store = usePrototypeStore.getState();
+
+    // Mode OFF: create custom group
+    const customGroupId = await store.createRiskGroup({
+      name: 'Gaming',
+      allowanceMinutes: 30,
+      cooldownMinutes: 60,
+    });
+
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    // Move 'discord' from 'social' to 'Gaming'
+    const app = store.apps.find((a) => a.id === 'discord')!;
+    assert.equal(app.riskGroupId, 'social');
+    assert.ok(store.riskGroups.find((g) => g.id === 'social')?.appIds.includes('discord'));
+
+    const payload: AppPolicyPayload = {
+      appId: 'discord',
+      classification: 'risk',
+      riskGroupId: customGroupId,
+    };
+
+    await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: buildAppPolicySummary(app, payload, store.riskGroups),
+      payload,
+    });
+
+    await store.approveProtectedMutation(partner.id, 'password123');
+
+    const nextState = usePrototypeStore.getState();
+    const updatedApp = nextState.apps.find((a) => a.id === 'discord')!;
+    const oldGroup = nextState.riskGroups.find((g) => g.id === 'social')!;
+    const newGroup = nextState.riskGroups.find((g) => g.id === customGroupId)!;
+
+    assert.equal(updatedApp.riskGroupId, customGroupId);
+    assert.equal(oldGroup.appIds.includes('discord'), false);
+    assert.equal(newGroup.appIds.includes('discord'), true);
+  });
+
+  test('5. Risk Group draft does not persist before approval', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const group = store.riskGroups.find((g) => g.id === 'social')!;
+    const originalCooldown = group.cooldownMinutes;
+
+    const draft: RiskGroupConfigurationDraft = {
+      name: 'Social Feeds Renamed',
+      description: 'New Description',
+      allowanceMinutes: group.allowanceMinutes ?? 60,
+      cooldownMinutes: originalCooldown + 30,
+      recoveryActivityId: group.recoveryActivityId ?? 'reading',
+      morningProtected: false,
+      eveningProtected: true,
+    };
+
+    const res = await store.requestProtectedMutation({
+      operation: 'edit-risk-group',
+      summary: `Update ${group.name} protection settings`,
+      payload: {
+        groupId: group.id,
+        draft,
+      },
+    });
+
+    assert.equal(res.status, 'pending-approval');
+
+    // Unchanged in store and coordinator
+    const currentGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+    assert.equal(currentGroup.name, group.name);
+    assert.equal(currentGroup.cooldownMinutes, originalCooldown);
+
+    // Cancel leaves it intact
+    store.cancelPendingApproval();
+    assert.equal(usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')?.name, group.name);
+  });
+
+  test('6. approved Risk Group batch updates group + routine protection coherently', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const group = store.riskGroups.find((g) => g.id === 'social')!;
+
+    const draft: RiskGroupConfigurationDraft = {
+      name: 'Calm Feeds',
+      description: 'Reformed feeds',
+      allowanceMinutes: group.allowanceMinutes ?? 60,
+      cooldownMinutes: 120,
+      recoveryActivityId: 'reading',
+      morningProtected: true,
+      eveningProtected: true,
+    };
+
+    await store.requestProtectedMutation({
+      operation: 'edit-risk-group',
+      summary: `Update ${group.name} protection settings`,
+      payload: {
+        groupId: group.id,
+        draft,
+      },
+    });
+
+    await store.approveProtectedMutation(partner.id, 'password123');
+
+    const state = usePrototypeStore.getState();
+    const updated = state.riskGroups.find((g) => g.id === 'social')!;
+    assert.equal(updated.name, 'Calm Feeds');
+    assert.equal(updated.cooldownMinutes, 120);
+    assert.equal(updated.recoveryActivityId, 'reading');
+
+    const morningWin = state.routineWindows.find((w) => w.id === 'morning-buffer')!;
+    const eveningWin = state.routineWindows.find((w) => w.id === 'evening-wind-down')!;
+    assert.ok(morningWin.protectedGroupIds.includes('social'));
+    assert.ok(eveningWin.protectedGroupIds.includes('social'));
+  });
+
+  test('7. custom group create is gated when mode ON, immediate when mode OFF', async () => {
+    const store = usePrototypeStore.getState();
+
+    // Mode OFF: immediate
+    const resOff = await store.requestProtectedMutation({
+      operation: 'create-risk-group',
+      summary: 'Create Risk Group "Hobbies" · 30 min session · 60 min cooldown',
+      payload: {
+        name: 'Hobbies',
+        allowanceMinutes: 30,
+        cooldownMinutes: 60,
+      },
+    });
+    assert.equal(resOff.status, 'executed');
+    assert.ok(usePrototypeStore.getState().riskGroups.some((g) => g.name === 'Hobbies'));
+
+    // Enable mode
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    // Mode ON: gated
+    const resOn = await store.requestProtectedMutation({
+      operation: 'create-risk-group',
+      summary: 'Create Risk Group "Gaming" · 45 min session · 90 min cooldown',
+      payload: {
+        name: 'Gaming',
+        allowanceMinutes: 45,
+        cooldownMinutes: 90,
+      },
+    });
+    assert.equal(resOn.status, 'pending-approval');
+    assert.equal(usePrototypeStore.getState().riskGroups.some((g) => g.name === 'Gaming'), false);
+
+    // Approve
+    await store.approveProtectedMutation(partner.id, 'password123');
+    assert.ok(usePrototypeStore.getState().riskGroups.some((g) => g.name === 'Gaming'));
+  });
+
+  test('8. custom group delete/reassignment is gated and atomic', async () => {
+    const store = usePrototypeStore.getState();
+    const customId = await store.createRiskGroup({
+      name: 'DoomScroll',
+      allowanceMinutes: 30,
+      cooldownMinutes: 60,
+    });
+
+    // Assign 'tiktok' to DoomScroll
+    await store.updateAppClassification('tiktok', 'risk', customId);
+
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    // Gated deletion moving member app to 'social'
+    const res = await store.requestProtectedMutation({
+      operation: 'delete-risk-group',
+      summary: 'Delete "DoomScroll" and move 1 app to "Social Feeds"',
+      payload: {
+        groupId: customId,
+        replacementGroupId: 'social',
+      },
+    });
+    assert.equal(res.status, 'pending-approval');
+    assert.ok(usePrototypeStore.getState().riskGroups.some((g) => g.id === customId));
+
+    // Approve
+    await store.approveProtectedMutation(partner.id, 'password123');
+
+    const state = usePrototypeStore.getState();
+    assert.equal(state.riskGroups.some((g) => g.id === customId), false);
+    assert.equal(state.apps.find((a) => a.id === 'tiktok')?.riskGroupId, 'social');
+    assert.ok(state.riskGroups.find((g) => g.id === 'social')?.appIds.includes('tiktok'));
+  });
+
+  test('9. Access Lease is gated', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const res = await store.requestProtectedMutation({
+      operation: 'start-access-lease',
+      summary: 'Allow Social Feeds for 15 minutes',
+      payload: {
+        groupId: 'social',
+        durationMinutes: 15,
+      },
+    });
+
+    assert.equal(res.status, 'pending-approval');
+
+    await store.approveProtectedMutation(partner.id, 'password123');
+    // Leased snapshot or runtime updated
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+  });
+
+  test('10. local reset is gated and clears credentials on approval', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const { credentials } = getPlatformServices();
+    if (credentials instanceof InMemorySecureCredentialProvider) {
+      assert.equal(credentials.size, 1);
+    }
+
+    const res = await store.requestProtectedMutation({
+      operation: 'reset-local-state',
+      summary: 'Reset all Rhythmic Routine local settings',
+      payload: {},
+    });
+    assert.equal(res.status, 'pending-approval');
+
+    // Approve reset
+    await store.approveProtectedMutation(partner.id, 'password123');
+
+    const state = usePrototypeStore.getState();
+    assert.equal(state.accountability.enabled, false);
+    assert.equal(state.accountability.partners.length, 0);
+
+    if (credentials instanceof InMemorySecureCredentialProvider) {
+      assert.equal(credentials.size, 0);
+    }
+  });
+
+  test('11. disabling accountability is gated', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+    assert.equal(usePrototypeStore.getState().accountability.enabled, true);
+
+    const res = await store.requestProtectedMutation({
+      operation: 'disable-accountability',
+      summary: 'Disable Accountability Mode',
+      payload: {},
+    });
+    assert.equal(res.status, 'pending-approval');
+    assert.equal(usePrototypeStore.getState().accountability.enabled, true);
+
+    await store.approveProtectedMutation(partner.id, 'password123');
+    assert.equal(usePrototypeStore.getState().accountability.enabled, false);
+    // Partner remains configured so user can re-enable later
+    assert.equal(usePrototypeStore.getState().accountability.partners.length, 1);
+  });
+
+  test('12. partner removal/replacement is gated', async () => {
+    const store = usePrototypeStore.getState();
+    const p1 = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    const p2 = await store.createAccountabilityPartner({
+      name: 'Bob',
+      password: 'password456',
+    });
+    await store.enableAccountability(p1.id, 'password123');
+
+    // Removing Bob requires approval
+    await store.deleteAccountabilityPartner(p2.id);
+    assert.ok(usePrototypeStore.getState().pendingApproval);
+    assert.equal(usePrototypeStore.getState().accountability.partners.length, 2);
+
+    await store.approveProtectedMutation(p1.id, 'password123');
+    assert.equal(usePrototypeStore.getState().accountability.partners.length, 1);
+    assert.equal(usePrototypeStore.getState().accountability.partners[0].id, p1.id);
+  });
+
+  test('13. mode OFF keeps normal flows usable without gating', async () => {
+    const store = usePrototypeStore.getState();
+    assert.equal(store.accountability.enabled, false);
+
+    // App classification
+    const resApp = await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: 'Change Instagram to normal',
+      payload: { appId: 'instagram', classification: 'normal' },
+    });
+    assert.equal(resApp.status, 'executed');
+    assert.equal(
+      usePrototypeStore.getState().apps.find((a) => a.id === 'instagram')?.classification,
+      'normal'
+    );
+
+    // Group creation
+    const resGroup = await store.requestProtectedMutation({
+      operation: 'create-risk-group',
+      summary: 'Create group',
+      payload: { name: 'Writing', allowanceMinutes: 45, cooldownMinutes: 60 },
+    });
+    assert.equal(resGroup.status, 'executed');
+
+    // Allowance
+    const resAllow = await store.requestProtectedMutation({
+      operation: 'change-daily-allowance',
+      summary: 'Change allowance',
+      payload: { groupId: 'entertainment', allowanceMinutes: 60 },
+    });
+    assert.equal(resAllow.status, 'executed');
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      60
+    );
+  });
+
+  test('14. duplicate approval submission does not double-execute', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    // We request an allowance change on entertainment (initial 45 -> 60)
+    await store.requestProtectedMutation({
+      operation: 'change-daily-allowance',
+      summary: 'Change allowance to 60m',
+      payload: { groupId: 'entertainment', allowanceMinutes: 60 },
+    });
+
+    // Run approval twice concurrently
+    const [res1, res2] = await Promise.allSettled([
+      store.approveProtectedMutation(partner.id, 'password123'),
+      store.approveProtectedMutation(partner.id, 'password123'),
+    ]);
+
+    // One must succeed, the other must safely fail (e.g. partner-not-found / no pending approval)
+    const successCount = [res1, res2].filter(
+      (r) => r.status === 'fulfilled' && (r.value as any).ok === true
+    ).length;
+
+    assert.equal(successCount, 1);
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
+      60
+    );
+  });
+});

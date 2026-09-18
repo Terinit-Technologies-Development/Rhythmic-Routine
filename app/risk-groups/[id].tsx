@@ -10,6 +10,7 @@ import {
   Platform,
   Modal,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -46,8 +47,7 @@ export default function RiskGroupDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const saveRiskGroupConfiguration = usePrototypeStore((s) => s.saveRiskGroupConfiguration);
-  const deleteRiskGroup = usePrototypeStore((s) => s.deleteRiskGroup);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const apps = usePrototypeStore((s) => s.apps);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
@@ -187,24 +187,36 @@ export default function RiskGroupDetailScreen() {
       setIsSaving(true);
       setSaveError(null);
 
-      const res = await saveRiskGroupConfiguration(group.id, {
+      const stagedDraft: RiskGroupConfigurationDraft = {
         ...draft,
         name: trimmedName,
         description: draft.description.trim(),
+      };
+
+      const result = await requestProtectedMutation({
+        operation: 'edit-risk-group',
+        summary: `Update ${group.name} protection settings`,
+        payload: {
+          groupId: group.id,
+          draft: stagedDraft,
+        },
       });
 
-      if (!res.ok) {
-        const msgs: Record<string, string> = {
-          'name-required': 'Risk Group name cannot be empty.',
-          'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
-          'increase-too-large': 'Group allowance increase cannot exceed 15 minutes at a time.',
-          'invalid-step': 'Group allowance must be adjusted in 15-minute intervals.',
-          'below-minimum': 'Group allowance cannot be negative.',
-          'group-not-found': 'Risk Group not found.',
-          'persistence-failed': 'Failed to save group changes.',
-        };
-        setSaveError(msgs[res.reason] || 'Unable to update group.');
-        return;
+      if (result.status === 'executed') {
+        const res = result.result as { ok: boolean; reason?: string } | undefined;
+        if (res && !res.ok) {
+          const msgs: Record<string, string> = {
+            'name-required': 'Risk Group name cannot be empty.',
+            'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
+            'increase-too-large': 'Group allowance increase cannot exceed 15 minutes at a time.',
+            'invalid-step': 'Group allowance must be adjusted in 15-minute intervals.',
+            'below-minimum': 'Group allowance cannot be negative.',
+            'group-not-found': 'Risk Group not found.',
+            'persistence-failed': 'Failed to save group changes.',
+          };
+          setSaveError(msgs[res.reason || ''] || 'Unable to update group.');
+          return;
+        }
       }
 
       setDraft((d) => ({
@@ -213,8 +225,8 @@ export default function RiskGroupDetailScreen() {
         description: d.description.trim(),
       }));
       setIsEditingDetails(false);
-    } catch {
-      setSaveError('Failed to save group changes.');
+    } catch (err: any) {
+      setSaveError(err?.message || 'Failed to save group changes.');
     } finally {
       setIsSaving(false);
     }
@@ -234,31 +246,69 @@ export default function RiskGroupDetailScreen() {
     setSaveError(null);
   };
 
+  const handleBack = () => {
+    if (isDirty) {
+      Alert.alert(
+        'Discard Changes?',
+        'You have unsaved changes to this Risk Group. Are you sure you want to discard them?',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              handleDiscard();
+              router.back();
+            },
+          },
+        ]
+      );
+    } else {
+      router.back();
+    }
+  };
+
   const handleConfirmDelete = async () => {
     try {
       setIsDeleting(true);
       setDeleteError(null);
-      const res = await deleteRiskGroup(
-        group.id,
-        memberApps.length > 0 ? selectedReplacementId : undefined
-      );
 
-      if (res.ok) {
-        setDeleteModalVisible(false);
+      const replacementId = memberApps.length > 0 ? selectedReplacementId : undefined;
+      const replacementGroup = riskGroups.find((g) => g.id === replacementId);
+
+      const summary =
+        memberApps.length > 0
+          ? `Delete “${group.name}” and move ${memberApps.length} app(s) to “${replacementGroup?.name || 'replacement group'}”`
+          : `Delete “${group.name}”`;
+
+      const result = await requestProtectedMutation({
+        operation: 'delete-risk-group',
+        summary,
+        payload: {
+          groupId: group.id,
+          replacementGroupId: replacementId,
+        },
+      });
+
+      setDeleteModalVisible(false);
+      if (result.status === 'executed') {
+        const res = result.result as { ok: boolean; reason?: string } | undefined;
+        if (res && !res.ok) {
+          const msgs: Record<string, string> = {
+            'replacement-required': 'Please select a replacement group for member apps.',
+            'invalid-replacement-group': 'Selected replacement group is invalid.',
+            'cannot-delete-seeded-group': 'Starter risk groups cannot be deleted.',
+            'group-not-found': 'Group not found.',
+            'active-runtime':
+              'This group is currently active. Wait until its current session or recovery cooldown ends before deleting it.',
+          };
+          setDeleteError(msgs[res.reason || ''] || 'Failed to delete risk group.');
+          return;
+        }
         router.replace('/(tabs)/routine');
-      } else {
-        const msgs: Record<string, string> = {
-          'replacement-required': 'Please select a replacement group for member apps.',
-          'invalid-replacement-group': 'Selected replacement group is invalid.',
-          'cannot-delete-seeded-group': 'Starter risk groups cannot be deleted.',
-          'group-not-found': 'Group not found.',
-          'active-runtime':
-            'This group is currently active. Wait until its current session or recovery cooldown ends before deleting it.',
-        };
-        setDeleteError(msgs[res.reason || ''] || 'Failed to delete risk group.');
       }
-    } catch {
-      setDeleteError('An unexpected error occurred during deletion.');
+    } catch (err: any) {
+      setDeleteError(err?.message || 'An unexpected error occurred during deletion.');
     } finally {
       setIsDeleting(false);
     }
@@ -319,7 +369,7 @@ export default function RiskGroupDetailScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.circleBtn}
-          onPress={() => router.back()}
+          onPress={handleBack}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <ChevronLeft size={22} color={colors.forestDark} strokeWidth={2.3} />

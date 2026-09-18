@@ -520,6 +520,17 @@ export default function AccountabilityScreen() {
             hardware storage.
           </Text>
         </View>
+
+        {/* Security Boundary Note */}
+        <View style={styles.boundaryCard}>
+          <AlertCircle size={18} color={colors.amberDark} />
+          <View style={{ flex: 1, marginLeft: 10 }}>
+            <Text style={styles.boundaryTitle}>Security Boundary</Text>
+            <Text style={styles.boundaryText}>
+              Accountability Mode is an intentional in-app behavioral guard designed to slow down impulsive changes. It cannot prevent operating system-level uninstallation, app data clearing, system permission revocation, or device wiping/rooting.
+            </Text>
+          </View>
+        </View>
       </ScrollView>
 
       {/* Partner Options Sheet / Modal */}
@@ -1442,5 +1453,26 @@ const styles = StyleSheet.create({
   partnerSelectOptionTextActive: {
     color: colors.forest,
     fontWeight: '700',
+  },
+  boundaryCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FAF5EE',
+    borderRadius: radii.lg,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#EFE7D8',
+  },
+  boundaryTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.amberDark,
+    marginBottom: 4,
+  },
+  boundaryText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.textSecondary,
   },
 });

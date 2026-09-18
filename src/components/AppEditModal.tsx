@@ -15,6 +15,8 @@ import { AppClassification, DeviceApp } from '../types/domain';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
+import { AppPolicyPayload } from '../domain/accountability/types';
+import { buildAppPolicySummary } from '../domain/accountability/policy';
 
 interface FormProps {
   selectedApp: DeviceApp;
@@ -23,7 +25,7 @@ interface FormProps {
 
 const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const updateAppClassification = usePrototypeStore((s) => s.updateAppClassification);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
 
   const insets = useSafeAreaInsets();
@@ -38,14 +40,22 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
     riskGroups.find((g) => g.id === selectedGroupId) || riskGroups[0];
 
   const handleSave = async () => {
-    await updateAppClassification(
-      selectedApp.id,
+    const payload: AppPolicyPayload = {
+      appId: selectedApp.id,
       classification,
-      classification === 'risk' ? selectedGroupId : undefined
-    );
+      riskGroupId: classification === 'risk' ? selectedGroupId : undefined,
+    };
+
+    const summary = buildAppPolicySummary(selectedApp, payload, riskGroups);
+
+    onClose();
+    await requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary,
+      payload,
+    });
 
     await refreshDailyUsage();
-    onClose();
   };
 
   const classifications: {

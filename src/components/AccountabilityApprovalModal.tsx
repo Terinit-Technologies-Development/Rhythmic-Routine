@@ -19,6 +19,11 @@ import { usePrototypeStore } from '../store/usePrototypeStore';
 import { getEnabledPartners } from '../domain/accountability/policy';
 import { PendingApproval } from '../domain/accountability/types';
 
+function getLockoutSecondsRemaining(lockoutEndsAt?: number): number {
+  if (!lockoutEndsAt) return 60;
+  return Math.max(1, Math.ceil((lockoutEndsAt - Date.now()) / 1000));
+}
+
 export const AccountabilityApprovalModal: React.FC = () => {
   const pendingApproval = usePrototypeStore((s) => s.pendingApproval);
   if (!pendingApproval) {
@@ -64,9 +69,15 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
       const result = await approveProtectedMutation(selectedPartner.id, password);
       if (!result.ok) {
         if (result.reason === 'rate-limited') {
-          setError('Too many failed attempts. Please wait 60 seconds before trying again.');
+          const secs = getLockoutSecondsRemaining(result.lockoutEndsAt);
+          setError(`Too many failed attempts. Locked out for ${secs}s.`);
         } else if (result.reason === 'invalid-password') {
-          setError('Incorrect password. Please verify and try again.');
+          const rem = result.remainingAttempts;
+          if (rem !== undefined) {
+            setError(`Incorrect password. ${rem} attempt${rem === 1 ? '' : 's'} remaining.`);
+          } else {
+            setError('Incorrect password. Please verify and try again.');
+          }
         } else if (result.reason === 'partner-disabled') {
           setError('Selected partner is currently disabled.');
         } else {
@@ -76,11 +87,14 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
     } catch (err: any) {
       setError(err?.message || 'Approval failed');
     } finally {
+      setPassword('');
       setLoading(false);
     }
   };
 
   const handleCancel = () => {
+    setPassword('');
+    setError(null);
     cancelPendingApproval();
   };
 

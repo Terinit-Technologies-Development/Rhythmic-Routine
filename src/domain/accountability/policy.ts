@@ -7,7 +7,9 @@ import {
   AccountabilityOperation,
   AccountabilityPartner,
   AccountabilitySettings,
+  AppPolicyPayload,
 } from './types';
+import { DeviceApp, RiskGroup } from '../../types/domain';
 
 /**
  * All protected accountability operations.
@@ -77,4 +79,51 @@ export function getEnabledPartners(
   settings: AccountabilitySettings
 ): AccountabilityPartner[] {
   return settings.partners.filter((p) => p.enabled);
+}
+
+/**
+ * Builds a human-readable, specific summary for an app classification/policy change.
+ * Examples:
+ * - “Change Instagram from Risk / Social to Normal”
+ * - “Move YouTube to Entertainment and set daily allowance to 45 min”
+ * - “Classify Discord as Risk (Social Feeds)”
+ */
+export function buildAppPolicySummary(
+  app: Pick<DeviceApp, 'name' | 'classification' | 'riskGroupId'>,
+  payload: AppPolicyPayload,
+  riskGroups: Pick<RiskGroup, 'id' | 'name'>[] = []
+): string {
+  const prevClassification = app.classification;
+  const nextClassification = payload.classification;
+  const targetGroup = riskGroups.find((g) => g.id === payload.riskGroupId);
+  const prevGroup = riskGroups.find((g) => g.id === app.riskGroupId);
+
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  let base = '';
+  if (nextClassification === 'risk') {
+    const groupName = targetGroup?.name || 'Risk Group';
+    if (prevClassification === 'risk') {
+      if (payload.riskGroupId && payload.riskGroupId !== app.riskGroupId) {
+        base = `Move ${app.name} to ${groupName}`;
+      } else {
+        base = `Update ${app.name} protection in ${groupName}`;
+      }
+    } else {
+      base = `Move ${app.name} to ${groupName}`;
+    }
+
+    if (payload.dailyAllowanceMinutes !== undefined) {
+      base += ` and set daily allowance to ${payload.dailyAllowanceMinutes} min`;
+    }
+    return base;
+  }
+
+  // Moving away from Risk or between non-risk
+  if (prevClassification === 'risk') {
+    const fromGroup = prevGroup?.name ? ` / ${prevGroup.name}` : '';
+    return `Change ${app.name} from Risk${fromGroup} to ${cap(nextClassification)}`;
+  }
+
+  return `Change ${app.name} from ${cap(prevClassification)} to ${cap(nextClassification)}`;
 }

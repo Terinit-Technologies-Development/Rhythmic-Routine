@@ -3,6 +3,12 @@
  * Domain Types
  */
 
+import {
+  AppClassification,
+  CreateRiskGroupInput,
+  RiskGroupConfigurationDraft,
+} from '../../types/domain';
+
 export interface AccountabilityPartner {
   id: string;
   name: string;
@@ -79,11 +85,100 @@ export type ManagePartnerMutationPayload =
       secretRef: string;
     };
 
-export interface ProtectedMutation<TPayload = unknown> {
-  operation: AccountabilityOperation;
-  summary: string;
-  payload: TPayload;
+export interface AppPolicyPayload {
+  appId: string;
+  classification: AppClassification;
+  riskGroupId?: string;
+  dailyAllowanceMinutes?: number;
 }
+
+export interface RiskGroupEditPayload {
+  groupId: string;
+  draft: RiskGroupConfigurationDraft;
+}
+
+export interface DeleteRiskGroupPayload {
+  groupId: string;
+  replacementGroupId?: string;
+}
+
+export interface AccessLeasePayload {
+  groupId: string;
+  durationMinutes: number;
+}
+
+export interface GroupProtectionEditPayload {
+  windowId: string;
+  groupId: string;
+  enabled: boolean;
+}
+
+export interface DailyAllowanceEditPayload {
+  groupId: string;
+  allowanceMinutes: number;
+}
+
+export type ProtectedMutation<TPayload = unknown> =
+  | {
+      operation: 'change-app-classification';
+      summary: string;
+      payload: AppPolicyPayload;
+    }
+  | {
+      operation: 'change-daily-allowance';
+      summary: string;
+      payload: DailyAllowanceEditPayload;
+    }
+  | {
+      operation: 'create-risk-group';
+      summary: string;
+      payload: CreateRiskGroupInput;
+    }
+  | {
+      operation: 'edit-risk-group';
+      summary: string;
+      payload: RiskGroupEditPayload;
+    }
+  | {
+      operation: 'delete-risk-group';
+      summary: string;
+      payload: DeleteRiskGroupPayload;
+    }
+  | {
+      operation: 'edit-risk-group-protection';
+      summary: string;
+      payload: GroupProtectionEditPayload;
+    }
+  | {
+      operation: 'start-access-lease';
+      summary: string;
+      payload: AccessLeasePayload;
+    }
+  | {
+      operation: 'reset-local-state';
+      summary: string;
+      payload: Record<string, unknown>;
+    }
+  | {
+      operation: 'enable-accountability';
+      summary: string;
+      payload: Record<string, unknown>;
+    }
+  | {
+      operation: 'disable-accountability';
+      summary: string;
+      payload: Record<string, unknown>;
+    }
+  | {
+      operation: 'manage-accountability-partner';
+      summary: string;
+      payload: ManagePartnerMutationPayload;
+    }
+  | {
+      operation: AccountabilityOperation;
+      summary: string;
+      payload: TPayload;
+    };
 
 export interface PendingApproval<TPayload = unknown> {
   id: string;

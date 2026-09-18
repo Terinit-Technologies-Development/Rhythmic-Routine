@@ -32,7 +32,7 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const createRiskGroup = usePrototypeStore((s) => s.createRiskGroup);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
 
   if (!visible) return null;
 
@@ -43,11 +43,17 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
     try {
       setIsSubmitting(true);
       setError(null);
-      const id = await createRiskGroup({
-        name: trimmed,
-        description: description.trim() || undefined,
-        allowanceMinutes,
-        cooldownMinutes,
+
+      const summary = `Create Risk Group “${trimmed}” · ${allowanceMinutes} min session · ${cooldownMinutes} min cooldown`;
+      const result = await requestProtectedMutation({
+        operation: 'create-risk-group',
+        summary,
+        payload: {
+          name: trimmed,
+          description: description.trim() || undefined,
+          allowanceMinutes,
+          cooldownMinutes,
+        },
       });
 
       setName('');
@@ -55,9 +61,12 @@ export const AddRiskGroupModal: React.FC<Props> = ({ visible, onClose }) => {
       setAllowanceMinutes(30);
       setCooldownMinutes(60);
       onClose();
-      router.push(`/risk-groups/${id}` as any);
-    } catch {
-      setError('Unable to create risk group. Please try again.');
+
+      if (result.status === 'executed' && typeof result.result === 'string') {
+        router.push(`/risk-groups/${result.result}` as any);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Unable to create risk group. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

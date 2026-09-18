@@ -32,7 +32,7 @@ import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const resetDemo = usePrototypeStore((s) => s.resetDemo);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
   const permissionState = usePrototypeStore((s) => s.permissionState);
@@ -95,6 +95,14 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleResetLocalState = async () => {
+    await requestProtectedMutation({
+      operation: 'reset-local-state',
+      summary: 'Reset all Rhythmic Routine local settings and accountability protection',
+      payload: {},
+    });
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -142,10 +150,14 @@ export default function SettingsScreen() {
               <Text style={styles.cardTitle}>Accountability Protection</Text>
               <Text style={styles.cardSub}>
                 {accountability?.enabled
-                  ? `Active • ${accountability.partners.filter((p) => p.enabled).length} active partner${accountability.partners.filter((p) => p.enabled).length === 1 ? '' : 's'}`
-                  : (accountability?.partners?.length ?? 0) > 0
-                  ? `Configured (${accountability?.partners.length} partner${accountability?.partners.length === 1 ? '' : 's'}) • Mode Off`
-                  : 'Disabled • No partner configured'}
+                  ? (accountability.partners.filter((p) => p.enabled).length === 1
+                      ? 'On · Protected by 1 partner'
+                      : `On · Protected by ${accountability.partners.filter((p) => p.enabled).length} partners`)
+                  : ((accountability?.partners?.length ?? 0) === 1
+                      ? 'Off · 1 partner configured'
+                      : (accountability?.partners?.length ?? 0) > 1
+                      ? `Off · ${accountability?.partners?.length} partners configured`
+                      : 'Off · No partner configured')}
               </Text>
             </View>
           </View>
@@ -157,7 +169,7 @@ export default function SettingsScreen() {
             activeOpacity={0.8}
             onPress={() => router.push('/accountability')}
           >
-            <Text style={styles.permissionBtnText}>Configure Accountability</Text>
+            <Text style={styles.permissionBtnText}>Manage Accountability</Text>
           </TouchableOpacity>
         </View>
 
@@ -288,7 +300,7 @@ export default function SettingsScreen() {
 
           <TouchableOpacity
             style={[styles.actionRow, styles.resetRow]}
-            onPress={resetDemo}
+            onPress={handleResetLocalState}
           >
             <RotateCcw size={18} color={colors.coralDark} />
             <Text style={[styles.actionText, { color: colors.coralDark }]}>

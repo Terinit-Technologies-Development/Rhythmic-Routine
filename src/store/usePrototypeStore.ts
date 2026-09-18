@@ -48,6 +48,7 @@ import {
   AccountabilityOperation,
   AccountabilityPartner,
   AccountabilitySettings,
+  AppPolicyPayload,
   ApprovalResult,
   ManagePartnerMutationPayload,
   PendingApproval,
@@ -61,6 +62,7 @@ import {
   getAccountabilityService,
   resetAccountabilityService,
 } from '../application/AccountabilityService';
+import { InMemorySecureCredentialProvider } from '../platform/SecureCredentialProvider';
 
 function getPlatformOS(): string {
   if (typeof process !== 'undefined' && process.env?.RHYTHM_PLATFORM_OVERRIDE) {
@@ -238,9 +240,9 @@ interface PrototypeState {
   pendingApproval: PendingApproval | null;
 
   // Protected mutation gateway & accountability actions
-  requestProtectedMutation: <T>(
+  requestProtectedMutation: <T = unknown>(
     mutation: ProtectedMutation<T>
-  ) => Promise<{ status: 'executed' | 'pending-approval' }>;
+  ) => Promise<{ status: 'executed' | 'pending-approval'; result?: unknown }>;
   approveProtectedMutation: (
     partnerId: string,
     password: string
@@ -281,6 +283,7 @@ const INITIAL_TIMER_MS = (1 * 3600 + 18 * 60 + 24) * 1000;
 const mutationExecutors = new Map<AccountabilityOperation, (payload: any) => Promise<any>>();
 
 const transientApprovalSecrets = new Map<string, string>();
+const inFlightApprovalIds = new Set<string>();
 
 function createTransientSecretRef(secret: string): string {
   const ref = `secret_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -357,11 +360,102 @@ function registerDefaultMutationExecutors(
     set({ accountability: nextAccountability });
   });
 
-  mutationExecutors.set('change-app-classification', async ({ appId, classification, riskGroupId }) => {
-    await get().updateAppClassification(appId, classification, riskGroupId);
+  mutationExecutors.set('change-app-classification', async (payload: AppPolicyPayload) => {
+    const { appId, classification, riskGroupId, dailyAllowanceMinutes } = payload;
+    const state = get();
+
+    // 1. Target existence check
+    const targetApp = state.apps.find((a) => a.id === appId);
+    if (!targetApp) {
+      throw new Error('App not found');
+    }
+
+    const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
+    if (classification === 'risk' && targetGroupId) {
+      const groupExists = state.riskGroups.some((g) => g.id === targetGroupId);
+      if (!groupExists) {
+        throw new Error('Risk group not found');
+      }
+    }
+
+    // 2. Validate allowance edit if requested
+    if (dailyAllowanceMinutes !== undefined && targetGroupId && classification === 'risk') {
+      const group = state.riskGroups.find((g) => g.id === targetGroupId);
+      if (group) {
+        const currentAllowance = resolveGroupAllowanceMinutes(group);
+        if (dailyAllowanceMinutes !== currentAllowance) {
+          const validation = validateGroupAllowanceEdit({
+            currentMinutes: currentAllowance,
+            requestedMinutes: dailyAllowanceMinutes,
+            lastEditedDateKey: group.lastAllowanceEditedDateKey,
+            todayDateKey: getLocalDateKey(),
+          });
+          if (!validation.ok) {
+            throw new Error(`Invalid allowance: ${validation.reason}`);
+          }
+        }
+      }
+    }
+
+    // 3. Atomically commit classification and allowance
+    const updatedApps = state.apps.map((app) => {
+      if (app.id === appId) {
+        const { dailyRiskAllowance: _removed, ...rest } = app;
+        void _removed;
+        return {
+          ...rest,
+          classification,
+          riskGroupId: targetGroupId,
+          dailyRiskAllowance: undefined,
+        };
+      }
+      return app;
+    });
+
+    const todayKey = getLocalDateKey();
+    const updatedRiskGroups = state.riskGroups.map((group) => {
+      const hasApp = group.appIds.includes(appId);
+      const shouldHave = classification === 'risk' && group.id === targetGroupId;
+      let nextGroup = group;
+
+      if (shouldHave && !hasApp) {
+        nextGroup = { ...nextGroup, appIds: [...nextGroup.appIds, appId] };
+      } else if (!shouldHave && hasApp) {
+        nextGroup = { ...nextGroup, appIds: nextGroup.appIds.filter((id) => id !== appId) };
+      }
+
+      if (
+        shouldHave &&
+        dailyAllowanceMinutes !== undefined &&
+        dailyAllowanceMinutes !== resolveGroupAllowanceMinutes(group)
+      ) {
+        nextGroup = {
+          ...nextGroup,
+          allowanceMinutes: dailyAllowanceMinutes,
+          lastAllowanceEditedDateKey: todayKey,
+        };
+      }
+
+      return nextGroup;
+    });
+
+    await RhythmCoordinator.getInstance().updateConfig({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+    });
+
+    set({
+      apps: updatedApps,
+      riskGroups: updatedRiskGroups,
+    });
   });
 
   mutationExecutors.set('change-daily-allowance', async ({ groupId, allowanceMinutes }) => {
+    const state = get();
+    const group = state.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      throw new Error('Risk group not found');
+    }
     await get().updateRiskGroupAllowance(groupId, allowanceMinutes);
   });
 
@@ -370,10 +464,26 @@ function registerDefaultMutationExecutors(
   });
 
   mutationExecutors.set('edit-risk-group', async ({ groupId, draft }) => {
+    const state = get();
+    const group = state.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      throw new Error('Risk group not found');
+    }
     return await get().saveRiskGroupConfiguration(groupId, draft);
   });
 
   mutationExecutors.set('delete-risk-group', async ({ groupId, replacementGroupId }) => {
+    const state = get();
+    const group = state.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      throw new Error('Risk group not found');
+    }
+    if (replacementGroupId) {
+      const repl = state.riskGroups.find((g) => g.id === replacementGroupId);
+      if (!repl || repl.id === groupId) {
+        throw new Error('Invalid replacement group');
+      }
+    }
     return await get().deleteRiskGroup(groupId, replacementGroupId);
   });
 
@@ -382,6 +492,11 @@ function registerDefaultMutationExecutors(
   });
 
   mutationExecutors.set('start-access-lease', async ({ groupId, durationMinutes }) => {
+    const state = get();
+    const group = state.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      throw new Error('Risk group not found');
+    }
     await get().startAccessLease(groupId, durationMinutes);
   });
 
@@ -898,16 +1013,35 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   triggerEmergencyBypass: async () => {
     const activeGroupId = get().activeRiskGroupId || 'social';
-    await get().startAccessLease(activeGroupId, EMERGENCY_ACCESS_MINUTES);
+    const group = get().riskGroups.find((g) => g.id === activeGroupId) || get().riskGroups[0];
+    await get().requestProtectedMutation({
+      operation: 'start-access-lease',
+      summary: `Allow ${group?.name ?? 'Risk Group'} for ${EMERGENCY_ACCESS_MINUTES} minutes`,
+      payload: { groupId: activeGroupId, durationMinutes: EMERGENCY_ACCESS_MINUTES },
+    });
   },
 
   resetDemo: async () => {
     transientApprovalSecrets.clear();
+    inFlightApprovalIds.clear();
     registerDefaultMutationExecutors(get, set);
     resetAccountabilityService();
     const coordinator = RhythmCoordinator.getInstance();
-    const { storage } = getPlatformServices();
+    const { storage, credentials } = getPlatformServices();
     await storage.clearAll();
+
+    const existingPartners = get().accountability?.partners ?? [];
+    for (const partner of existingPartners) {
+      try {
+        await credentials.remove(partner.credentialRef);
+      } catch {
+        // Non-fatal credential cleanup.
+      }
+    }
+    if (credentials instanceof InMemorySecureCredentialProvider) {
+      credentials.clear();
+    }
+
     coordinator.destroy();
     const runtime = await coordinator.initialize();
     const config = coordinator.getConfiguration();
@@ -1467,15 +1601,15 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   // Protected mutation gateway
-  requestProtectedMutation: async <T>(
+  requestProtectedMutation: async <T = unknown>(
     mutation: ProtectedMutation<T>
-  ): Promise<{ status: 'executed' | 'pending-approval' }> => {
+  ): Promise<{ status: 'executed' | 'pending-approval'; result?: unknown }> => {
     registerDefaultMutationExecutors(get, set);
     const state = get();
     const requires = requiresPartnerApproval(state.accountability, mutation.operation);
     if (!requires) {
-      await executeRegisteredMutation(mutation.operation, mutation.payload);
-      return { status: 'executed' };
+      const execResult = await executeRegisteredMutation(mutation.operation, mutation.payload);
+      return { status: 'executed', result: execResult };
     }
 
     const currentPending = state.pendingApproval;
@@ -1488,7 +1622,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       throw new Error('No enabled accountability partners available to approve this operation');
     }
 
-    const pending: PendingApproval<T> = {
+    const pending: PendingApproval = {
       id: `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       operation: mutation.operation,
       summary: mutation.summary,
@@ -1496,7 +1630,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       requestedAt: Date.now(),
     };
 
-    set({ pendingApproval: pending as PendingApproval });
+    set({ pendingApproval: pending });
     return { status: 'pending-approval' };
   },
 
@@ -1507,36 +1641,42 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     registerDefaultMutationExecutors(get, set);
     const state = get();
     const pending = state.pendingApproval;
-    if (!pending) {
+    if (!pending || inFlightApprovalIds.has(pending.id)) {
       return { ok: false, reason: 'partner-not-found' };
     }
 
-    const partner = state.accountability.partners.find((p) => p.id === partnerId);
-    const service = getAccountabilityService();
-
-    const result = await service.verifyApproval(
-      {
-        operation: pending.operation,
-        summary: pending.summary,
-        partnerId,
-      },
-      password,
-      partner
-    );
-
-    if (!result.ok) {
-      return result;
-    }
-
+    inFlightApprovalIds.add(pending.id);
     try {
-      await executeRegisteredMutation(pending.operation, pending.payload);
-      cleanupPendingApprovalSecrets(pending);
+      const partner = state.accountability.partners.find((p) => p.id === partnerId);
+      const service = getAccountabilityService();
+
+      const result = await service.verifyApproval(
+        {
+          operation: pending.operation,
+          summary: pending.summary,
+          partnerId,
+        },
+        password,
+        partner
+      );
+
+      if (!result.ok) {
+        return result;
+      }
+
+      // Double-submit safety: atomically clear pendingApproval before running executor
       set({ pendingApproval: null });
-      return result;
-    } catch (error) {
-      cleanupPendingApprovalSecrets(pending);
-      set({ pendingApproval: null });
-      throw error;
+
+      try {
+        await executeRegisteredMutation(pending.operation, pending.payload);
+        cleanupPendingApprovalSecrets(pending);
+        return result;
+      } catch (error) {
+        cleanupPendingApprovalSecrets(pending);
+        throw error;
+      }
+    } finally {
+      inFlightApprovalIds.delete(pending.id);
     }
   },
 
