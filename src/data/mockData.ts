@@ -284,10 +284,12 @@ export const initialRiskGroups: RiskGroup[] = [
     iconColor: '#235D43',
     iconBg: '#E8EFE5',
     appIds: ['x', 'instagram', 'threads', 'tiktok', 'reddit', 'discord'],
-    sessionThresholdMinutes: 30,
+    allowanceMinutes: 30,
     cooldownMinutes: 90,
+    recoveryActivityId: 'walk',
     currentSessionMinutes: 18,
     isBufferingToday: true,
+    origin: 'seeded',
   },
   {
     id: 'entertainment',
@@ -297,10 +299,12 @@ export const initialRiskGroups: RiskGroup[] = [
     iconColor: '#B27D2B',
     iconBg: '#FBF3E2',
     appIds: ['youtube', 'netflix'],
-    sessionThresholdMinutes: 45,
+    allowanceMinutes: 45,
     cooldownMinutes: 60,
+    recoveryActivityId: 'walk',
     currentSessionMinutes: 0,
     isBufferingToday: false,
+    origin: 'seeded',
   },
 ];
 

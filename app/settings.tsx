@@ -20,6 +20,7 @@ import {
   Key,
   Info,
   ShieldAlert,
+  Users,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
@@ -31,12 +32,14 @@ import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const resetDemo = usePrototypeStore((s) => s.resetDemo);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
   const permissionState = usePrototypeStore((s) => s.permissionState);
   const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
   const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
+  const accountability = usePrototypeStore((s) => s.accountability);
+  const selectIosRiskGroupApps = usePrototypeStore((s) => s.selectIosRiskGroupApps);
 
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
@@ -84,13 +87,21 @@ export default function SettingsScreen() {
   const handleSelectIosApps = async () => {
     try {
       setIsSelectingApps(true);
-      await RhythmDeviceModule.showFamilyActivityPicker('social');
+      await selectIosRiskGroupApps('social');
       await checkPermissions();
     } catch {
       // User cancelled or unsupported
     } finally {
       setIsSelectingApps(false);
     }
+  };
+
+  const handleResetLocalState = async () => {
+    await requestProtectedMutation({
+      operation: 'reset-local-state',
+      summary: 'Reset all Rhythmic Routine local settings and accountability protection',
+      payload: {},
+    });
   };
 
   return (
@@ -128,6 +139,39 @@ export default function SettingsScreen() {
             Operates on a pure TypeScript Rhythm Engine, multi-group concurrent cooldowns,
             continuous Risk Group session accounting, SQLite persistence, and truthful platform capability reporting.
           </Text>
+        </View>
+
+        {/* Accountability Protection */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View style={[styles.iconCircle, { backgroundColor: accountability?.enabled ? '#E8F5E9' : '#F4EFE6' }]}>
+              <Users size={22} color={accountability?.enabled ? colors.forest : colors.forestDark} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Accountability Protection</Text>
+              <Text style={styles.cardSub}>
+                {accountability?.enabled
+                  ? (accountability.partners.filter((p) => p.enabled).length === 1
+                      ? 'On · Protected by 1 partner'
+                      : `On · Protected by ${accountability.partners.filter((p) => p.enabled).length} partners`)
+                  : ((accountability?.partners?.length ?? 0) === 1
+                      ? 'Off · 1 partner configured'
+                      : (accountability?.partners?.length ?? 0) > 1
+                      ? `Off · ${accountability?.partners?.length} partners configured`
+                      : 'Off · No partner configured')}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.cardText}>
+            Require trusted partner approval to modify routine windows, risk group allowances, or delete protected groups.
+          </Text>
+          <TouchableOpacity
+            style={[styles.permissionBtn, { marginTop: 12 }]}
+            activeOpacity={0.8}
+            onPress={() => router.push('/accountability')}
+          >
+            <Text style={styles.permissionBtnText}>Manage Accountability</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Device Permissions & Authorization */}
@@ -257,7 +301,7 @@ export default function SettingsScreen() {
 
           <TouchableOpacity
             style={[styles.actionRow, styles.resetRow]}
-            onPress={resetDemo}
+            onPress={handleResetLocalState}
           >
             <RotateCcw size={18} color={colors.coralDark} />
             <Text style={[styles.actionText, { color: colors.coralDark }]}>

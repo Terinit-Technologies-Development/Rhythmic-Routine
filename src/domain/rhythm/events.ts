@@ -3,6 +3,7 @@ import {
   ActiveCooldown,
   DailyAppUsage,
   EMERGENCY_ACCESS_MINUTES,
+  GroupAllowanceUsage,
   RhythmConfiguration,
   RhythmEffect,
   RhythmEvent,
@@ -30,8 +31,9 @@ import {
 } from './restrictions';
 import {
   getLocalDateKey,
-  isDailyAllowanceExhausted,
+  isGroupAllowanceExhausted,
   rolloverDailyAppUsage,
+  rolloverGroupAllowanceUsage,
 } from './allowance';
 
 /**
@@ -54,6 +56,10 @@ export function processRhythmEvent(
   const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
   const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
     currentRuntime.dailyAppUsage || {},
+    nowMs
+  );
+  const nextGroupAllowanceUsage: Record<string, GroupAllowanceUsage> = rolloverGroupAllowanceUsage(
+    currentRuntime.groupAllowanceUsage || {},
     nowMs
   );
   const effects: RhythmEffect[] = [];
@@ -303,6 +309,18 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'SYNC_GROUP_ALLOWANCE_USAGE': {
+      Object.assign(nextGroupAllowanceUsage, event.groupAllowanceUsage);
+      break;
+    }
+
+    case 'UPDATE_DAILY_ALLOWANCE':
+    case 'UPDATE_GROUP_ALLOWANCE':
+    case 'UPDATE_GROUP_RECOVERY_ACTIVITY':
+      // Configuration-owned (coordinator updateConfig path); no direct runtime
+      // mutation beyond clock reconciliation performed above.
+      break;
+
     case 'COOLDOWN_STARTED': {
       nextCooldowns[event.groupId] = {
         groupId: event.groupId,
@@ -415,6 +433,30 @@ export function processRhythmEvent(
     case 'ROUTINE_STARTED':
     case 'ROUTINE_ENDED':
       break;
+
+    case 'RISK_GROUP_DELETED': {
+      if (nextCooldowns[event.groupId]) {
+        delete nextCooldowns[event.groupId];
+        effects.push({
+          type: 'END_COOLDOWN',
+          groupId: event.groupId,
+        });
+      }
+      if (nextAccessLeases[event.groupId]) {
+        delete nextAccessLeases[event.groupId];
+        effects.push({
+          type: 'END_ACCESS_LEASE',
+          groupId: event.groupId,
+        });
+      }
+      delete nextGroupAllowanceUsage[event.groupId];
+
+      if (nextSession?.groupId === event.groupId) {
+        nextSession = undefined;
+      }
+
+      break;
+    }
   }
 
   // 4. Resolve active routine windows
@@ -513,25 +555,28 @@ export function processRhythmEvent(
     }
   }
 
-  // Check and record newly exhausted daily allowances
-  for (const app of config.apps) {
-    if (app.classification === 'risk') {
-      const usage = nextDailyAppUsage[app.id];
-      if (usage && isDailyAllowanceExhausted(app, nextDailyAppUsage, nowMs)) {
-        if (!usage.exhaustedAt) {
-          usage.exhaustedAt = nowMs;
-          effects.push({
-            type: 'RECORD_HISTORY',
-            event: {
-              type: 'daily-allowance-exhausted',
-              appId: app.id,
-              timestamp: nowMs,
-            },
-          });
-        }
+  // Check and record newly exhausted group allowances (v1.0.2 authoritative path)
+  for (const group of config.riskGroups) {
+    const usage = nextGroupAllowanceUsage[group.id];
+    if (usage && isGroupAllowanceExhausted(group, usage, nowMs)) {
+      if (!usage.exhaustedAt) {
+        usage.exhaustedAt = nowMs;
+        effects.push({
+          type: 'RECORD_HISTORY',
+          event: {
+            type: 'group-allowance-exhausted',
+            groupId: group.id,
+            timestamp: nowMs,
+          },
+        });
       }
     }
   }
+
+  // v1.0.2: per-app usage remains raw observation only (rollover/segments/
+  // sync above). It is never interpreted as an app allowance/exhaustion and
+  // never emits per-app allowance-exhausted history: individual apps own no
+  // allowance. Only the shared group ledger above produces exhaustion history.
 
   // 5. Compute desired effective restrictions and diff against previous
   const previousRestrictedAppIds = currentRuntime.activeRestrictions.map((r) => r.appId);
@@ -544,7 +589,7 @@ export function processRhythmEvent(
     nextAccessLeases,
     {
       isOvernight,
-      dailyAppUsage: nextDailyAppUsage,
+      groupAllowanceUsage: nextGroupAllowanceUsage,
     }
   );
 
@@ -583,6 +628,7 @@ export function processRhythmEvent(
     activeRoutineWindowIds,
     activeRestrictions: appRestrictions,
     dailyAppUsage: nextDailyAppUsage,
+    groupAllowanceUsage: nextGroupAllowanceUsage,
   };
 
   return {

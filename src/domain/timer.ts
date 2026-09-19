@@ -20,3 +20,20 @@ export function useRemainingSeconds(endsAt?: number): number {
   if (!endsAt) return 0;
   return Math.max(0, Math.ceil((endsAt - now) / 1000));
 }
+
+/**
+ * Presentation hook that returns current timestamp as state, refreshing at a steady interval.
+ */
+export function useNow(intervalMs: number = 1000): number {
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNow(Date.now());
+    }, intervalMs);
+
+    return () => clearInterval(id);
+  }, [intervalMs]);
+
+  return now;
+}

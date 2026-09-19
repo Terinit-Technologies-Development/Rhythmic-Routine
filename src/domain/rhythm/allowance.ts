@@ -1,16 +1,21 @@
 import {
   DAILY_ALLOWANCE_STEP_MINUTES,
   DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+  DEFAULT_RECOVERY_ACTIVITY_ID,
   DailyAppUsage,
   DailyRiskAllowancePolicy,
   DeviceApp,
+  GroupAllowanceSnapshot,
+  GroupAllowanceUsage,
   MIN_DAILY_RISK_ALLOWANCE_MINUTES,
+  RiskGroup,
 } from '../../types/domain';
 
 export {
   DAILY_ALLOWANCE_STEP_MINUTES,
   DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
   MIN_DAILY_RISK_ALLOWANCE_MINUTES,
+  DEFAULT_RECOVERY_ACTIVITY_ID,
 };
 
 /**
@@ -38,7 +43,230 @@ export interface AllowanceEditResult {
 }
 
 /**
- * Validates a proposed daily allowance modification.
+ * v1.0.2: resolves the single shared allowance for a Risk Group.
+ * Precedence: allowanceMinutes (active policy) → legacy sessionThresholdMinutes
+ * (migration/fixture compat) → 30-minute default. Invalid/negative values fall
+ * through to the next source; never derives from per-app policies.
+ */
+export function resolveGroupAllowanceMinutes(group: Pick<RiskGroup, 'allowanceMinutes' | 'sessionThresholdMinutes'>): number {
+  if (Number.isFinite(group.allowanceMinutes) && (group.allowanceMinutes as number) >= 0) {
+    return group.allowanceMinutes as number;
+  }
+  if (
+    Number.isFinite(group.sessionThresholdMinutes) &&
+    (group.sessionThresholdMinutes as number) >= 0
+  ) {
+    return group.sessionThresholdMinutes as number;
+  }
+  return DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES;
+}
+
+/**
+ * v1.0.2: resolves the recovery activity id for a Risk Group (defaults to 'walk').
+ */
+export function resolveGroupRecoveryActivityId(
+  group: Pick<RiskGroup, 'recoveryActivityId'>
+): string {
+  return group.recoveryActivityId ?? DEFAULT_RECOVERY_ACTIVITY_ID;
+}
+
+export interface GroupAllowanceEditResult {
+  ok: boolean;
+  nextMinutes: number;
+  consumesDailyEdit?: boolean;
+  reason?:
+    | 'increase-too-large'
+    | 'invalid-step'
+    | 'below-minimum'
+    | 'already-edited-today'
+    | 'group-not-found'
+    | 'unavailable';
+}
+
+/**
+ * v1.0.2: validates a proposed Risk Group allowance modification.
+ * Rules (anti-backdoor semantics moved from app to group):
+ * - must be >= 0
+ * - must be a multiple of 15
+ * - equal to current: ok, does not consume the daily edit guard
+ * - second successful same-day edit: rejected ('already-edited-today')
+ * - increase > current + 15: rejected ('increase-too-large')
+ * - any valid 15-minute decrement (incl. 0): allowed, consumes the guard
+ */
+export function validateGroupAllowanceEdit(args: {
+  currentMinutes: number;
+  requestedMinutes: number;
+  lastEditedDateKey?: string;
+  todayDateKey: string;
+}): GroupAllowanceEditResult {
+  const { currentMinutes, requestedMinutes, lastEditedDateKey, todayDateKey } = args;
+
+  if (requestedMinutes < MIN_DAILY_RISK_ALLOWANCE_MINUTES) {
+    return { ok: false, nextMinutes: currentMinutes, reason: 'below-minimum' };
+  }
+
+  if (requestedMinutes % DAILY_ALLOWANCE_STEP_MINUTES !== 0) {
+    return { ok: false, nextMinutes: currentMinutes, reason: 'invalid-step' };
+  }
+
+  if (requestedMinutes === currentMinutes) {
+    return { ok: true, nextMinutes: currentMinutes, consumesDailyEdit: false };
+  }
+
+  if (lastEditedDateKey === todayDateKey) {
+    return { ok: false, nextMinutes: currentMinutes, reason: 'already-edited-today' };
+  }
+
+  if (requestedMinutes > currentMinutes + DAILY_ALLOWANCE_STEP_MINUTES) {
+    return { ok: false, nextMinutes: currentMinutes, reason: 'increase-too-large' };
+  }
+
+  return { ok: true, nextMinutes: requestedMinutes, consumesDailyEdit: true };
+}
+
+/**
+ * v1.0.2: determines whether a Risk Group has exhausted its shared allowance.
+ * A 0-minute allowance is exhausted immediately. Usage from every member app
+ * counts against the same pool via the group's usage record.
+ */
+export function isGroupAllowanceExhausted(
+  group: Pick<RiskGroup, 'allowanceMinutes' | 'sessionThresholdMinutes'>,
+  usage: GroupAllowanceUsage | undefined,
+  nowOrDateKey: number | string = Date.now()
+): boolean {
+  const allowanceMinutes = resolveGroupAllowanceMinutes(group);
+  if (allowanceMinutes <= 0) return true;
+  if (!usage) return false;
+
+  const dateKey =
+    typeof nowOrDateKey === 'string' ? nowOrDateKey : getLocalDateKey(nowOrDateKey);
+  if (usage.dateKey !== dateKey) return false;
+
+  let totalSeconds = usage.usedSeconds;
+  if (
+    usage.activeSegmentStartedAt &&
+    typeof nowOrDateKey === 'number' &&
+    nowOrDateKey > usage.activeSegmentStartedAt
+  ) {
+    totalSeconds += Math.floor((nowOrDateKey - usage.activeSegmentStartedAt) / 1000);
+  }
+
+  return totalSeconds >= allowanceMinutes * 60;
+}
+
+/**
+ * v1.0.2: reconciles local-day rollover for per-group allowance ledgers.
+ * - preserves policy/edit-guard state (stored on RiskGroup, untouched here)
+ * - resets usedSeconds for the new date, clears exhaustedAt, bumps nothing
+ * - splits any active segment crossing midnight at 00:00 (single source of
+ *   elapsed time: activeSegmentStartedAt; committed usedSeconds reset to 0)
+ */
+export function rolloverGroupAllowanceUsage(
+  currentUsage: Record<string, GroupAllowanceUsage> = {},
+  nowMs: number = Date.now()
+): Record<string, GroupAllowanceUsage> {
+  const currentDateKey = getLocalDateKey(nowMs);
+  const nextUsage: Record<string, GroupAllowanceUsage> = {};
+
+  const todayStart = new Date(nowMs);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayStartMs = todayStart.getTime();
+
+  for (const [groupId, usage] of Object.entries(currentUsage)) {
+    if (usage.dateKey === currentDateKey) {
+      nextUsage[groupId] = { ...usage };
+    } else if (usage.activeSegmentStartedAt) {
+      nextUsage[groupId] = {
+        groupId,
+        dateKey: currentDateKey,
+        usedSeconds: 0,
+        activeSegmentStartedAt: Math.max(todayStartMs, usage.activeSegmentStartedAt),
+        activePackageName: usage.activePackageName,
+        exhaustedAt: undefined,
+        cycleRevision: usage.cycleRevision,
+      };
+    } else {
+      nextUsage[groupId] = {
+        groupId,
+        dateKey: currentDateKey,
+        usedSeconds: 0,
+        activeSegmentStartedAt: undefined,
+        activePackageName: undefined,
+        exhaustedAt: undefined,
+        cycleRevision: usage.cycleRevision,
+      };
+    }
+  }
+
+  return nextUsage;
+}
+
+/**
+ * v1.0.2: builds a point-in-time snapshot of a group's allowance cycle.
+ */
+export function getGroupAllowanceSnapshot(
+  group: RiskGroup,
+  usage: GroupAllowanceUsage | undefined,
+  nowOrDateKey: number | string = Date.now(),
+  cooldownEndsAt?: number
+): GroupAllowanceSnapshot {
+  const dateKey =
+    typeof nowOrDateKey === 'string' ? nowOrDateKey : getLocalDateKey(nowOrDateKey);
+  const allowanceMinutes = resolveGroupAllowanceMinutes(group);
+  let usedSeconds = 0;
+  if (usage && usage.dateKey === dateKey) {
+    usedSeconds = usage.usedSeconds;
+    if (
+      usage.activeSegmentStartedAt &&
+      typeof nowOrDateKey === 'number' &&
+      nowOrDateKey > usage.activeSegmentStartedAt
+    ) {
+      usedSeconds += Math.floor((nowOrDateKey - usage.activeSegmentStartedAt) / 1000);
+    }
+  }
+  const remainingSeconds = Math.max(0, allowanceMinutes * 60 - usedSeconds);
+  return {
+    groupId: group.id,
+    dateKey,
+    usedSeconds,
+    allowanceMinutes,
+    remainingSeconds,
+    exhausted: allowanceMinutes <= 0 || usedSeconds >= allowanceMinutes * 60,
+    cooldownEndsAt,
+  };
+}
+
+export type RiskGroupStatus =
+  | { kind: 'unavailable' }
+  | { kind: 'cooldown'; endsAt: number }
+  | { kind: 'fresh' }
+  | { kind: 'active'; snapshot: GroupAllowanceSnapshot };
+
+/**
+ * v1.0.2: derived status helper for Risk Group card/status presentation.
+ * Returns the truthful current cycle status according to native snapshots
+ * and cooldown timestamps.
+ */
+export function getRiskGroupStatus(args: {
+  snapshot?: GroupAllowanceSnapshot;
+  cooldownEndsAt?: number;
+  usageAvailable: boolean;
+  now: number;
+}): RiskGroupStatus {
+  if (!args.usageAvailable) return { kind: 'unavailable' as const };
+  if (args.cooldownEndsAt && args.cooldownEndsAt > args.now) {
+    return { kind: 'cooldown' as const, endsAt: args.cooldownEndsAt };
+  }
+  if (!args.snapshot || args.snapshot.usedSeconds === 0) {
+    return { kind: 'fresh' as const };
+  }
+  return { kind: 'active' as const, snapshot: args.snapshot };
+}
+
+/**
+ * @deprecated v1.0.2: per-app allowance ownership removed. Group-level
+ * validateGroupAllowanceEdit() is the active policy; this function is retained
+ * for legacy callers/tests only.
  * Rules:
  * - App must be a Risk app (non-risk rejected as 'not-risk-app')
  * - Proposed must be >= MIN_DAILY_RISK_ALLOWANCE_MINUTES (0)
@@ -128,7 +356,8 @@ export function validateDailyAllowanceEdit(
 }
 
 /**
- * Determines whether a Risk app has exhausted its daily allowance for the active day.
+ * @deprecated v1.0.2: per-app exhaustion is superseded by group allowance
+ * (isGroupAllowanceExhausted). Retained for legacy restriction evaluation only.
  */
 export function isDailyAllowanceExhausted(
   app: DeviceApp,
@@ -161,7 +390,8 @@ export function isDailyAllowanceExhausted(
 }
 
 /**
- * Reconciles day rollover for runtime dailyAppUsage.
+ * @deprecated v1.0.2: per-app ledger rollover. Use rolloverGroupAllowanceUsage()
+ * for the active group ledger. Retained for legacy runtime compat.
  * When the date changes:
  * - preserves allowanceMinutes (stored on DeviceApp)
  * - preserves lastEditedDateKey history (stored on DeviceApp)

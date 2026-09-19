@@ -1,6 +1,6 @@
 {
   "name": "rhythmic-routine",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Experimental local-first digital wellbeing app built around routines, Risk Groups, cooldowns, and calm intervention.",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -14,13 +14,16 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.14",
+    "@noble/hashes": "^2.4.0",
     "@react-navigation/bottom-tabs": "^7.18.18",
     "expo": "~57.0.18",
     "expo-constants": "~57.0.16",
+    "expo-crypto": "~57.0.3",
     "expo-dev-client": "~57.0.16",
     "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.8",
     "expo-router": "~57.0.17",
+    "expo-secure-store": "~57.0.4",
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "lucide-react-native": "^1.34.0",

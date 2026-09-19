@@ -18,6 +18,7 @@ class RhythmOverlayActivity : Activity() {
 
     private val checkHandler = Handler(Looper.getMainLooper())
     private var targetPackage: String? = null
+    private var cooldownEndsAt: Long = 0L
 
     private val autoCloseRunnable = object : Runnable {
         override fun run() {
@@ -37,6 +38,12 @@ class RhythmOverlayActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         targetPackage = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_PACKAGE_NAME)
+        cooldownEndsAt = intent?.getLongExtra(RhythmNativePolicyKeys.EXTRA_COOLDOWN_ENDS_AT, 0L) ?: 0L
+        val groupName = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_GROUP_NAME) ?: "This Risk Group"
+        val activityEmoji = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_ACTIVITY_EMOJI) ?: "🌱"
+        val activityTitle = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_ACTIVITY_TITLE)
+        val activitySubtitle = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_ACTIVITY_SUBTITLE)
+        val activityDuration = intent?.getStringExtra(RhythmNativePolicyKeys.EXTRA_ACTIVITY_DURATION)
 
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -46,7 +53,7 @@ class RhythmOverlayActivity : Activity() {
         }
 
         val emojiView = TextView(this).apply {
-            text = "🌱"
+            text = activityEmoji
             textSize = 56f
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 32)
@@ -62,7 +69,12 @@ class RhythmOverlayActivity : Activity() {
         }
 
         val subtitleView = TextView(this).apply {
-            text = "This app is paused by your current Rhythm window or recovery cooldown.\n\nReturn home for now, or open Rhythm to review your routine."
+            text = if (cooldownEndsAt > 0L && activityTitle != null) {
+                val duration = activityDuration?.let { " · $it" } ?: ""
+                "$groupName has reached its shared allowance.\n\nTry this while your group resets:\n$activityEmoji $activityTitle\n${activitySubtitle ?: "Take a mindful offline break."}$duration"
+            } else {
+                "This app is paused by your current Rhythm window or recovery cooldown.\n\nReturn home for now, or open Rhythm to review your routine."
+            }
             textSize = 15f
             setTextColor(Color.parseColor("#5A6B5C"))
             gravity = Gravity.CENTER

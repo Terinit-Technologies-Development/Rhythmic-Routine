@@ -5,7 +5,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: 'Rhythmic-Routine',
   slug: 'Rhythmic-Routine',
   scheme: 'rhythmic-routine',
-  version: '1.0.1',
+  version: '1.1.0',
   runtimeVersion: {
     policy: 'appVersion',
   },
@@ -32,12 +32,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: 'com.terinit.rhythmicroutine',
+    versionCode: 3,
     adaptiveIcon: {
       foregroundImage: './assets/rhythmic_routine_logo.png',
       backgroundColor: '#F8F4E8',
     },
     predictiveBackGestureEnabled: false,
-    permissions: ['android.permission.PACKAGE_USAGE_STATS'],
+    permissions: [
+      'android.permission.PACKAGE_USAGE_STATS',
+      'com.terinit.rhythmicreader.permission.RECOVERY',
+    ],
   },
   web: {
     favicon: './assets/favicon.png',
@@ -46,11 +50,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-router',
     'expo-status-bar',
     'expo-sqlite',
+    'expo-secure-store',
     './plugins/withRhythmScreenTime',
     './plugins/withRhythmAndroidQaBuild',
   ],
   extra: {
     eas: {
+      projectId: 'a4fbeb0c-0d65-4a0d-bf12-4a985ca03088',
       build: {
         experimental: {
           ios: {

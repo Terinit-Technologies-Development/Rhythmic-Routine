@@ -1,5 +1,6 @@
 import {
   DailyAppUsage,
+  GroupAllowanceUsage,
   PersistedRuntime,
   RhythmConfiguration,
   RhythmEffect,
@@ -27,6 +28,7 @@ export class RhythmEngine {
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
       const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
       const restoredDailyUsage = normalized.dailyAppUsage ? { ...normalized.dailyAppUsage } : {};
+      const restoredGroupUsage = normalized.groupAllowanceUsage ? { ...normalized.groupAllowanceUsage } : {};
       this.runtime = {
         state: normalized.state,
         activeSession: normalized.activeSession,
@@ -34,6 +36,7 @@ export class RhythmEngine {
         activeAccessLeases: restoredLeases,
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
         dailyAppUsage: restoredDailyUsage,
+        groupAllowanceUsage: restoredGroupUsage,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
     } else {
@@ -43,6 +46,7 @@ export class RhythmEngine {
         activeAccessLeases: {},
         activeRoutineWindowIds: [],
         dailyAppUsage: {},
+        groupAllowanceUsage: {},
         activeRestrictions: [], // Start with empty baseline
       };
     }
@@ -101,6 +105,7 @@ export class RhythmEngine {
       activeAccessLeases: { ...this.runtime.activeAccessLeases },
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
       dailyAppUsage: this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {},
+      groupAllowanceUsage: this.runtime.groupAllowanceUsage ? { ...this.runtime.groupAllowanceUsage } : {},
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
         reasons: [...r.reasons],
@@ -110,6 +115,10 @@ export class RhythmEngine {
 
   public getDailyAppUsage(): Record<string, DailyAppUsage> {
     return this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {};
+  }
+
+  public getGroupAllowanceUsage(): Record<string, GroupAllowanceUsage> {
+    return this.runtime.groupAllowanceUsage ? { ...this.runtime.groupAllowanceUsage } : {};
   }
 
   public getConfiguration(): RhythmConfiguration {
@@ -138,6 +147,9 @@ export class RhythmEngine {
     }
     if (this.runtime.dailyAppUsage) {
       res.dailyAppUsage = { ...this.runtime.dailyAppUsage };
+    }
+    if (this.runtime.groupAllowanceUsage) {
+      res.groupAllowanceUsage = { ...this.runtime.groupAllowanceUsage };
     }
     return res;
   }

@@ -9,13 +9,14 @@ import {
 } from '../domain/rhythm/types';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
-import { DeviceApp, RiskGroup, DailyRiskAllowancePolicy } from '../types/domain';
+import { DeviceApp, RiskGroup } from '../types/domain';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 import {
-  AllowanceEditResult,
-  DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+  GroupAllowanceEditResult,
   getLocalDateKey,
-  validateDailyAllowanceEdit,
+  resolveGroupAllowanceMinutes,
+  resolveGroupRecoveryActivityId,
+  validateGroupAllowanceEdit,
 } from '../domain/rhythm/allowance';
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
@@ -204,26 +205,37 @@ export class RhythmCoordinator {
       await this.executeEffects(effects);
     }
 
-    // Reconcile Android native daily usage snapshot if available
+    // Reconcile the authoritative Android group usage snapshot if available.
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const RhythmDeviceModule = require('../../modules/rhythm-device').default;
-      if (RhythmDeviceModule?.getDailyUsageSnapshot) {
-        const usageSnapshot = await RhythmDeviceModule.getDailyUsageSnapshot();
-        if (usageSnapshot?.apps?.length > 0) {
-          const currentDailyUsage = { ...this.engine.getDailyAppUsage() };
-          for (const app of usageSnapshot.apps) {
-            currentDailyUsage[app.packageName] = {
-              appId: app.packageName,
-              dateKey: usageSnapshot.dateKey,
-              usedSeconds: app.usedSeconds,
-              activeSegmentStartedAt: app.activeSegmentStartedAt,
-              exhaustedAt: app.exhausted ? now : undefined,
+      if (RhythmDeviceModule?.getGroupUsageSnapshot) {
+        const usageSnapshot = await RhythmDeviceModule.getGroupUsageSnapshot();
+        if (usageSnapshot?.length > 0) {
+          const currentGroupUsage = { ...(this.engine.getGroupAllowanceUsage() || {}) };
+          for (const group of usageSnapshot) {
+            if (group.cooldownEndsAt && group.cooldownEndsAt > now) {
+              const cooldownEffects = this.engine.dispatch({
+                type: 'NATIVE_COOLDOWN_RESTORED',
+                groupId: group.groupId,
+                endsAt: group.cooldownEndsAt,
+                timestamp: now,
+              });
+              await this.executeEffects(cooldownEffects);
+            }
+            currentGroupUsage[group.groupId] = {
+              groupId: group.groupId,
+              dateKey: group.dateKey,
+              usedSeconds: group.usedSeconds,
+              activePackageName: group.activePackageName,
+              activeSegmentStartedAt: group.activeSegmentStartedAt,
+              exhaustedAt: group.exhausted ? group.exhaustedAt ?? now : undefined,
+              cycleRevision: group.cycleRevision,
             };
           }
           const effects = this.engine.dispatch({
-            type: 'SYNC_DAILY_APP_USAGE',
-            dailyAppUsage: currentDailyUsage,
+            type: 'SYNC_GROUP_ALLOWANCE_USAGE',
+            groupAllowanceUsage: currentGroupUsage,
             timestamp: now,
           });
           await this.executeEffects(effects);
@@ -339,31 +351,34 @@ export class RhythmCoordinator {
     }
     if (!this.config || !this.engine) return;
 
-    this.config = {
+    const candidateConfig: RhythmConfiguration = {
       ...this.config,
       ...nextConfig,
     };
 
     const { storage } = getPlatformServices();
-    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
+    const appClassifications = candidateConfig.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
-        dailyRiskAllowance: app.dailyRiskAllowance,
       };
       return acc;
     }, {});
 
     await storage.savePreferences({
-      routineWindows: this.config.routineWindows,
-      riskGroups: this.config.riskGroups,
+      routineWindows: candidateConfig.routineWindows,
+      riskGroups: candidateConfig.riskGroups,
       appClassifications,
-      sessionResetGapMs: this.config.sessionResetGapMs ?? 5 * 60 * 1000,
+      sessionResetGapMs: candidateConfig.sessionResetGapMs ?? 5 * 60 * 1000,
       onboardingCompleted: true,
+      accountability: candidateConfig.accountability ?? { enabled: false, partners: [] },
     });
 
+    // Commit in-memory config only after preference persistence succeeds.
+    this.config = candidateConfig;
+
     // Execute effects emitted directly from updateConfiguration
-    const effects = this.engine.updateConfiguration(this.config);
+    const effects = this.engine.updateConfiguration(candidateConfig);
     await this.executeEffects(effects);
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
@@ -371,89 +386,155 @@ export class RhythmCoordinator {
     this.notifyListeners();
   }
 
+  public getRuntimeSnapshot(): RhythmRuntime | null {
+    return this.engine?.getRuntime() ?? null;
+  }
+
   public getConfig(): RhythmConfiguration | null {
     return this.config ? { ...this.config } : null;
   }
 
   /**
-   * Validates and updates a Risk app's daily allowance.
-   * Enforces:
-   * - multiples of 15 min
-   * - max +15 min per day
-   * - reductions down to 0 allowed
-   * - at most once per local day
-   * - persists updated policy and emits history event
+   * v1.0.2: validates and updates a Risk Group's shared allowance.
+   * Enforces (per group per local day):
+   * - multiples of 15 min, minimum 0
+   * - max +15 min upward per successful daily edit
+   * - unrestricted valid downward steps (incl. 0)
+   * - no-op/cancel does not consume the guard
+   * - moving apps between groups never resets policy/guard/usage (this method
+   *   touches only allowanceMinutes + lastAllowanceEditedDateKey)
+   * Increasing preserves already-consumed usage (remaining time only changes);
+   * decreasing below current usage exhausts the group once sync applies.
+   * Usage itself is never reset here.
    */
-  public async updateDailyRiskAllowance(
-    appId: string,
+  public async updateRiskGroupAllowance(
+    groupId: string,
     nextMinutes: number,
     nowMs: number = Date.now()
-  ): Promise<AllowanceEditResult> {
+  ): Promise<GroupAllowanceEditResult & { groupId: string }> {
     if (!this.config || !this.engine) {
-      await this.initialize();
+      try {
+        await this.initialize();
+      } catch {
+        return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
+      }
     }
     if (!this.config || !this.engine) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
+      return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
     }
 
-    const app = this.config.apps.find((a) => a.id === appId);
-    if (!app) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
+    const group = this.config.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      return { ok: false, nextMinutes, groupId, reason: 'group-not-found' };
     }
 
-    if (app.classification !== 'risk') {
-      return {
-        allowed: false,
-        nextMinutes:
-          app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-        consumesDailyEdit: false,
-        reason: 'not-risk-app',
-      };
-    }
-
-    const result = validateDailyAllowanceEdit(app.dailyRiskAllowance, nextMinutes, nowMs, app);
-    if (!result.allowed) {
-      return result;
-    }
-
-    if (!result.consumesDailyEdit) {
-      return result;
-    }
-
+    const currentMinutes = resolveGroupAllowanceMinutes(group);
     const todayKey = getLocalDateKey(nowMs);
-    const previousMinutes =
-      app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES;
+    const result = validateGroupAllowanceEdit({
+      currentMinutes,
+      requestedMinutes: nextMinutes,
+      lastEditedDateKey: group.lastAllowanceEditedDateKey,
+      todayDateKey: todayKey,
+    });
+    if (!result.ok || !result.consumesDailyEdit) {
+      return { ...result, groupId };
+    }
 
-    const updatedPolicy: DailyRiskAllowancePolicy = {
-      allowanceMinutes: result.nextMinutes,
-      lastEditedDateKey: todayKey,
-    };
-
-    const updatedApps = this.config.apps.map((a) =>
-      a.id === appId ? { ...a, dailyRiskAllowance: updatedPolicy } : a
+    const updatedGroups = this.config.riskGroups.map((g) =>
+      g.id === groupId
+        ? { ...g, allowanceMinutes: result.nextMinutes, lastAllowanceEditedDateKey: todayKey }
+        : g
     );
 
     const { storage } = getPlatformServices();
     await storage.appendHistoryEvent({
-      type: 'daily-allowance-edited',
-      appId,
-      previousMinutes,
+      type: 'group-allowance-edited',
+      groupId,
+      previousMinutes: currentMinutes,
       nextMinutes: result.nextMinutes,
       timestamp: nowMs,
     });
 
-    await this.updateConfig({ apps: updatedApps });
-    return result;
+    await this.updateConfig({ riskGroups: updatedGroups });
+    return { ...result, groupId };
+  }
+
+  /**
+   * v1.0.2: updates a Risk Group's recovery activity reference. Validates
+   * against the local OfflineActivity catalog ids when available; unknown ids
+   * fall back to the 'walk' default at resolve time. Never touches allowance,
+   * edit guard, or usage.
+   */
+  public async updateRiskGroupRecoveryActivity(
+    groupId: string,
+    activityId: string,
+    nowMs: number = Date.now(),
+    validActivityIds?: readonly string[]
+  ): Promise<{ ok: boolean; groupId: string; activityId: string }> {
+    if (!this.config || !this.engine) {
+      await this.initialize();
+    }
+    if (!this.config || !this.engine) {
+      return { ok: false, groupId, activityId };
+    }
+
+    const group = this.config.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      return { ok: false, groupId, activityId };
+    }
+
+    const catalogIds = validActivityIds ?? (await this.getKnownRecoveryActivityIds());
+    const nextActivityId =
+      catalogIds.length === 0 || catalogIds.includes(activityId)
+        ? activityId
+        : resolveGroupRecoveryActivityId(group);
+
+    if (nextActivityId === resolveGroupRecoveryActivityId(group) && group.recoveryActivityId !== undefined) {
+      return { ok: true, groupId, activityId: nextActivityId };
+    }
+
+    const updatedGroups = this.config.riskGroups.map((g) =>
+      g.id === groupId ? { ...g, recoveryActivityId: nextActivityId } : g
+    );
+
+    const { storage } = getPlatformServices();
+    await storage.appendHistoryEvent({
+      type: 'group-recovery-activity-changed',
+      groupId,
+      activityId: nextActivityId,
+      timestamp: nowMs,
+    });
+
+    await this.updateConfig({ riskGroups: updatedGroups });
+    return { ok: true, groupId, activityId: nextActivityId };
+  }
+
+  /**
+   * Dispatches RISK_GROUP_DELETED to engine, purges runtime cooldowns,
+   * leases, usage, and session, syncs native state, and persists.
+   */
+  public async deleteRiskGroup(groupId: string, nowMs: number = Date.now()): Promise<void> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+    }
+    if (!this.engine || !this.config) return;
+
+    await this.dispatch({
+      type: 'RISK_GROUP_DELETED',
+      groupId,
+      timestamp: nowMs,
+    });
+  }
+
+  private async getKnownRecoveryActivityIds(): Promise<string[]> {
+    try {
+      const mod = await import('../data/mockData').catch(() => null);
+      const list = (mod as { offlineActivities?: { id: string }[] } | null)?.offlineActivities;
+      if (Array.isArray(list)) return list.map((a) => a.id);
+    } catch {
+      // fall through
+    }
+    return [];
   }
 
   /**
@@ -479,11 +560,13 @@ export class RhythmCoordinator {
     const mergedApps: DeviceApp[] = discoveredApps.map((discovered) => {
       const existing = existingAppMap.get(discovered.id);
       if (existing) {
+        // v1.0.2: membership/classification merge only; per-app allowance is
+        // never carried (group owns policy, movement never resets it).
         return {
           ...discovered,
           classification: existing.classification,
           riskGroupId: existing.riskGroupId,
-          dailyRiskAllowance: existing.dailyRiskAllowance,
+          dailyRiskAllowance: undefined,
         };
       }
       return {

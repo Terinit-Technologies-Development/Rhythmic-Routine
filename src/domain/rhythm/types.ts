@@ -1,16 +1,25 @@
 import {
   AccessLease,
+  AccountabilitySettings,
   AppClassification,
   DailyAppUsage,
   DailyRiskAllowancePolicy,
   DeviceApp,
   EMERGENCY_ACCESS_MINUTES,
+  GroupAllowanceUsage,
   RhythmState,
   RiskGroup,
   RoutineWindow,
 } from '../../types/domain';
 
-export { AccessLease, EMERGENCY_ACCESS_MINUTES, DailyAppUsage, DailyRiskAllowancePolicy };
+export {
+  AccessLease,
+  AccountabilitySettings,
+  EMERGENCY_ACCESS_MINUTES,
+  DailyAppUsage,
+  DailyRiskAllowancePolicy,
+  GroupAllowanceUsage,
+};
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -26,6 +35,9 @@ export interface ActiveCooldown {
   groupId: string;
   startedAt: number;
   endsAt: number;
+  recoverySessionId?: string;
+  recoveryRequired?: boolean;
+  cycleNumber?: number;
 }
 
 export type RestrictionReasonType =
@@ -53,7 +65,10 @@ export interface RhythmRuntime {
   activeAccessLeases: Record<string, AccessLease>; // Multi-group temporary override leases
   activeRoutineWindowIds: string[];
   activeRestrictions: AppRestriction[]; // Desired restrictions
+  /** @deprecated v1.0.2: legacy per-app ledger. Group ledger (groupAllowanceUsage) is authoritative. */
   dailyAppUsage?: Record<string, DailyAppUsage>;
+  /** v1.0.2: one shared allowance ledger per Risk Group. */
+  groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
 }
 
 export interface PersistedRuntime {
@@ -62,7 +77,10 @@ export interface PersistedRuntime {
   activeAccessLeases?: Record<string, AccessLease>;
   activeSession?: ActiveRiskSession;
   activeRoutineWindowIds: string[];
+  /** @deprecated v1.0.2: legacy per-app ledger (migration clears stale exhaustion). */
   dailyAppUsage?: Record<string, DailyAppUsage>;
+  /** v1.0.2: per-group allowance ledgers. */
+  groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
   lastReconciledAt: number;
 }
 
@@ -71,6 +89,7 @@ export interface RhythmConfiguration {
   riskGroups: RiskGroup[];
   apps: DeviceApp[];
   sessionResetGapMs?: number;
+  accountability?: AccountabilitySettings;
 }
 
 export interface RhythmPreferences {
@@ -81,11 +100,13 @@ export interface RhythmPreferences {
     {
       classification: AppClassification;
       riskGroupId?: string;
+      /** @deprecated v1.0.2: migration read only; never a policy source. */
       dailyRiskAllowance?: DailyRiskAllowancePolicy;
     }
   >;
   sessionResetGapMs: number;
   onboardingCompleted: boolean;
+  accountability?: AccountabilitySettings;
 }
 
 export type RhythmHistoryEvent =
@@ -99,6 +120,9 @@ export type RhythmHistoryEvent =
   | { type: 'routine-ended'; windowId: string; timestamp: number }
   | { type: 'group-protection-started'; groupId: string; timestamp: number }
   | { type: 'group-protection-ended'; groupId: string; timestamp: number }
+  | { type: 'group-allowance-edited'; groupId: string; previousMinutes: number; nextMinutes: number; timestamp: number }
+  | { type: 'group-allowance-exhausted'; groupId: string; timestamp: number }
+  | { type: 'group-recovery-activity-changed'; groupId: string; activityId: string; timestamp: number }
   | { type: 'daily-allowance-edited'; appId: string; previousMinutes: number; nextMinutes: number; timestamp: number }
   | { type: 'daily-allowance-exhausted'; appId: string; timestamp: number }
   | { type: 'emergency-bypass'; timestamp: number };
@@ -114,10 +138,14 @@ export type RhythmEvent =
   | { type: 'START_ACCESS_LEASE'; groupId: string; durationMinutes?: number; reason?: 'emergency' | 'intentional'; timestamp: number }
   | { type: 'END_ACCESS_LEASE'; groupId: string; timestamp: number }
   | { type: 'UPDATE_DAILY_ALLOWANCE'; appId: string; allowanceMinutes: number; timestamp: number }
+  | { type: 'UPDATE_GROUP_ALLOWANCE'; groupId: string; allowanceMinutes: number; timestamp: number }
+  | { type: 'UPDATE_GROUP_RECOVERY_ACTIVITY'; groupId: string; activityId: string; timestamp: number }
   | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
+  | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
-  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
+  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'RISK_GROUP_DELETED'; groupId: string; timestamp: number };
 
 export type RhythmEffect =
   | { type: 'APPLY_RESTRICTIONS'; appIds: string[] }
@@ -196,6 +224,10 @@ export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
 
   if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
     res.dailyAppUsage = { ...raw.dailyAppUsage };
+  }
+
+  if (raw.groupAllowanceUsage && typeof raw.groupAllowanceUsage === 'object') {
+    res.groupAllowanceUsage = { ...raw.groupAllowanceUsage };
   }
 
   if (raw.activeSession) {

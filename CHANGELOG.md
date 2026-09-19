@@ -5,6 +5,39 @@ All notable changes to Rhythmic-Routine are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-09-19
+
+### Added
+- **Accountability Partner System:** Local-first, zero-backend partner accountability model supporting multiple partners with granular metadata (name, relationship label).
+- **Secure Partner Credential Management:** Salted PBKDF2-HMAC-SHA256 password verifiers stored in secure storage; zero plaintext password exposure in persistent storage, Zustand state, or UI modals.
+- **Centralized Mutation Authorization Gateway:** Module-private executor architecture guaranteeing that any protected operation (`create-risk-group`, `edit-risk-group`, `delete-risk-group`, `edit-risk-group-protection`, `edit-routine-schedule`, `change-app-classification`, `change-daily-allowance`, `enable-accountability`, `disable-accountability`, `manage-accountability-partner`, `start-access-lease`, `reset-local-state`, `edit-ios-risk-group-selection`) strictly passes through partner approval when Accountability Mode is enabled.
+- **Two-Phase Native iOS Selection Staging:** Staged FamilyActivityPicker selection (`pending_selection.<UUID>`) on iOS preventing unapproved App Group mutation; includes automatic rollback and orphan discard on transaction failure or rejection.
+- **Custom Risk Groups:** Full user lifecycle for custom Risk Groups (create, edit, delete, icon/color customization) with per-group daily allowances, individual cooldown durations, and assigned recovery activities.
+- **Lockout Rate Limiting:** Brute-force protection locking out partner password verification for 60 seconds after 5 consecutive failed attempts, decremented and reset on successful verification.
+- **Atomic Configuration Transactions:** Consolidated configuration mutations through `RhythmCoordinator` with transaction-safe history event recording and unified rollback on failure.
+
+### Changed
+- **Group-Level Allowance Model:** Replaced legacy per-app daily risk allowances with unified per-Risk-Group allowance pooling (all apps in a group draw from the single group ledger).
+- **Automatic v1.0.1 -> v1.1.0 Migration:** Deterministic upgrade migrating legacy group threshold minutes into `allowanceMinutes`, defaulting recovery activity to `walk`, and stripping deprecated per-app allowances.
+- **Safe Area & Modal Usability:** Hardened all dialogs, bottom sheets, and the Partner Approval modal with `KeyboardAvoidingView` and platform-specific `useSafeAreaInsets` padding.
+
+### Fixed
+- **Authorization UI Bypasses:** Eliminated raw executor exports, routine scheduling direct mutations (active day toggling and time adjustments), and direct `updateConfig` bypasses across all screens, drawers, and demo state switchers.
+- **Credential Memory Leakage:** In-flight partner passwords for partner creation/verification are managed via transient module-private memory vaults and destroyed immediately upon consumption or cancellation.
+- **History Write Decoupling:** History logging failures no longer invalidate already-committed configuration transactions or induce split-state desynchronization.
+- **iOS Picker State Invariant:** Staged FamilyActivityPicker selections cannot bypass partner authorization by writing directly to active App Group storage before approval.
+
+### Platform Status
+- **Android:** Fully verified on standalone QA variant with AccessibilityService foreground observation, UsageStats reconciliation, calm Touch Grass overlay (`#FAF7F0`), and group allowance enforcement.
+- **iOS:** Complete source architecture implementation with Screen Time DeviceActivity plugins, App Group storage, and two-phase FamilyActivityPicker staging; pending physical Apple hardware validation.
+- **Web:** Local interactive simulator and testing environment.
+
+### Validation
+- **Automated Test Matrix:** 320 unit/integration tests passing across 63 test suites (100% pass rate).
+- **TypeScript:** Clean compilation with 0 errors (`node --stack-size=8192 ./node_modules/typescript/bin/tsc --noEmit`).
+- **ESLint:** Clean lint run with 0 errors and 0 warnings (`expo lint`).
+- **Expo Bundler:** Clean Android bundle export (`5.4MB HBC bundle`) with zero unresolved dependencies or module errors.
+
 ## [1.0.1] — 2026-09-03
 
 ### Added

@@ -6,13 +6,21 @@ import { ActiveCooldown, getActiveCooldowns } from './types';
 export function startCooldown(
   groupId: string,
   startedAt: number,
-  durationMinutes: number
+  durationMinutes: number,
+  options?: {
+    recoverySessionId?: string;
+    recoveryRequired?: boolean;
+    cycleNumber?: number;
+  }
 ): ActiveCooldown {
   const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
   return {
     groupId,
     startedAt,
     endsAt: startedAt + durationMs,
+    ...(options?.recoverySessionId ? { recoverySessionId: options.recoverySessionId } : {}),
+    ...(options?.recoveryRequired !== undefined ? { recoveryRequired: options.recoveryRequired } : {}),
+    ...(options?.cycleNumber !== undefined ? { cycleNumber: options.cycleNumber } : {}),
   };
 }
 
