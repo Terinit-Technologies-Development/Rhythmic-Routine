@@ -9,7 +9,17 @@ import {
   AccountabilitySettings,
   AppPolicyPayload,
 } from './types';
-import { DeviceApp, RiskGroup } from '../../types/domain';
+import {
+  DeviceApp,
+  RiskGroup,
+  RiskGroupConfigurationDraft,
+  RoutineWindow,
+  OfflineActivity,
+} from '../../types/domain';
+import {
+  resolveGroupAllowanceMinutes,
+  resolveGroupRecoveryActivityId,
+} from '../rhythm/allowance';
 
 /**
  * All protected accountability operations.
@@ -27,6 +37,7 @@ export const PROTECTED_OPERATIONS: readonly AccountabilityOperation[] = [
   'enable-accountability',
   'disable-accountability',
   'manage-accountability-partner',
+  'edit-ios-risk-group-selection',
 ] as const;
 
 /**
@@ -126,4 +137,74 @@ export function buildAppPolicySummary(
   }
 
   return `Change ${app.name} from ${cap(prevClassification)} to ${cap(nextClassification)}`;
+}
+
+/**
+ * Builds a precise, human-readable summary detailing each staged change to a Risk Group.
+ * Examples:
+ * - "Update Social Feeds: allowance 45 → 30 min; cooldown 90 → 120 min; remove Morning Buffer protection; recovery activity → Reading"
+ * - "Update Social Feeds: rename “Social Feeds” to “Calm Feeds”"
+ * - "Update Social Feeds"
+ */
+export function buildRiskGroupEditSummary(
+  group: RiskGroup,
+  draft: RiskGroupConfigurationDraft,
+  routineWindows: RoutineWindow[] = [],
+  activities: OfflineActivity[] = []
+): string {
+  const changes: string[] = [];
+
+  const trimmedDraftName = draft.name.trim();
+  if (trimmedDraftName && trimmedDraftName !== group.name) {
+    changes.push(`rename “${group.name}” to “${trimmedDraftName}”`);
+  }
+
+  const trimmedDraftDesc = draft.description.trim();
+  const currentDesc = (group.description ?? '').trim();
+  if (trimmedDraftDesc !== currentDesc) {
+    changes.push('update description');
+  }
+
+  const currentAllowance = resolveGroupAllowanceMinutes(group);
+  if (draft.allowanceMinutes !== currentAllowance) {
+    changes.push(`allowance ${currentAllowance} → ${draft.allowanceMinutes} min`);
+  }
+
+  if (draft.cooldownMinutes !== group.cooldownMinutes) {
+    changes.push(`cooldown ${group.cooldownMinutes} → ${draft.cooldownMinutes} min`);
+  }
+
+  const currentRecovery = resolveGroupRecoveryActivityId(group);
+  if (draft.recoveryActivityId !== currentRecovery) {
+    const activity = activities.find((a) => a.id === draft.recoveryActivityId);
+    changes.push(`recovery activity → ${activity?.title ?? draft.recoveryActivityId}`);
+  }
+
+  const morningWindow = routineWindows.find(
+    (w) => w.type === 'morning-buffer' || w.id === 'morning-buffer'
+  );
+  const currentMorning = morningWindow?.protectedGroupIds?.includes(group.id) ?? false;
+  if (draft.morningProtected !== currentMorning) {
+    changes.push(
+      draft.morningProtected
+        ? 'add Morning Buffer protection'
+        : 'remove Morning Buffer protection'
+    );
+  }
+
+  const eveningWindow = routineWindows.find(
+    (w) => w.type === 'evening-wind-down' || w.id === 'evening-wind-down'
+  );
+  const currentEvening = eveningWindow?.protectedGroupIds?.includes(group.id) ?? false;
+  if (draft.eveningProtected !== currentEvening) {
+    changes.push(
+      draft.eveningProtected
+        ? 'add Evening Wind-Down protection'
+        : 'remove Evening Wind-Down protection'
+    );
+  }
+
+  return changes.length
+    ? `Update ${group.name}: ${changes.join('; ')}`
+    : `Update ${group.name}`;
 }

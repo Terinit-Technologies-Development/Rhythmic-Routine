@@ -39,6 +39,7 @@ import { resolveGroupAllowanceMinutes } from '../../src/domain/rhythm/allowance'
 import { getLocalDateKey } from '../../src/domain/insights';
 import { useNow } from '../../src/domain/timer';
 import { RiskGroupConfigurationDraft } from '../../src/types/domain';
+import { buildRiskGroupEditSummary } from '../../src/domain/accountability/policy';
 import Svg, { Path, Circle } from 'react-native-svg';
 
 export default function RiskGroupDetailScreen() {
@@ -193,9 +194,16 @@ export default function RiskGroupDetailScreen() {
         description: draft.description.trim(),
       };
 
+      const summary = buildRiskGroupEditSummary(
+        group,
+        stagedDraft,
+        routineWindows,
+        offlineActivities
+      );
+
       const result = await requestProtectedMutation({
         operation: 'edit-risk-group',
-        summary: `Update ${group.name} protection settings`,
+        summary,
         payload: {
           groupId: group.id,
           draft: stagedDraft,

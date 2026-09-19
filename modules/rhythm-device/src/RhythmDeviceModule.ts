@@ -42,6 +42,21 @@ export const FallbackModule = {
     revision: 1,
     kind: 'mixed',
   }),
+  stageFamilyActivityPicker: async (
+    _groupId: string
+  ): Promise<{ stagedSelectionRef: string; tokenCount: number }> => ({
+    stagedSelectionRef: `pending_selection.${Date.now()}`,
+    tokenCount: isWeb ? 1 : 0,
+  }),
+  commitStagedFamilyActivitySelection: async (
+    groupId: string,
+    _stagedSelectionRef: string
+  ): Promise<{ success: boolean; revision: number; localSelectionId?: string }> => ({
+    success: true,
+    revision: 1,
+    localSelectionId: `selection.${groupId}`,
+  }),
+  discardStagedFamilyActivitySelection: async (_stagedSelectionRef: string): Promise<boolean> => true,
   hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
   clearGroupSelection: async (_groupId: string): Promise<{ success: boolean; revision: number }> => ({
     success: true,

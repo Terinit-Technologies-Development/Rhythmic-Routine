@@ -5,7 +5,7 @@ import { resetAccountabilityService } from '../../application/AccountabilityServ
 import { getPlatformServices } from '../../platform/PlatformServices';
 import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
 import { AppPolicyPayload } from '../accountability/types';
-import { buildAppPolicySummary } from '../accountability/policy';
+import { buildAppPolicySummary, buildRiskGroupEditSummary } from '../accountability/policy';
 import { RiskGroupConfigurationDraft } from '../../types/domain';
 
 describe('Pass 03 — Protected Workflows & Full Integration', () => {
@@ -501,5 +501,131 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
       usePrototypeStore.getState().riskGroups.find((g) => g.id === 'entertainment')?.allowanceMinutes,
       60
     );
+  });
+
+  test('15. buildRiskGroupEditSummary produces exact multi-field change details', () => {
+    const store = usePrototypeStore.getState();
+    const group = store.riskGroups.find((g) => g.id === 'social')!;
+
+    const draft: RiskGroupConfigurationDraft = {
+      name: 'Calm Feeds',
+      description: 'Reformed feeds',
+      allowanceMinutes: 20,
+      cooldownMinutes: 120,
+      recoveryActivityId: 'stretch',
+      morningProtected: true,
+      eveningProtected: false,
+    };
+
+    const summary = buildRiskGroupEditSummary(
+      group,
+      draft,
+      store.routineWindows,
+      store.offlineActivities
+    );
+
+    assert.ok(summary.includes('rename “Social Feeds” to “Calm Feeds”'));
+    assert.ok(summary.includes('allowance 30 → 20 min'));
+    assert.ok(summary.includes('cooldown 90 → 120 min'));
+    assert.ok(summary.includes('recovery activity → Stretch'));
+    assert.ok(summary.includes('remove Evening Wind-Down protection'));
+  });
+
+  test('16. iOS app selection stages and requires partner approval when mode ON', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    try {
+      const store = usePrototypeStore.getState();
+      const partner = await store.createAccountabilityPartner({
+        name: 'Alice',
+        password: 'password123',
+      });
+      await store.enableAccountability(partner.id, 'password123');
+
+      const initialGroup = store.riskGroups.find((g) => g.id === 'social')!;
+      const initialRev = initialGroup.nativeSelectionRevision;
+
+      await store.selectIosRiskGroupApps('social');
+
+      const pending = usePrototypeStore.getState().pendingApproval;
+      assert.ok(pending);
+      assert.equal(pending.operation, 'edit-ios-risk-group-selection');
+      assert.ok(pending.summary.includes('Update Social Feeds protected apps'));
+      const payload = pending.payload as any;
+      assert.equal(payload.groupId, 'social');
+      assert.ok(payload.stagedSelectionRef.startsWith('pending_selection.'));
+
+      // Active group in store is unchanged before approval
+      const currentGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(currentGroup.nativeSelectionRevision, initialRev);
+    } finally {
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
+  });
+
+  test('17. cancelPendingApproval on iOS selection discards staged selection and leaves active selection unchanged', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    try {
+      const store = usePrototypeStore.getState();
+      const partner = await store.createAccountabilityPartner({
+        name: 'Alice',
+        password: 'password123',
+      });
+      await store.enableAccountability(partner.id, 'password123');
+
+      const initialGroup = store.riskGroups.find((g) => g.id === 'social')!;
+
+      await store.selectIosRiskGroupApps('social');
+      assert.ok(usePrototypeStore.getState().pendingApproval);
+
+      store.cancelPendingApproval();
+      assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+      const currentGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(currentGroup.nativeSelectionRevision, initialGroup.nativeSelectionRevision);
+    } finally {
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
+  });
+
+  test('18. approving iOS app selection commits staged selection, increments revision, and updates coordinator config', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    try {
+      const store = usePrototypeStore.getState();
+      const partner = await store.createAccountabilityPartner({
+        name: 'Alice',
+        password: 'password123',
+      });
+      await store.enableAccountability(partner.id, 'password123');
+
+      await store.selectIosRiskGroupApps('social');
+
+      const approvalRes = await store.approveProtectedMutation(partner.id, 'password123');
+      assert.equal(approvalRes.ok, true);
+      assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+      const updatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(updatedGroup.nativeSelectionRef, 'selection.social');
+      assert.ok(typeof updatedGroup.nativeSelectionRevision === 'number');
+    } finally {
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
+  });
+
+  test('19. iOS app selection commits immediately when accountability mode is OFF', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    try {
+      const store = usePrototypeStore.getState();
+      assert.equal(store.accountability.enabled, false);
+
+      await store.selectIosRiskGroupApps('social');
+
+      // No pending approval
+      assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+      const updatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(updatedGroup.nativeSelectionRef, 'selection.social');
+    } finally {
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
   });
 });

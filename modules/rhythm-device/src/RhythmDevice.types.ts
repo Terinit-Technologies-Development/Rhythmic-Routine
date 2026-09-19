@@ -33,6 +33,17 @@ export interface IOSSelectionReference {
   kind: 'applications' | 'categories' | 'mixed';
 }
 
+export interface StagedSelectionResult {
+  stagedSelectionRef: string;
+  tokenCount: number;
+}
+
+export interface CommitSelectionResult {
+  success: boolean;
+  revision: number;
+  localSelectionId?: string;
+}
+
 export interface MonitoringSyncResult {
   success: boolean;
   persistentActivityCount: number;

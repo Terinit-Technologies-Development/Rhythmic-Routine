@@ -39,6 +39,7 @@ export default function SettingsScreen() {
   const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
   const requestUsagePermission = usePrototypeStore((s) => s.requestUsagePermission);
   const accountability = usePrototypeStore((s) => s.accountability);
+  const selectIosRiskGroupApps = usePrototypeStore((s) => s.selectIosRiskGroupApps);
 
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
@@ -86,7 +87,7 @@ export default function SettingsScreen() {
   const handleSelectIosApps = async () => {
     try {
       setIsSelectingApps(true);
-      await RhythmDeviceModule.showFamilyActivityPicker('social');
+      await selectIosRiskGroupApps('social');
       await checkPermissions();
     } catch {
       // User cancelled or unsupported

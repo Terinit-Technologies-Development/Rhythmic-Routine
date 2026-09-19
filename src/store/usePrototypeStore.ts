@@ -50,6 +50,7 @@ import {
   AccountabilitySettings,
   AppPolicyPayload,
   ApprovalResult,
+  IOSSelectionEditPayload,
   ManagePartnerMutationPayload,
   PendingApproval,
   ProtectedMutation,
@@ -240,8 +241,8 @@ interface PrototypeState {
   pendingApproval: PendingApproval | null;
 
   // Protected mutation gateway & accountability actions
-  requestProtectedMutation: <T = unknown>(
-    mutation: ProtectedMutation<T>
+  requestProtectedMutation: (
+    mutation: ProtectedMutation
   ) => Promise<{ status: 'executed' | 'pending-approval'; result?: unknown }>;
   approveProtectedMutation: (
     partnerId: string,
@@ -310,12 +311,23 @@ export function __getTransientSecretCountForTests(): number {
 }
 
 function cleanupPendingApprovalSecrets(pending: PendingApproval | null): void {
-  if (pending?.operation !== 'manage-accountability-partner') {
-    return;
-  }
-  const payload = pending.payload as ManagePartnerMutationPayload | undefined;
-  if (payload && (payload.action === 'create' || payload.action === 'replace-password')) {
-    deleteTransientSecret(payload.secretRef);
+  if (!pending) return;
+  if (pending.operation === 'manage-accountability-partner') {
+    const payload = pending.payload as ManagePartnerMutationPayload | undefined;
+    if (payload && (payload.action === 'create' || payload.action === 'replace-password')) {
+      deleteTransientSecret(payload.secretRef);
+    }
+  } else if (pending.operation === 'edit-ios-risk-group-selection') {
+    const payload = pending.payload as IOSSelectionEditPayload | undefined;
+    if (payload?.stagedSelectionRef) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const RhythmDevice = require('../../modules/rhythm-device').default;
+        void RhythmDevice.discardStagedFamilyActivitySelection(payload.stagedSelectionRef);
+      } catch {
+        // Best effort
+      }
+    }
   }
 }
 
@@ -600,6 +612,40 @@ function registerDefaultMutationExecutors(
       await service.replacePartnerPassword(existing, password);
       return;
     }
+  });
+
+  mutationExecutors.set('edit-ios-risk-group-selection', async (payload: IOSSelectionEditPayload) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const RhythmDevice = require('../../modules/rhythm-device').default;
+    const commitResult = await RhythmDevice.commitStagedFamilyActivitySelection(
+      payload.groupId,
+      payload.stagedSelectionRef
+    );
+    if (!commitResult?.success) {
+      throw new Error('Failed to commit staged iOS app selection');
+    }
+
+    const state = get();
+    const existingGroup = state.riskGroups.find((g) => g.id === payload.groupId);
+    if (!existingGroup) {
+      throw new Error('Target risk group not found');
+    }
+
+    const updatedGroups = state.riskGroups.map((group) =>
+      group.id === payload.groupId
+        ? {
+            ...group,
+            nativeSelectionRef: commitResult.localSelectionId ?? `selection.${payload.groupId}`,
+            nativeSelectionCount: payload.tokenCount,
+            nativeSelectionRevision: commitResult.revision ?? ((group.nativeSelectionRevision ?? 0) + 1),
+          }
+        : group
+    );
+
+    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedGroups });
+    set({ riskGroups: updatedGroups });
+    await get().checkPermissions();
+    return { success: true };
   });
 }
 
@@ -1547,29 +1593,27 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   selectIosRiskGroupApps: async (groupId: string) => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { Platform } = require('react-native');
-      if (Platform.OS !== 'ios') return;
+      if (getPlatformOS() !== 'ios') return;
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const RhythmDevice = require('../../modules/rhythm-device').default;
-      const result = await RhythmDevice.showFamilyActivityPicker(groupId);
-      if (!result) return;
+      const result = await RhythmDevice.stageFamilyActivityPicker(groupId);
+      if (!result || !result.stagedSelectionRef) return;
 
       const state = get();
-      const updatedRiskGroups = state.riskGroups.map((group) =>
-        group.id === groupId
-          ? {
-              ...group,
-              nativeSelectionRef: result.localSelectionId,
-              nativeSelectionCount: result.tokenCount ?? 0,
-              nativeSelectionRevision: result.revision ?? ((group.nativeSelectionRevision ?? 0) + 1),
-            }
-          : group
-      );
+      const group = state.riskGroups.find((g) => g.id === groupId);
+      const groupName = group?.name || 'Risk Group';
+      const count = result.tokenCount ?? 0;
+      const summary = `Update ${groupName} protected apps (${count} selected)`;
 
-      set({ riskGroups: updatedRiskGroups });
-      await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedRiskGroups });
-      await get().checkPermissions();
+      await get().requestProtectedMutation({
+        operation: 'edit-ios-risk-group-selection',
+        summary,
+        payload: {
+          groupId,
+          stagedSelectionRef: result.stagedSelectionRef,
+          tokenCount: count,
+        },
+      });
     } catch {
       // User cancelled or unsupported
     }
@@ -1601,8 +1645,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   // Protected mutation gateway
-  requestProtectedMutation: async <T = unknown>(
-    mutation: ProtectedMutation<T>
+  requestProtectedMutation: async (
+    mutation: ProtectedMutation
   ): Promise<{ status: 'executed' | 'pending-approval'; result?: unknown }> => {
     registerDefaultMutationExecutors(get, set);
     const state = get();

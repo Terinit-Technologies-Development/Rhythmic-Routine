@@ -35,7 +35,8 @@ export type AccountabilityOperation =
   | 'reset-local-state'
   | 'enable-accountability'
   | 'disable-accountability'
-  | 'manage-accountability-partner';
+  | 'manage-accountability-partner'
+  | 'edit-ios-risk-group-selection';
 
 export type ApprovalFailureReason =
   | 'invalid-password'
@@ -118,7 +119,13 @@ export interface DailyAllowanceEditPayload {
   allowanceMinutes: number;
 }
 
-export type ProtectedMutation<TPayload = unknown> =
+export interface IOSSelectionEditPayload {
+  groupId: string;
+  stagedSelectionRef: string;
+  tokenCount: number;
+}
+
+export type ProtectedMutation =
   | {
       operation: 'change-app-classification';
       summary: string;
@@ -175,9 +182,9 @@ export type ProtectedMutation<TPayload = unknown> =
       payload: ManagePartnerMutationPayload;
     }
   | {
-      operation: AccountabilityOperation;
+      operation: 'edit-ios-risk-group-selection';
       summary: string;
-      payload: TPayload;
+      payload: IOSSelectionEditPayload;
     };
 
 export interface PendingApproval<TPayload = unknown> {
