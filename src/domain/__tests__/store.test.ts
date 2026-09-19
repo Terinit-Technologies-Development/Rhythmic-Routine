@@ -12,11 +12,11 @@ import { getPlatformServices } from '../../platform/PlatformServices';
 import { RhythmCoordinator } from '../../application/RhythmCoordinator';
 
 describe('Zustand Store Reconciliation Integration Tests', () => {
-  test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', () => {
+  test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', async () => {
     const store = usePrototypeStore.getState();
 
     // Change Morning Buffer unlock time to 08:30
-    store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
+    await store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const morning = getRoutineWindow(updatedWindows, 'morning-buffer');
@@ -26,11 +26,11 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(getRoutineTargetTime(morning!), '08:30');
   });
 
-  test('Routine Propagation: Evening Wind-Down editing propagates dynamically', () => {
+  test('Routine Propagation: Evening Wind-Down editing propagates dynamically', async () => {
     const store = usePrototypeStore.getState();
 
     // Change Evening Wind-Down time to 22:00
-    store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
+    await store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const evening = getRoutineWindow(updatedWindows, 'evening-wind-down');
@@ -40,12 +40,12 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(getRoutineTargetTime(evening!), '22:00');
   });
 
-  test('Open Day Boundary Adjacency: Open Day range is cleanly derived from adjacent boundaries', () => {
+  test('Open Day Boundary Adjacency: Open Day range is cleanly derived from adjacent boundaries', async () => {
     const store = usePrototypeStore.getState();
 
     // Set Morning Buffer unlock to 08:30 and Evening Wind-Down to 22:00
-    store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
-    store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
+    await store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
+    await store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const openRange = getOpenDayRange(updatedWindows);

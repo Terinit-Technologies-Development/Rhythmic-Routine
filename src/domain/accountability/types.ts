@@ -7,6 +7,7 @@ import {
   AppClassification,
   CreateRiskGroupInput,
   RiskGroupConfigurationDraft,
+  RoutineWindow,
 } from '../../types/domain';
 
 export interface AccountabilityPartner {
@@ -31,6 +32,7 @@ export type AccountabilityOperation =
   | 'edit-risk-group'
   | 'delete-risk-group'
   | 'edit-risk-group-protection'
+  | 'edit-routine-schedule'
   | 'start-access-lease'
   | 'reset-local-state'
   | 'enable-accountability'
@@ -125,6 +127,10 @@ export interface IOSSelectionEditPayload {
   tokenCount: number;
 }
 
+export interface RoutineScheduleEditPayload {
+  routineWindows: RoutineWindow[];
+}
+
 export type ProtectedMutation =
   | {
       operation: 'change-app-classification';
@@ -155,6 +161,11 @@ export type ProtectedMutation =
       operation: 'edit-risk-group-protection';
       summary: string;
       payload: GroupProtectionEditPayload;
+    }
+  | {
+      operation: 'edit-routine-schedule';
+      summary: string;
+      payload: RoutineScheduleEditPayload;
     }
   | {
       operation: 'start-access-lease';

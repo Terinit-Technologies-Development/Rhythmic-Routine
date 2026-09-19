@@ -32,6 +32,7 @@ export const PROTECTED_OPERATIONS: readonly AccountabilityOperation[] = [
   'edit-risk-group',
   'delete-risk-group',
   'edit-risk-group-protection',
+  'edit-routine-schedule',
   'start-access-lease',
   'reset-local-state',
   'enable-accountability',
@@ -208,3 +209,38 @@ export function buildRiskGroupEditSummary(
     ? `Update ${group.name}: ${changes.join('; ')}`
     : `Update ${group.name}`;
 }
+
+const DAY_LABELS: Record<number, string> = {
+  1: 'Mon',
+  2: 'Tue',
+  3: 'Wed',
+  4: 'Thu',
+  5: 'Fri',
+  6: 'Sat',
+  7: 'Sun',
+};
+
+/**
+ * Formats a list of ISO day numbers (1-7) into a human-readable list.
+ * e.g. [1, 2, 3, 4, 5] -> 'Mon, Tue, Wed, Thu, Fri'
+ */
+export function formatDays(days: number[]): string {
+  if (!days || days.length === 0) return 'None';
+  if (days.length === 7) return 'Every day';
+  const sorted = [...days].sort((a, b) => a - b);
+  return sorted.map((d) => DAY_LABELS[d] ?? String(d)).join(', ');
+}
+
+/**
+ * Builds a specific summary for routine schedule mutations (days or times).
+ */
+export function buildRoutineScheduleSummary(
+  type: 'days' | 'time',
+  details: { days?: number[]; windowName?: string; fieldLabel?: string; time?: string }
+): string {
+  if (type === 'days') {
+    return `Change active routine days to ${formatDays(details.days ?? [])}`;
+  }
+  return `Change ${details.windowName ?? 'Routine'} ${details.fieldLabel ?? 'time'} to ${details.time ?? ''}`;
+}
+

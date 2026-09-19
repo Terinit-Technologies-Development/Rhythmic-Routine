@@ -54,10 +54,12 @@ import {
   ManagePartnerMutationPayload,
   PendingApproval,
   ProtectedMutation,
+  RoutineScheduleEditPayload,
 } from '../domain/accountability/types';
 import {
   requiresPartnerApproval,
   getEnabledPartners,
+  formatDays,
 } from '../domain/accountability/policy';
 import {
   getAccountabilityService,
@@ -212,8 +214,8 @@ interface PrototypeState {
     riskGroupId?: string
   ) => Promise<void>;
   updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => Promise<SaveRiskGroupResult>;
-  updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => void;
-  toggleRoutineDay: (day: number) => void;
+  updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => Promise<void>;
+  toggleRoutineDay: (day: number) => Promise<void>;
   toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
   createRiskGroup: (input: CreateRiskGroupInput) => Promise<string>;
   saveRiskGroupConfiguration: (groupId: string, draft: RiskGroupConfigurationDraft) => Promise<SaveRiskGroupResult>;
@@ -229,7 +231,7 @@ interface PrototypeState {
 
   openTimeSelector: (config: Omit<TimeSelectorConfig, 'visible'>) => void;
   closeTimeSelector: () => void;
-  saveSelectedTime: (time: string) => void;
+  saveSelectedTime: (time: string) => Promise<void>;
 
   openAppEdit: (appId: string) => void;
   closeAppEdit: () => void;
@@ -501,6 +503,15 @@ function registerDefaultMutationExecutors(
 
   mutationExecutors.set('edit-risk-group-protection', async ({ windowId, groupId, enabled }) => {
     get().toggleGroupProtection(windowId, groupId, enabled);
+  });
+
+  mutationExecutors.set('edit-routine-schedule', async ({ routineWindows }: RoutineScheduleEditPayload) => {
+    await RhythmCoordinator.getInstance().updateConfig({
+      routineWindows,
+    });
+    set({
+      routineWindows,
+    });
   });
 
   mutationExecutors.set('start-access-lease', async ({ groupId, durationMinutes }) => {
@@ -1251,35 +1262,43 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     return get().saveRiskGroupConfiguration(groupId, draft);
   },
 
-  updateRoutineWindow: (windowId, updates) => {
-    set((state) => {
-      const updatedWindows = state.routineWindows.map((w) =>
-        w.id === windowId ? { ...w, ...updates } : w
-      );
+  updateRoutineWindow: async (windowId, updates) => {
+    const state = get();
+    const currentWindow = state.routineWindows.find((w) => w.id === windowId);
+    if (!currentWindow) return;
 
-      RhythmCoordinator.getInstance().updateConfig({
-        routineWindows: updatedWindows,
-      }).catch(() => {});
+    const nextWindows = state.routineWindows.map((w) =>
+      w.id === windowId ? { ...w, ...updates } : w
+    );
 
-      return { routineWindows: updatedWindows };
+    await get().requestProtectedMutation({
+      operation: 'edit-routine-schedule',
+      summary: `Update ${currentWindow.name} routine schedule`,
+      payload: {
+        routineWindows: nextWindows,
+      },
     });
   },
 
-  toggleRoutineDay: (day) => {
-    set((state) => {
-      const morningWin = state.routineWindows.find((w) => w.id === 'morning-buffer');
-      const currentDays = morningWin ? morningWin.activeDays : [1, 2, 3, 4, 5, 6, 7];
-      const newDays = currentDays.includes(day)
-        ? currentDays.filter((d) => d !== day)
-        : [...currentDays, day].sort();
+  toggleRoutineDay: async (day) => {
+    const state = get();
+    const morningWin =
+      state.routineWindows.find((w) => w.type === 'morning-buffer') ||
+      state.routineWindows.find((w) => w.id === 'morning-buffer') ||
+      state.routineWindows[0];
+    const currentDays = morningWin ? morningWin.activeDays : [1, 2, 3, 4, 5, 6, 7];
+    const newDays = currentDays.includes(day)
+      ? currentDays.filter((d) => d !== day)
+      : [...currentDays, day].sort();
 
-      const updatedWindows = state.routineWindows.map((w) => ({ ...w, activeDays: newDays }));
+    const nextWindows = state.routineWindows.map((w) => ({ ...w, activeDays: newDays }));
 
-      RhythmCoordinator.getInstance().updateConfig({
-        routineWindows: updatedWindows,
-      }).catch(() => {});
-
-      return { routineWindows: updatedWindows };
+    await get().requestProtectedMutation({
+      operation: 'edit-routine-schedule',
+      summary: `Change active routine days to ${formatDays(newDays)}`,
+      payload: {
+        routineWindows: nextWindows,
+      },
     });
   },
 
@@ -1656,14 +1675,45 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   openTimeSelector: (config) => set({ timeSelector: { ...config, visible: true } }),
   closeTimeSelector: () => set({ timeSelector: { visible: false } }),
-  saveSelectedTime: (time) => {
-    const { timeSelector } = get();
-    if (timeSelector.windowId && timeSelector.field) {
-      get().updateRoutineWindow(timeSelector.windowId, {
-        [timeSelector.field]: time,
-      });
+  saveSelectedTime: async (time) => {
+    const state = get();
+    const { windowId, field } = state.timeSelector;
+
+    if (!windowId || !field) {
+      set({ timeSelector: { visible: false } });
+      return;
     }
-    set({ timeSelector: { visible: false } });
+
+    const currentWindow = state.routineWindows.find((w) => w.id === windowId);
+    if (!currentWindow) {
+      set({ timeSelector: { visible: false } });
+      return;
+    }
+
+    const nextWindows = state.routineWindows.map((w) =>
+      w.id === windowId
+        ? {
+            ...w,
+            [field]: time,
+          }
+        : w
+    );
+
+    const label = field === 'startTime' ? 'start time' : 'end time';
+
+    set({
+      timeSelector: {
+        visible: false,
+      },
+    });
+
+    await get().requestProtectedMutation({
+      operation: 'edit-routine-schedule',
+      summary: `Change ${currentWindow.name} ${label} to ${time}`,
+      payload: {
+        routineWindows: nextWindows,
+      },
+    });
   },
 
   openAppEdit: (appId) => set({ appEdit: { visible: true, appId } }),

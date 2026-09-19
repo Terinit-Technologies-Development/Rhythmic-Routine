@@ -20,12 +20,13 @@ import { RoutineWindowCard } from '../../src/components/RoutineWindowCard';
 import { AddRiskGroupModal } from '../../src/components/AddRiskGroupModal';
 import { usePrototypeStore } from '../../src/store/usePrototypeStore';
 import { getOpenDayRange } from '../../src/domain/selectors';
+import { formatDays } from '../../src/domain/accountability/policy';
 
 export default function RoutineScreen() {
   const router = useRouter();
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const toggleRoutineDay = usePrototypeStore((s) => s.toggleRoutineDay);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const apps = usePrototypeStore((s) => s.apps);
 
   const getGroupStatusTag = (groupId: string) => {
@@ -56,6 +57,26 @@ export default function RoutineScreen() {
 
   const morningWindow = routineWindows.find((w) => w.type === 'morning-buffer') || routineWindows[0];
   const activeDays = morningWindow ? morningWindow.activeDays : [1, 2, 3, 4, 5, 6, 7];
+
+  const handleToggleRoutineDay = async (day: number) => {
+    const currentDays = morningWindow?.activeDays ?? [1, 2, 3, 4, 5, 6, 7];
+    const newDays = currentDays.includes(day)
+      ? currentDays.filter((d) => d !== day)
+      : [...currentDays, day].sort();
+
+    const nextWindows = routineWindows.map((w) => ({
+      ...w,
+      activeDays: newDays,
+    }));
+
+    await requestProtectedMutation({
+      operation: 'edit-routine-schedule',
+      summary: `Change active routine days to ${formatDays(newDays)}`,
+      payload: {
+        routineWindows: nextWindows,
+      },
+    });
+  };
 
   const applyTemplate = () => {
     setTemplateApplied(true);
@@ -89,7 +110,7 @@ export default function RoutineScreen() {
                       styles.dayChip,
                       isActive && styles.dayChipActive,
                     ]}
-                    onPress={() => toggleRoutineDay(day.id)}
+                    onPress={() => handleToggleRoutineDay(day.id)}
                     activeOpacity={0.7}
                   >
                     <Text

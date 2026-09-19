@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Accountability Partner System:** Local-first, zero-backend partner accountability model supporting multiple partners with granular metadata (name, relationship label).
 - **Secure Partner Credential Management:** Salted PBKDF2-HMAC-SHA256 password verifiers stored in secure storage; zero plaintext password exposure in persistent storage, Zustand state, or UI modals.
-- **Centralized Mutation Authorization Gateway:** Module-private executor architecture guaranteeing that any protected operation (`edit-risk-group`, `create-risk-group`, `delete-risk-group`, `edit-routine-window`, `enable-accountability`, `disable-accountability`, `partner-management`, `access-lease`, `emergency-bypass`, `reset-local-state`, `edit-ios-risk-group-selection`) strictly passes through partner approval when Accountability Mode is enabled.
-- **Two-Phase Native iOS Selection Staging:** Staged FamilyActivityPicker selection (`pending_selection.<groupId>`) on iOS preventing unapproved App Group mutation; includes automatic rollback and orphan discard on transaction failure or rejection.
+- **Centralized Mutation Authorization Gateway:** Module-private executor architecture guaranteeing that any protected operation (`create-risk-group`, `edit-risk-group`, `delete-risk-group`, `edit-risk-group-protection`, `edit-routine-schedule`, `change-app-classification`, `change-daily-allowance`, `enable-accountability`, `disable-accountability`, `manage-accountability-partner`, `start-access-lease`, `reset-local-state`, `edit-ios-risk-group-selection`) strictly passes through partner approval when Accountability Mode is enabled.
+- **Two-Phase Native iOS Selection Staging:** Staged FamilyActivityPicker selection (`pending_selection.<UUID>`) on iOS preventing unapproved App Group mutation; includes automatic rollback and orphan discard on transaction failure or rejection.
 - **Custom Risk Groups:** Full user lifecycle for custom Risk Groups (create, edit, delete, icon/color customization) with per-group daily allowances, individual cooldown durations, and assigned recovery activities.
 - **Lockout Rate Limiting:** Brute-force protection locking out partner password verification for 60 seconds after 5 consecutive failed attempts, decremented and reset on successful verification.
 - **Atomic Configuration Transactions:** Consolidated configuration mutations through `RhythmCoordinator` with transaction-safe history event recording and unified rollback on failure.
@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Safe Area & Modal Usability:** Hardened all dialogs, bottom sheets, and the Partner Approval modal with `KeyboardAvoidingView` and platform-specific `useSafeAreaInsets` padding.
 
 ### Fixed
-- **Authorization UI Bypasses:** Eliminated raw executor exports and direct `updateConfig` bypasses across all screens, drawers, and demo state switchers.
+- **Authorization UI Bypasses:** Eliminated raw executor exports, routine scheduling direct mutations (active day toggling and time adjustments), and direct `updateConfig` bypasses across all screens, drawers, and demo state switchers.
 - **Credential Memory Leakage:** In-flight partner passwords for partner creation/verification are managed via transient module-private memory vaults and destroyed immediately upon consumption or cancellation.
 - **History Write Decoupling:** History logging failures no longer invalidate already-committed configuration transactions or induce split-state desynchronization.
 - **iOS Picker State Invariant:** Staged FamilyActivityPicker selections cannot bypass partner authorization by writing directly to active App Group storage before approval.
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web:** Local interactive simulator and testing environment.
 
 ### Validation
-- **Automated Test Matrix:** 316 unit/integration tests passing across 63 test suites (100% pass rate).
+- **Automated Test Matrix:** 320 unit/integration tests passing across 63 test suites (100% pass rate).
 - **TypeScript:** Clean compilation with 0 errors (`node --stack-size=8192 ./node_modules/typescript/bin/tsc --noEmit`).
 - **ESLint:** Clean lint run with 0 errors and 0 warnings (`expo lint`).
 - **Expo Bundler:** Clean Android bundle export (`5.4MB HBC bundle`) with zero unresolved dependencies or module errors.

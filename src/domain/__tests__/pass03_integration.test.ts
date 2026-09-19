@@ -727,4 +727,170 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
       delete process.env.RHYTHM_PLATFORM_OVERRIDE;
     }
   });
+
+  test('22. routine day toggling applies immediately when accountability mode is OFF', async () => {
+    const store = usePrototypeStore.getState();
+    assert.equal(store.accountability.enabled, false);
+
+    const initialMorning = store.routineWindows.find((w) => w.id === 'morning-buffer')!;
+    assert.deepEqual(initialMorning.activeDays, [1, 2, 3, 4, 5, 6, 7]);
+
+    await store.toggleRoutineDay(7); // toggle Sunday
+
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+    const updatedMorning = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!;
+    assert.deepEqual(updatedMorning.activeDays, [1, 2, 3, 4, 5, 6]);
+
+    const coordMorning = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'morning-buffer');
+    assert.deepEqual(coordMorning?.activeDays, [1, 2, 3, 4, 5, 6]);
+  });
+
+  test('23. routine day toggling requires approval when accountability mode is ON, supports cancellation, and commits once approved', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const initialMorning = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!;
+    const initialDays = [...initialMorning.activeDays];
+
+    // Toggle Saturday (6)
+    await store.toggleRoutineDay(6);
+
+    // Staged in pendingApproval with exact summary
+    const pending = usePrototypeStore.getState().pendingApproval;
+    assert.ok(pending);
+    assert.equal(pending.operation, 'edit-routine-schedule');
+    assert.ok(pending.summary.includes('Change active routine days to'));
+    assert.ok(!pending.summary.includes('Sat')); // Saturday removed
+
+    // State and coordinator must be UNCHANGED
+    const unchangedMorning = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!;
+    assert.deepEqual(unchangedMorning.activeDays, initialDays);
+
+    const coordUnchanged = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'morning-buffer');
+    assert.deepEqual(coordUnchanged?.activeDays, initialDays);
+
+    // 1. Cancellation leaves schedule unchanged
+    store.cancelPendingApproval();
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.deepEqual(
+      usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!.activeDays,
+      initialDays
+    );
+
+    // 2. Re-trigger toggle and approve
+    await store.toggleRoutineDay(6);
+    assert.ok(usePrototypeStore.getState().pendingApproval);
+
+    const approvalRes = await store.approveProtectedMutation(partner.id, 'password123');
+    assert.equal(approvalRes.ok, true);
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+    // Persisted to Zustand and coordinator
+    const committedMorning = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!;
+    assert.ok(!committedMorning.activeDays.includes(6));
+
+    const coordCommitted = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'morning-buffer');
+    assert.deepEqual(coordCommitted?.activeDays, committedMorning.activeDays);
+  });
+
+  test('24. routine time editing applies immediately when accountability mode is OFF', async () => {
+    const store = usePrototypeStore.getState();
+    assert.equal(store.accountability.enabled, false);
+
+    store.openTimeSelector({
+      windowId: 'morning-buffer',
+      field: 'endTime',
+      title: 'Morning Buffer Unlock',
+      initialTime: '08:00',
+    });
+
+    await store.saveSelectedTime('08:45');
+
+    assert.equal(usePrototypeStore.getState().timeSelector.visible, false);
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+    const updatedMorning = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'morning-buffer')!;
+    assert.equal(updatedMorning.endTime, '08:45');
+
+    const coordMorning = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'morning-buffer');
+    assert.equal(coordMorning?.endTime, '08:45');
+  });
+
+  test('25. routine time editing requires approval when accountability mode is ON, displays exact proposed time, supports cancellation, and commits once approved', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const initialEvening = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'evening-wind-down')!;
+    const initialStartTime = initialEvening.startTime;
+
+    store.openTimeSelector({
+      windowId: 'evening-wind-down',
+      field: 'startTime',
+      title: 'Wind-Down Start',
+      initialTime: initialStartTime,
+    });
+
+    await store.saveSelectedTime('21:15');
+
+    // Picker closes immediately
+    assert.equal(usePrototypeStore.getState().timeSelector.visible, false);
+
+    // Staged in pendingApproval with exact summary
+    const pending = usePrototypeStore.getState().pendingApproval;
+    assert.ok(pending);
+    assert.equal(pending.operation, 'edit-routine-schedule');
+    assert.equal(pending.summary, 'Change Evening Wind-Down start time to 21:15');
+
+    // State and coordinator must be UNCHANGED
+    const unchangedEvening = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'evening-wind-down')!;
+    assert.equal(unchangedEvening.startTime, initialStartTime);
+
+    const coordUnchanged = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'evening-wind-down');
+    assert.equal(coordUnchanged?.startTime, initialStartTime);
+
+    // 1. Cancellation leaves schedule unchanged
+    store.cancelPendingApproval();
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(
+      usePrototypeStore.getState().routineWindows.find((w) => w.id === 'evening-wind-down')!.startTime,
+      initialStartTime
+    );
+
+    // 2. Re-trigger time change and wrong password fails without mutating schedule
+    store.openTimeSelector({
+      windowId: 'evening-wind-down',
+      field: 'startTime',
+      title: 'Wind-Down Start',
+      initialTime: initialStartTime,
+    });
+    await store.saveSelectedTime('21:15');
+
+    const wrongRes = await store.approveProtectedMutation(partner.id, 'wrongpass');
+    assert.equal(wrongRes.ok, false);
+    assert.equal(wrongRes.reason, 'invalid-password');
+    assert.equal(
+      usePrototypeStore.getState().routineWindows.find((w) => w.id === 'evening-wind-down')!.startTime,
+      initialStartTime
+    );
+
+    // 3. Correct password commits once
+    const okRes = await store.approveProtectedMutation(partner.id, 'password123');
+    assert.equal(okRes.ok, true);
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+
+    const committedEvening = usePrototypeStore.getState().routineWindows.find((w) => w.id === 'evening-wind-down')!;
+    assert.equal(committedEvening.startTime, '21:15');
+
+    const coordCommitted = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'evening-wind-down');
+    assert.equal(coordCommitted?.startTime, '21:15');
+  });
 });
