@@ -38,7 +38,7 @@ export const DemoStateSwitcher: React.FC = () => {
   const setRhythmState = usePrototypeStore((s) => s.setRhythmState);
   const simulateCooldown = usePrototypeStore((s) => s.simulateCooldown);
   const simulateRiskSession = usePrototypeStore((s) => s.simulateRiskSession);
-  const resetDemo = usePrototypeStore((s) => s.resetDemo);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
@@ -217,9 +217,13 @@ export const DemoStateSwitcher: React.FC = () => {
 
           <TouchableOpacity
             style={[styles.actionBtn, styles.resetBtn]}
-            onPress={() => {
-              resetDemo();
+            onPress={async () => {
               setVisible(false);
+              await requestProtectedMutation({
+                operation: 'reset-local-state',
+                summary: 'Reset all demo data, local configuration, and accountability',
+                payload: {},
+              });
             }}
           >
             <RotateCcw size={18} color={colors.coralDark} />
