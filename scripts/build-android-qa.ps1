@@ -9,7 +9,9 @@ Write-Host "[build-android-qa] Step 2: Assembling qaStandalone APK with Gradle..
 Push-Location android
 try {
     .\gradlew.bat clean
-    .\gradlew.bat assembleQaStandalone
+    if ($LASTEXITCODE -ne 0) { throw "Gradle clean failed with code $LASTEXITCODE" }
+    .\gradlew.bat assembleQaStandalone -PreactNativeArchitectures=arm64-v8a
+    if ($LASTEXITCODE -ne 0) { throw "Gradle assembleQaStandalone failed with code $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
