@@ -628,6 +628,13 @@ function registerDefaultMutationExecutors(
     const state = get();
     const existingGroup = state.riskGroups.find((g) => g.id === payload.groupId);
     if (!existingGroup) {
+      if (commitResult.rollbackRef !== undefined && commitResult.previousRevision !== undefined) {
+        await RhythmDevice.rollbackCommittedFamilyActivitySelection(
+          payload.groupId,
+          commitResult.rollbackRef,
+          commitResult.previousRevision
+        ).catch(() => {});
+      }
       throw new Error('Target risk group not found');
     }
 
@@ -642,7 +649,23 @@ function registerDefaultMutationExecutors(
         : group
     );
 
-    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedGroups });
+    try {
+      await RhythmCoordinator.getInstance().updateConfig({ riskGroups: updatedGroups });
+    } catch (error) {
+      if (commitResult.rollbackRef !== undefined && commitResult.previousRevision !== undefined) {
+        await RhythmDevice.rollbackCommittedFamilyActivitySelection(
+          payload.groupId,
+          commitResult.rollbackRef,
+          commitResult.previousRevision
+        ).catch(() => {});
+      }
+      throw error;
+    }
+
+    if (commitResult.rollbackRef) {
+      await RhythmDevice.discardStagedFamilyActivitySelection(commitResult.rollbackRef).catch(() => {});
+    }
+
     set({ riskGroups: updatedGroups });
     await get().checkPermissions();
     return { success: true };
@@ -1592,19 +1615,25 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   selectIosRiskGroupApps: async (groupId: string) => {
+    if (getPlatformOS() !== 'ios') return;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const RhythmDevice = require('../../modules/rhythm-device').default;
+    let result: { stagedSelectionRef: string; tokenCount: number } | null = null;
     try {
-      if (getPlatformOS() !== 'ios') return;
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const RhythmDevice = require('../../modules/rhythm-device').default;
-      const result = await RhythmDevice.stageFamilyActivityPicker(groupId);
-      if (!result || !result.stagedSelectionRef) return;
+      result = await RhythmDevice.stageFamilyActivityPicker(groupId);
+    } catch {
+      // User cancelled picker or unsupported
+      return;
+    }
+    if (!result || !result.stagedSelectionRef) return;
 
-      const state = get();
-      const group = state.riskGroups.find((g) => g.id === groupId);
-      const groupName = group?.name || 'Risk Group';
-      const count = result.tokenCount ?? 0;
-      const summary = `Update ${groupName} protected apps (${count} selected)`;
+    const state = get();
+    const group = state.riskGroups.find((g) => g.id === groupId);
+    const groupName = group?.name || 'Risk Group';
+    const count = result.tokenCount ?? 0;
+    const summary = `Update ${groupName} protected apps (${count} selected)`;
 
+    try {
       await get().requestProtectedMutation({
         operation: 'edit-ios-risk-group-selection',
         summary,
@@ -1614,8 +1643,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
           tokenCount: count,
         },
       });
-    } catch {
-      // User cancelled or unsupported
+    } catch (error) {
+      await RhythmDevice.discardStagedFamilyActivitySelection(result.stagedSelectionRef).catch(() => {});
+      throw error;
     }
   },
 

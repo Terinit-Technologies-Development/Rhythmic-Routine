@@ -1,4 +1,5 @@
 import {
+  CommitSelectionResult,
   IOSSelectionReference,
   MonitoringDiagnostics,
   MonitoringSyncResult,
@@ -21,6 +22,22 @@ import {
 const isWeb =
   typeof window !== 'undefined' &&
   typeof (window as any).document !== 'undefined';
+
+const fallbackGroupRevisions: Record<string, number> = {};
+const fallbackRollbacks: Record<string, { previousRevision: number; hasSelection: boolean }> = {};
+
+export function __resetFallbackRevisionsForTests(): void {
+  for (const k of Object.keys(fallbackGroupRevisions)) {
+    delete fallbackGroupRevisions[k];
+  }
+  for (const k of Object.keys(fallbackRollbacks)) {
+    delete fallbackRollbacks[k];
+  }
+}
+
+export function __getFallbackGroupRevisionForTests(groupId: string): number {
+  return fallbackGroupRevisions[groupId] ?? 0;
+}
 
 export const FallbackModule = {
   checkPermissions: async (): Promise<NativePermissionStatus> => ({
@@ -51,17 +68,41 @@ export const FallbackModule = {
   commitStagedFamilyActivitySelection: async (
     groupId: string,
     _stagedSelectionRef: string
-  ): Promise<{ success: boolean; revision: number; localSelectionId?: string }> => ({
-    success: true,
-    revision: 1,
-    localSelectionId: `selection.${groupId}`,
-  }),
+  ): Promise<CommitSelectionResult> => {
+    const prevRev = fallbackGroupRevisions[groupId] ?? 0;
+    const nextRev = prevRev + 1;
+    fallbackGroupRevisions[groupId] = nextRev;
+    const rollbackRef = `rollback_selection.${Date.now()}`;
+    fallbackRollbacks[rollbackRef] = {
+      previousRevision: prevRev,
+      hasSelection: prevRev > 0,
+    };
+    return {
+      success: true,
+      revision: nextRev,
+      localSelectionId: `selection.${groupId}`,
+      rollbackRef,
+      previousRevision: prevRev,
+    };
+  },
+  rollbackCommittedFamilyActivitySelection: async (
+    groupId: string,
+    rollbackRef: string,
+    previousRevision: number
+  ): Promise<boolean> => {
+    fallbackGroupRevisions[groupId] = previousRevision;
+    delete fallbackRollbacks[rollbackRef];
+    return true;
+  },
   discardStagedFamilyActivitySelection: async (_stagedSelectionRef: string): Promise<boolean> => true,
-  hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
-  clearGroupSelection: async (_groupId: string): Promise<{ success: boolean; revision: number }> => ({
-    success: true,
-    revision: 1,
-  }),
+  hasGroupSelection: async (groupId: string): Promise<boolean> => (fallbackGroupRevisions[groupId] ?? 0) > 0,
+  clearGroupSelection: async (groupId: string): Promise<{ success: boolean; revision: number }> => {
+    delete fallbackGroupRevisions[groupId];
+    return {
+      success: true,
+      revision: 1,
+    };
+  },
   revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],

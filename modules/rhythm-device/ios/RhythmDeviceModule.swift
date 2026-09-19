@@ -364,11 +364,14 @@ public class RhythmDeviceModule: Module {
             ),
             onDone: {
               hostingController?.dismiss(animated: true) {
+                guard let data = try? JSONEncoder().encode(currentSelection) else {
+                  promise.reject("ERR_SELECTION_ENCODING", "Unable to stage FamilyActivitySelection")
+                  return
+                }
+
                 let stagedId = UUID().uuidString
                 let stagedKey = "pending_selection.\(stagedId)"
-                if let data = try? JSONEncoder().encode(currentSelection) {
-                  defaults?.set(data, forKey: stagedKey)
-                }
+                defaults?.set(data, forKey: stagedKey)
 
                 let tokenCount = currentSelection.applicationTokens.count + currentSelection.categoryTokens.count + currentSelection.webDomainTokens.count
                 promise.resolve([
@@ -404,19 +407,48 @@ public class RhythmDeviceModule: Module {
       }
 
       let key = self.selectionKey(groupId: groupId)
+      let revKey = self.selectionRevisionKey(groupId: groupId)
+      let previousRevision = defaults.integer(forKey: revKey)
+
+      let rollbackId = UUID().uuidString
+      let rollbackKey = "rollback_selection.\(rollbackId)"
+      if let previousData = defaults.data(forKey: key) {
+        defaults.set(previousData, forKey: rollbackKey)
+      } else {
+        defaults.set("__EMPTY_SELECTION__", forKey: rollbackKey)
+      }
+
       defaults.set(data, forKey: key)
       defaults.removeObject(forKey: stagedSelectionRef)
 
-      let revKey = self.selectionRevisionKey(groupId: groupId)
-      let nextRevision = defaults.integer(forKey: revKey) + 1
+      let nextRevision = previousRevision + 1
       defaults.set(nextRevision, forKey: revKey)
 
       self.recomputeAndApplyShieldsInternal()
       return [
         "success": true,
         "revision": nextRevision,
-        "localSelectionId": key
+        "localSelectionId": key,
+        "rollbackRef": rollbackKey,
+        "previousRevision": previousRevision
       ]
+    }
+
+    AsyncFunction("rollbackCommittedFamilyActivitySelection") { (groupId: String, rollbackRef: String, previousRevision: Int) -> Bool in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+      let key = self.selectionKey(groupId: groupId)
+      let revKey = self.selectionRevisionKey(groupId: groupId)
+
+      if let rollbackString = defaults.string(forKey: rollbackRef), rollbackString == "__EMPTY_SELECTION__" {
+        defaults.removeObject(forKey: key)
+      } else if let rollbackData = defaults.data(forKey: rollbackRef) {
+        defaults.set(rollbackData, forKey: key)
+      }
+      defaults.removeObject(forKey: rollbackRef)
+      defaults.set(previousRevision, forKey: revKey)
+
+      self.recomputeAndApplyShieldsInternal()
+      return true
     }
 
     AsyncFunction("discardStagedFamilyActivitySelection") { (stagedSelectionRef: String) -> Bool in

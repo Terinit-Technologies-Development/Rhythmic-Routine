@@ -4,6 +4,11 @@ import { usePrototypeStore } from '../../store/usePrototypeStore';
 import { resetAccountabilityService } from '../../application/AccountabilityService';
 import { getPlatformServices } from '../../platform/PlatformServices';
 import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
+import { RhythmCoordinator } from '../../application/RhythmCoordinator';
+import {
+  __getFallbackGroupRevisionForTests,
+  __resetFallbackRevisionsForTests,
+} from '../../../modules/rhythm-device/src/RhythmDeviceModule';
 import { AppPolicyPayload } from '../accountability/types';
 import { buildAppPolicySummary, buildRiskGroupEditSummary } from '../accountability/policy';
 import { RiskGroupConfigurationDraft } from '../../types/domain';
@@ -14,6 +19,7 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     if (credentials instanceof InMemorySecureCredentialProvider) {
       credentials.clear();
     }
+    __resetFallbackRevisionsForTests();
     resetAccountabilityService();
     await usePrototypeStore.getState().resetDemo();
   });
@@ -606,6 +612,13 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
       const updatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
       assert.equal(updatedGroup.nativeSelectionRef, 'selection.social');
       assert.ok(typeof updatedGroup.nativeSelectionRevision === 'number');
+
+      // Assert coordinator config also holds the new selectionRef and revision
+      const coordinatorConfig = RhythmCoordinator.getInstance().getConfiguration();
+      const coordGroup = coordinatorConfig?.riskGroups.find((g) => g.id === 'social');
+      assert.ok(coordGroup);
+      assert.equal(coordGroup.nativeSelectionRef, 'selection.social');
+      assert.equal(coordGroup.nativeSelectionRevision, updatedGroup.nativeSelectionRevision);
     } finally {
       delete process.env.RHYTHM_PLATFORM_OVERRIDE;
     }
@@ -624,6 +637,92 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
 
       const updatedGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
       assert.equal(updatedGroup.nativeSelectionRef, 'selection.social');
+    } finally {
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
+  });
+
+  test('20. rollback restores previous selection and revision if coordinator persistence fails after native commit', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    const coordinator = RhythmCoordinator.getInstance();
+    const originalUpdateConfig = coordinator.updateConfig.bind(coordinator);
+
+    try {
+      const store = usePrototypeStore.getState();
+      const partner = await store.createAccountabilityPartner({
+        name: 'Alice',
+        password: 'password123',
+      });
+
+      // 1. Commit a baseline selection while mode OFF to establish baseline revision
+      await store.selectIosRiskGroupApps('social');
+      const baselineGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      const baselineRevision = baselineGroup.nativeSelectionRevision ?? 1;
+      assert.equal(__getFallbackGroupRevisionForTests('social'), baselineRevision);
+
+      // 2. Enable accountability
+      await store.enableAccountability(partner.id, 'password123');
+
+      // 3. Mock coordinator.updateConfig to fail when updating riskGroups
+      coordinator.updateConfig = async (patch) => {
+        if (patch.riskGroups) {
+          throw new Error('Simulated persistence failure in updateConfig');
+        }
+        return originalUpdateConfig(patch);
+      };
+
+      // 4. Stage selection change
+      await store.selectIosRiskGroupApps('social');
+      assert.ok(usePrototypeStore.getState().pendingApproval);
+
+      // 5. Partner approves, but executor will fail in updateConfig and trigger rollback
+      await assert.rejects(
+        async () => {
+          await store.approveProtectedMutation(partner.id, 'password123');
+        },
+        /Simulated persistence failure in updateConfig/
+      );
+
+      // 6. Verify compensating rollback restored native fallback revision
+      assert.equal(__getFallbackGroupRevisionForTests('social'), baselineRevision);
+
+      // 7. Verify store still retains the baseline selection/revision
+      const currentGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(currentGroup.nativeSelectionRevision, baselineRevision);
+    } finally {
+      coordinator.updateConfig = originalUpdateConfig;
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
+    }
+  });
+
+  test('21. staging cleans up orphan pending_selection if requestProtectedMutation rejects', async () => {
+    process.env.RHYTHM_PLATFORM_OVERRIDE = 'ios';
+    try {
+      const store = usePrototypeStore.getState();
+      const partner = await store.createAccountabilityPartner({
+        name: 'Alice',
+        password: 'password123',
+      });
+      await store.enableAccountability(partner.id, 'password123');
+
+      // Create an existing pending approval so that any subsequent requestProtectedMutation rejects
+      await store.requestProtectedMutation({
+        operation: 'change-daily-allowance',
+        summary: 'Change allowance',
+        payload: { groupId: 'social', allowanceMinutes: 45 },
+      });
+      assert.ok(usePrototypeStore.getState().pendingApproval);
+
+      // Attempting to select apps while another change is pending will reject in requestProtectedMutation
+      await assert.rejects(
+        async () => {
+          await store.selectIosRiskGroupApps('social');
+        },
+        /Another protected change is already awaiting approval/
+      );
+
+      // The original pending approval remains intact
+      assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'change-daily-allowance');
     } finally {
       delete process.env.RHYTHM_PLATFORM_OVERRIDE;
     }

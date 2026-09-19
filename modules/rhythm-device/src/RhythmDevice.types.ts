@@ -42,6 +42,8 @@ export interface CommitSelectionResult {
   success: boolean;
   revision: number;
   localSelectionId?: string;
+  rollbackRef?: string;
+  previousRevision?: number;
 }
 
 export interface MonitoringSyncResult {
