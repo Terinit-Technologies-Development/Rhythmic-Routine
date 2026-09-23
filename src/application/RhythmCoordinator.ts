@@ -12,6 +12,10 @@ import { reconcileRhythm } from './reconcileRhythm';
 import { DeviceApp, RiskGroup } from '../types/domain';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 import {
+  DailyReadingEvidenceClient,
+  NativeDailyReadingEvidenceClient,
+} from '../domain/rhythm/readingEvidence';
+import {
   GroupAllowanceEditResult,
   getLocalDateKey,
   resolveGroupAllowanceMinutes,
@@ -32,6 +36,12 @@ export class RhythmCoordinator {
   private unsubscribeActivity?: () => void;
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private isInitialized = false;
+  private evidenceRefreshPromise?: Promise<void>;
+  private readonly dailyReadingEvidenceClient: DailyReadingEvidenceClient;
+
+  constructor(dailyReadingEvidenceClient: DailyReadingEvidenceClient = new NativeDailyReadingEvidenceClient()) {
+    this.dailyReadingEvidenceClient = dailyReadingEvidenceClient;
+  }
 
   public static getInstance(): RhythmCoordinator {
     if (!RhythmCoordinator.instance) {
@@ -164,6 +174,11 @@ export class RhythmCoordinator {
 
     await this.syncNativeState();
 
+    const runtime = this.engine.getRuntime();
+    if (runtime.readingEvidence?.dateKey !== getLocalDateKey(now)) {
+      await this.refreshDailyEvidence(now, false);
+    }
+
     this.notifyListeners();
     return this.engine.getRuntime();
   }
@@ -251,12 +266,19 @@ export class RhythmCoordinator {
    */
   public async reconcile(
     now: number = Date.now(),
-    options?: { syncNative?: boolean }
+    options?: { syncNative?: boolean; refreshEvidence?: boolean }
   ): Promise<RhythmRuntime> {
     if (!this.engine || !this.config) {
       return this.initialize();
     }
     await reconcileRhythm(this.engine, this.config, now);
+    const runtime = this.engine.getRuntime();
+    if (options?.refreshEvidence !== false && (
+      Object.keys(runtime.activeReadingGates ?? {}).length > 0 ||
+      runtime.readingEvidence?.dateKey !== getLocalDateKey(now)
+    )) {
+      await this.refreshDailyEvidence(now, false);
+    }
     if (options?.syncNative !== false) {
       await this.syncNativeState();
     }
@@ -293,7 +315,10 @@ export class RhythmCoordinator {
 
     await this.reconcile(now, {
       syncNative: false,
+      refreshEvidence: false,
     });
+    // Refresh on initialization/resume even when today's cached projection exists.
+    await this.refreshDailyEvidence(now, true);
 
     const desiredIds = this.engine.getEffectiveRestrictedAppIds();
     if (desiredIds.length > 0) {
@@ -340,6 +365,46 @@ export class RhythmCoordinator {
     });
 
     this.notifyListeners();
+  }
+
+  /** Refreshes Reader Protocol V2 evidence for the current local date on demand. */
+  public async refreshDailyReadingEvidence(now: number = Date.now()): Promise<void> {
+    await this.refreshDailyEvidence(now, true);
+  }
+
+  private async refreshDailyEvidence(now: number, force: boolean): Promise<void> {
+    if (!this.engine || !this.config) return;
+    if (this.evidenceRefreshPromise) {
+      await this.evidenceRefreshPromise;
+      return;
+    }
+
+    const dateKey = getLocalDateKey(now);
+    const runtime = this.engine.getRuntime();
+    const hasActiveGate = Object.keys(runtime.activeReadingGates ?? {}).length > 0;
+    if (!force && !hasActiveGate && runtime.readingEvidence?.dateKey === dateKey) return;
+
+    const refresh = (async () => {
+      const evidence = await this.dailyReadingEvidenceClient.query(dateKey);
+      if (!this.engine || !this.config) return;
+      // Discard a response if another event already moved engine state into a new local day.
+      if (this.engine.getRuntime().dailyAttentionExchange?.dateKey !== dateKey) return;
+
+      const effects = this.engine.dispatch({
+        type: 'SYNC_DAILY_READING_EVIDENCE',
+        evidence,
+        timestamp: now,
+      });
+      await this.executeEffects(effects);
+      await getPlatformServices().storage.saveRuntime(this.engine.toPersistedRuntime(now));
+      this.notifyListeners();
+    })();
+    this.evidenceRefreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.evidenceRefreshPromise === refresh) this.evidenceRefreshPromise = undefined;
+    }
   }
 
   /**
@@ -593,10 +658,13 @@ export class RhythmCoordinator {
     if (this.reconcileTimer) return;
 
     this.reconcileTimer = setInterval(() => {
+      const now = Date.now();
       this.dispatch({
         type: 'CLOCK_TICK',
-        timestamp: Date.now(),
-      }).catch(() => {});
+        timestamp: now,
+      })
+        .then(() => this.refreshDailyEvidence(now, false))
+        .catch(() => {});
     }, ENGINE_RECONCILE_INTERVAL_MS);
 
     if (this.reconcileTimer && typeof (this.reconcileTimer as any).unref === 'function') {
@@ -662,6 +730,7 @@ export class RhythmCoordinator {
     }
     this.listeners.clear();
     this.isInitialized = false;
+    this.evidenceRefreshPromise = undefined;
     this.engine = null;
     this.config = null;
   }

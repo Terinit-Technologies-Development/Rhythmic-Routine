@@ -148,3 +148,13 @@ export interface NativeRecoveryStatus {
   completedAtEpochMs: number;
 }
 
+export interface NativeDailyReadingEvidence {
+  providerAvailable: boolean;
+  protocolCompatible: boolean;
+  protocolVersion?: number;
+  dateKey: string;
+  verifiedActiveSeconds: number;
+  qualifiedPages: number;
+  updatedAtEpochMs: number;
+}
+

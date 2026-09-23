@@ -13,6 +13,7 @@ import {
   NativeCooldownPolicyInput,
   NativeUsageEvent,
   NativeRecoveryStatus,
+  NativeDailyReadingEvidence,
 } from './RhythmDevice.types';
 
 // Fallback behavior:
@@ -151,6 +152,14 @@ export const FallbackModule = {
     _expiresAt: number
   ): Promise<boolean> => false,
   queryRecoveryStatus: async (_sessionId: string): Promise<NativeRecoveryStatus | null> => null,
+  queryDailyReadingEvidence: async (dateKey: string): Promise<NativeDailyReadingEvidence> => ({
+    providerAvailable: false,
+    protocolCompatible: false,
+    dateKey,
+    verifiedActiveSeconds: 0,
+    qualifiedPages: 0,
+    updatedAtEpochMs: 0,
+  }),
 };
 
 let nativeModuleAvailable = false;

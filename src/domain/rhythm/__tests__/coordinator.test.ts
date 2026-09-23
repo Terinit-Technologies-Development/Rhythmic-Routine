@@ -9,6 +9,7 @@ import { RhythmCoordinator } from '../../../application/RhythmCoordinator';
 import { initialRoutineWindows } from '../../../data/mockData';
 import { usePrototypeStore } from '../../../store/usePrototypeStore';
 import { DeviceApp } from '../../../types/domain';
+import { getLocalDateKey } from '../allowance';
 
 describe('RhythmCoordinator — Platform Composition, Lifecycle & Native Identity', () => {
   const nativeInstalledApps: DeviceApp[] = [
@@ -191,5 +192,46 @@ describe('RhythmCoordinator — Platform Composition, Lifecycle & Native Identit
     await coordinator.initialize();
 
     assert.equal(coordinator.getRuntime()?.activeCooldowns.social, undefined);
+  });
+
+  test('initialization and foreground activation refresh the Reader V2 evidence projection', async () => {
+    const mockUsage = new MockUsageProvider(nativeInstalledApps);
+    const mockStorage = new MockStorageProvider();
+    const mockRestrictions = new MockRestrictionProvider();
+    const mockPermissions = new MockPermissionProvider();
+    configurePlatformServices({
+      usage: mockUsage,
+      restrictions: mockRestrictions,
+      storage: mockStorage,
+      permissions: mockPermissions,
+    });
+
+    const requestedDateKeys: string[] = [];
+    const coordinator = new RhythmCoordinator({
+      query: async (dateKey) => {
+        requestedDateKeys.push(dateKey);
+        return {
+          dateKey,
+          providerAvailable: true,
+          protocolCompatible: true,
+          verifiedActiveSeconds: 0,
+          qualifiedPages: 0,
+          readerUpdatedAtEpochMs: 0,
+          syncedAtEpochMs: Date.now(),
+        };
+      },
+    });
+
+    await coordinator.initialize();
+    assert.deepEqual(requestedDateKeys, [getLocalDateKey(Date.now())]);
+    assert.equal(coordinator.getRuntime()?.readingEvidence?.providerAvailable, true);
+    assert.equal(coordinator.getRuntime()?.readingEvidence?.protocolCompatible, true);
+    assert.equal(coordinator.getRuntime()?.readingEvidence?.verifiedActiveSeconds, 0);
+
+    await coordinator.handleAppResume();
+    assert.equal(requestedDateKeys.length, 2);
+    assert.equal(requestedDateKeys[0], requestedDateKeys[1]);
+    assert.equal((await mockStorage.loadRuntime())?.readingEvidence?.qualifiedPages, 0);
+    coordinator.destroy();
   });
 });

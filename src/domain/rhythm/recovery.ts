@@ -5,6 +5,7 @@ export interface ReadingRecoveryTarget {
   requiredPages: number;
 }
 
+/** @deprecated Protocol V1 compatibility only. v1.2 policy uses daily Reader V2 evidence. */
 export const DEFAULT_READING_RECOVERY_TARGET: ReadingRecoveryTarget = {
   requiredSeconds: 1800, // 30 minutes
   requiredPages: 10,
@@ -91,6 +92,7 @@ export class NativeRecoveryProviderClient implements RecoveryProviderClient {
  * Cycle 1 (initial allowance exhaustion of the day) grants free re-entry without reading recovery.
  * Subsequent exhaustion cycles (> 1) require completed reading recovery sessions.
  */
+/** @deprecated Legacy per-group session model; do not use for v1.2 global ordinal policy. */
 export function isRecoveryRequiredForCycle(cycleNumber: number): boolean {
   return cycleNumber > 1;
 }

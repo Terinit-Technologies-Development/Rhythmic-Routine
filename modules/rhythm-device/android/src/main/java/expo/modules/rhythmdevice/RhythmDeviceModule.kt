@@ -11,8 +11,13 @@ import android.content.pm.PackageManager
 import android.os.Process
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import android.net.Uri
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.text.ParsePosition
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 class RhythmDeviceModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -393,6 +398,98 @@ class RhythmDeviceModule : Module() {
         null
       }
     }
+
+    AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
+      if (!isValidLocalDateKey(dateKey)) {
+        return@AsyncFunction unavailableDailyEvidence(dateKey)
+      }
+
+      val uri = Uri.Builder()
+        .scheme("content")
+        .authority("com.terinit.rhythmicreader.evidence")
+        .appendPath("daily")
+        .appendPath(dateKey)
+        .build()
+      val projection = arrayOf(
+        "protocolVersion",
+        "dateKey",
+        "verifiedActiveSeconds",
+        "qualifiedPages",
+        "updatedAtEpochMs"
+      )
+
+      try {
+        val cursor = context.contentResolver.query(uri, projection, null, null, null)
+          ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
+        cursor.use {
+          // Reader defines an empty cursor for a valid date with no evidence.
+          // Preserve that distinction from provider/query failure.
+          if (!it.moveToFirst()) {
+            return@AsyncFunction mapOf(
+              "providerAvailable" to true,
+              "protocolCompatible" to true,
+              "protocolVersion" to 2,
+              "dateKey" to dateKey,
+              "verifiedActiveSeconds" to 0,
+              "qualifiedPages" to 0,
+              "updatedAtEpochMs" to 0
+            )
+          }
+
+          val protocolIndex = it.getColumnIndex("protocolVersion")
+          val dateIndex = it.getColumnIndex("dateKey")
+          val secondsIndex = it.getColumnIndex("verifiedActiveSeconds")
+          val pagesIndex = it.getColumnIndex("qualifiedPages")
+          val updatedIndex = it.getColumnIndex("updatedAtEpochMs")
+          if (protocolIndex < 0 || dateIndex < 0 || secondsIndex < 0 || pagesIndex < 0 || updatedIndex < 0) {
+            return@AsyncFunction unavailableDailyEvidence(dateKey)
+          }
+
+          val protocolVersion = it.getInt(protocolIndex)
+          val returnedDateKey = it.getString(dateIndex) ?: ""
+          val seconds = it.getLong(secondsIndex)
+          val pages = it.getLong(pagesIndex)
+          val updatedAt = it.getLong(updatedIndex)
+          val compatible = protocolVersion == 2 &&
+            returnedDateKey == dateKey &&
+            seconds >= 0L && pages in 0L..Int.MAX_VALUE.toLong() && updatedAt >= 0L
+
+          mapOf(
+            "providerAvailable" to true,
+            "protocolCompatible" to compatible,
+            "protocolVersion" to protocolVersion,
+            "dateKey" to returnedDateKey,
+            "verifiedActiveSeconds" to if (compatible) seconds.toDouble() else 0.0,
+            "qualifiedPages" to if (compatible) pages.toInt() else 0,
+            "updatedAtEpochMs" to if (compatible) updatedAt.toDouble() else 0.0
+          )
+        }
+      } catch (_: Exception) {
+        unavailableDailyEvidence(dateKey)
+      }
+    }
+  }
+
+  private fun unavailableDailyEvidence(dateKey: String): Map<String, Any> = mapOf(
+    "providerAvailable" to false,
+    "protocolCompatible" to false,
+    "dateKey" to dateKey,
+    "verifiedActiveSeconds" to 0,
+    "qualifiedPages" to 0,
+    "updatedAtEpochMs" to 0
+  )
+
+  private fun isValidLocalDateKey(dateKey: String): Boolean {
+    if (!dateKey.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return false
+    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply {
+      isLenient = false
+      timeZone = TimeZone.getTimeZone("UTC")
+    }
+    val position = ParsePosition(0)
+    val date = formatter.parse(dateKey, position) ?: return false
+    return position.index == dateKey.length && formatter.format(date) == dateKey
   }
 
   private fun groupSnapshots(context: Context): List<Map<String, Any?>> {

@@ -11,6 +11,13 @@ import {
   RiskGroup,
   RoutineWindow,
 } from '../../types/domain';
+import {
+  migrateDailyAttentionExchange,
+  isValidLocalDateKey,
+  type ActiveReadingGate,
+  type DailyAttentionExchangeState,
+} from './attentionExchange';
+import type { ReadingEvidenceSnapshot } from './readingEvidence';
 
 export {
   AccessLease,
@@ -35,6 +42,10 @@ export interface ActiveCooldown {
   groupId: string;
   startedAt: number;
   endsAt: number;
+  dailyCooldownOrdinal?: number;
+  attentionDateKey?: string;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
   recoverySessionId?: string;
   recoveryRequired?: boolean;
   cycleNumber?: number;
@@ -46,7 +57,8 @@ export type RestrictionReasonType =
   | 'routine-evening'
   | 'routine-overnight'
   | 'daily-allowance'
-  | 'cooldown';
+  | 'cooldown'
+  | 'reading-quota';
 
 export interface RestrictionReason {
   type: RestrictionReasonType;
@@ -69,6 +81,12 @@ export interface RhythmRuntime {
   dailyAppUsage?: Record<string, DailyAppUsage>;
   /** v1.0.2: one shared allowance ledger per Risk Group. */
   groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** v1.2 daily global ordinal and highest productive-attention requirement. */
+  dailyAttentionExchange?: DailyAttentionExchangeState;
+  /** v1.2 reading obligations survive expiration of their cooldown timer. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  /** Cached Reader Protocol V2 projection; Reader remains the evidence authority. */
+  readingEvidence?: ReadingEvidenceSnapshot;
 }
 
 export interface PersistedRuntime {
@@ -81,6 +99,12 @@ export interface PersistedRuntime {
   dailyAppUsage?: Record<string, DailyAppUsage>;
   /** v1.0.2: per-group allowance ledgers. */
   groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** v1.2 daily global ordinal and highest productive-attention requirement. */
+  dailyAttentionExchange?: DailyAttentionExchangeState;
+  /** v1.2 reading obligations survive expiration of their cooldown timer. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  /** Cached Reader Protocol V2 projection; always refresh from Reader when available. */
+  readingEvidence?: ReadingEvidenceSnapshot;
   lastReconciledAt: number;
 }
 
@@ -142,6 +166,7 @@ export type RhythmEvent =
   | { type: 'UPDATE_GROUP_RECOVERY_ACTIVITY'; groupId: string; activityId: string; timestamp: number }
   | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
   | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; timestamp: number }
+  | { type: 'SYNC_DAILY_READING_EVIDENCE'; evidence: ReadingEvidenceSnapshot; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
   | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
@@ -198,41 +223,122 @@ export function getPrimaryCooldown(
 /**
  * Normalizes legacy persisted objects to multi-cooldown and multi-lease map.
  */
-export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
+export function normalizePersistedRuntime(raw: any, now: number = Date.now()): PersistedRuntime | null {
   if (!raw || typeof raw !== 'object') return null;
 
   let activeCooldowns: Record<string, ActiveCooldown> = {};
 
   if (raw.activeCooldowns && typeof raw.activeCooldowns === 'object') {
-    activeCooldowns = { ...raw.activeCooldowns };
+    activeCooldowns = Object.fromEntries(
+      Object.entries(raw.activeCooldowns)
+        .filter(([, cooldown]) => cooldown && typeof cooldown === 'object')
+        .map(([groupId, cooldown]) => [groupId, { ...(cooldown as ActiveCooldown) }])
+    );
   } else if (raw.activeCooldown && typeof raw.activeCooldown === 'object' && raw.activeCooldown.groupId) {
-    activeCooldowns[raw.activeCooldown.groupId] = raw.activeCooldown;
+    activeCooldowns[raw.activeCooldown.groupId] = { ...raw.activeCooldown };
   }
 
   let activeAccessLeases: Record<string, AccessLease> = {};
   if (raw.activeAccessLeases && typeof raw.activeAccessLeases === 'object') {
-    activeAccessLeases = { ...raw.activeAccessLeases };
+    activeAccessLeases = Object.fromEntries(
+      Object.entries(raw.activeAccessLeases)
+        .filter(([, lease]) => lease && typeof lease === 'object')
+        .map(([groupId, lease]) => [groupId, { ...(lease as AccessLease) }])
+    );
   }
 
   const res: PersistedRuntime = {
     state: raw.state || 'available',
     activeCooldowns,
     activeAccessLeases,
-    activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? raw.activeRoutineWindowIds : [],
-    lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : Date.now(),
+    activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? [...raw.activeRoutineWindowIds] : [],
+    lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : now,
   };
 
+  if (raw.dailyAttentionExchange && typeof raw.dailyAttentionExchange === 'object') {
+    res.dailyAttentionExchange = { ...raw.dailyAttentionExchange };
+  }
+
+  if (raw.activeReadingGates && typeof raw.activeReadingGates === 'object') {
+    res.activeReadingGates = Object.fromEntries(
+      Object.entries(raw.activeReadingGates)
+        .filter(([groupId, gate]) =>
+          isValidPersistedGate(groupId, gate)
+        )
+        .map(([groupId, gate]) => [groupId, { ...(gate as ActiveReadingGate) }])
+    ) as Record<string, ActiveReadingGate>;
+  }
+
+  if (isValidPersistedReadingEvidence(raw.readingEvidence)) {
+    res.readingEvidence = { ...raw.readingEvidence };
+  }
+
+  res.dailyAttentionExchange = raw.dailyAttentionExchange &&
+    typeof raw.dailyAttentionExchange === 'object' &&
+    isValidLocalDateKey(raw.dailyAttentionExchange.dateKey) &&
+    Number.isFinite(raw.dailyAttentionExchange.cooldownsTriggered)
+    ? {
+        dateKey: raw.dailyAttentionExchange.dateKey,
+        cooldownsTriggered: Math.max(0, Math.floor(raw.dailyAttentionExchange.cooldownsTriggered)),
+        highestRequiredActiveSeconds: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredActiveSeconds),
+        highestRequiredQualifiedPages: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredQualifiedPages),
+        updatedAt: Number.isFinite(raw.dailyAttentionExchange.updatedAt) ? raw.dailyAttentionExchange.updatedAt : now,
+      }
+    : migrateDailyAttentionExchange(activeCooldowns, now, res.activeReadingGates);
+
   if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
-    res.dailyAppUsage = { ...raw.dailyAppUsage };
+    res.dailyAppUsage = cloneObjectValues(raw.dailyAppUsage);
   }
 
   if (raw.groupAllowanceUsage && typeof raw.groupAllowanceUsage === 'object') {
-    res.groupAllowanceUsage = { ...raw.groupAllowanceUsage };
+    res.groupAllowanceUsage = cloneObjectValues(raw.groupAllowanceUsage);
   }
 
   if (raw.activeSession) {
-    res.activeSession = raw.activeSession;
+    res.activeSession = { ...raw.activeSession };
   }
 
   return res;
+}
+
+function isValidPersistedGate(groupId: string, value: unknown): value is ActiveReadingGate {
+  if (!value || typeof value !== 'object') return false;
+  const gate = value as Partial<ActiveReadingGate>;
+  return gate.groupId === groupId &&
+    typeof gate.attentionDateKey === 'string' && isValidLocalDateKey(gate.attentionDateKey) &&
+    Number.isInteger(gate.dailyCooldownOrdinal) && (gate.dailyCooldownOrdinal ?? 0) > 0 &&
+    isFiniteNonNegativeNumber(gate.createdAt) &&
+    isFiniteNonNegativeNumber(gate.cooldownEndsAt) &&
+    isFiniteNonNegativeNumber(gate.requiredReadingSeconds) &&
+    isFiniteNonNegativeNumber(gate.requiredQualifiedPages) &&
+    Number.isInteger(gate.requiredReadingSeconds) &&
+    Number.isInteger(gate.requiredQualifiedPages);
+}
+
+function isValidPersistedReadingEvidence(value: unknown): value is ReadingEvidenceSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const evidence = value as Partial<ReadingEvidenceSnapshot>;
+  return typeof evidence.dateKey === 'string' && isValidLocalDateKey(evidence.dateKey) &&
+    typeof evidence.providerAvailable === 'boolean' &&
+    typeof evidence.protocolCompatible === 'boolean' &&
+    isFiniteNonNegativeNumber(evidence.verifiedActiveSeconds) &&
+    isFiniteNonNegativeNumber(evidence.qualifiedPages) &&
+    Number.isInteger(evidence.qualifiedPages) &&
+    isFiniteNonNegativeNumber(evidence.syncedAtEpochMs);
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function finiteNonNegativeInteger(value: unknown): number {
+  return isFiniteNonNegativeNumber(value) ? Math.floor(value) : 0;
+}
+
+function cloneObjectValues<T extends object>(value: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item && typeof item === 'object')
+      .map(([key, item]) => [key, { ...item }])
+  );
 }

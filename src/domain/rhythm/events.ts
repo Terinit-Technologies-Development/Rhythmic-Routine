@@ -26,6 +26,14 @@ import {
 } from './sessions';
 import { isCooldownExpired, startCooldown } from './cooldowns';
 import {
+  ActiveReadingGate,
+  allocateCooldownRequirement,
+  createDailyAttentionExchangeState,
+  migrateDailyAttentionExchange,
+  reconcileAttentionExchangeDate,
+  reconcileReadingGate,
+} from './attentionExchange';
+import {
   computeEffectiveRestrictions,
   diffRestrictions,
 } from './restrictions';
@@ -50,10 +58,24 @@ export function processRhythmEvent(
   const nowMs = 'timestamp' in event ? event.timestamp : Date.now();
   const nowDate = new Date(nowMs);
   const gapMs = config.sessionResetGapMs ?? SESSION_RESET_GAP_MS;
+  const currentDateKey = getLocalDateKey(nowMs);
 
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
   const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
+  let nextDailyAttentionExchange = reconcileAttentionExchangeDate(
+    currentRuntime.dailyAttentionExchange ??
+      migrateDailyAttentionExchange(currentRuntime.activeCooldowns ?? {}, nowMs, currentRuntime.activeReadingGates ?? {}),
+    nowMs
+  );
+  const nextReadingGates: Record<string, ActiveReadingGate> = Object.fromEntries(
+    Object.entries(currentRuntime.activeReadingGates ?? {})
+      .filter(([, gate]) => gate.attentionDateKey === currentDateKey)
+      .map(([groupId, gate]) => [groupId, { ...gate }])
+  );
+  let nextReadingEvidence = currentRuntime.readingEvidence?.dateKey === currentDateKey
+    ? { ...currentRuntime.readingEvidence }
+    : undefined;
   const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
     currentRuntime.dailyAppUsage || {},
     nowMs
@@ -112,11 +134,21 @@ export function processRhythmEvent(
           nextSession = recordActiveUsage(nextSession, nextSession.activeAppId, nowMs);
           const group = config.riskGroups.find((g) => g.id === nextSession?.groupId);
           if (group && isThresholdReached(nextSession, group)) {
-            const newCooldown = startCooldown(
+            const timerCooldown = startCooldown(
               nextSession.groupId,
               nowMs,
               group.cooldownMinutes
             );
+            const allocated = allocateAttentionCooldown(
+              nextSession.groupId,
+              nowMs,
+              timerCooldown.endsAt,
+              nextDailyAttentionExchange,
+              nextReadingGates
+            );
+            const newCooldown = allocated.cooldown;
+            nextDailyAttentionExchange = allocated.dailyAttentionExchange;
+            replaceRecord(nextReadingGates, allocated.activeReadingGates);
             nextCooldowns[nextSession.groupId] = newCooldown;
 
             effects.push({
@@ -230,11 +262,21 @@ export function processRhythmEvent(
 
         // Check if group threshold is now exceeded
         if (group && isThresholdReached(nextSession, group)) {
-          const newCooldown = startCooldown(
+          const timerCooldown = startCooldown(
             targetGroupId,
             event.timestamp,
             group.cooldownMinutes
           );
+          const allocated = allocateAttentionCooldown(
+            targetGroupId,
+            event.timestamp,
+            timerCooldown.endsAt,
+            nextDailyAttentionExchange,
+            nextReadingGates
+          );
+          const newCooldown = allocated.cooldown;
+          nextDailyAttentionExchange = allocated.dailyAttentionExchange;
+          replaceRecord(nextReadingGates, allocated.activeReadingGates);
           nextCooldowns[targetGroupId] = newCooldown;
 
           effects.push({
@@ -314,6 +356,11 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'SYNC_DAILY_READING_EVIDENCE': {
+      nextReadingEvidence = { ...event.evidence };
+      break;
+    }
+
     case 'UPDATE_DAILY_ALLOWANCE':
     case 'UPDATE_GROUP_ALLOWANCE':
     case 'UPDATE_GROUP_RECOVERY_ACTIVITY':
@@ -322,11 +369,16 @@ export function processRhythmEvent(
       break;
 
     case 'COOLDOWN_STARTED': {
-      nextCooldowns[event.groupId] = {
-        groupId: event.groupId,
-        startedAt: nowMs,
-        endsAt: event.endsAt,
-      };
+      const allocated = allocateAttentionCooldown(
+        event.groupId,
+        nowMs,
+        event.endsAt,
+        nextDailyAttentionExchange,
+        nextReadingGates
+      );
+      nextCooldowns[event.groupId] = allocated.cooldown;
+      nextDailyAttentionExchange = allocated.dailyAttentionExchange;
+      replaceRecord(nextReadingGates, allocated.activeReadingGates);
       if (nextSession?.groupId === event.groupId) {
         nextSession = undefined;
       }
@@ -405,13 +457,31 @@ export function processRhythmEvent(
         const existing = nextCooldowns[event.groupId];
         const configuredMinutes =
           config.riskGroups.find((g) => g.id === event.groupId)?.cooldownMinutes ?? 60;
-        nextCooldowns[event.groupId] = {
-          groupId: event.groupId,
-          startedAt:
-            existing?.startedAt ??
-            Math.max(nowMs, event.endsAt - configuredMinutes * 60_000),
-          endsAt: Math.max(existing?.endsAt ?? 0, event.endsAt),
-        };
+        const startedAt = existing?.startedAt ?? Math.max(nowMs, event.endsAt - configuredMinutes * 60_000);
+        const endsAt = Math.max(existing?.endsAt ?? 0, event.endsAt);
+        if (existing) {
+          // Repeated snapshots for one native cooldown are idempotent. In particular,
+          // do not allocate a second daily ordinal for a cooldown already in runtime.
+          nextCooldowns[event.groupId] = { ...existing, startedAt, endsAt };
+          const gate = nextReadingGates[event.groupId];
+          if (gate && gate.dailyCooldownOrdinal === existing.dailyCooldownOrdinal) {
+            nextReadingGates[event.groupId] = { ...gate, cooldownEndsAt: endsAt };
+          }
+        } else {
+          // A newly observed native cooldown can be allocated once. Native-only cycles
+          // that elapsed while JS was absent cannot be reconstructed in Pass 02.
+          const allocated = allocateAttentionCooldown(
+            event.groupId,
+            startedAt,
+            endsAt,
+            nextDailyAttentionExchange,
+            nextReadingGates,
+            nowMs
+          );
+          nextCooldowns[event.groupId] = allocated.cooldown;
+          nextDailyAttentionExchange = allocated.dailyAttentionExchange;
+          replaceRecord(nextReadingGates, allocated.activeReadingGates);
+        }
       }
       break;
     }
@@ -435,6 +505,7 @@ export function processRhythmEvent(
       break;
 
     case 'RISK_GROUP_DELETED': {
+      delete nextReadingGates[event.groupId];
       if (nextCooldowns[event.groupId]) {
         delete nextCooldowns[event.groupId];
         effects.push({
@@ -457,6 +528,19 @@ export function processRhythmEvent(
 
       break;
     }
+  }
+
+  // A completed requirement remains represented during its timer, then disappears
+  // only after both the timer and verified daily evidence satisfy the gate.
+  for (const [groupId, gate] of Object.entries(nextReadingGates)) {
+    const reconciledGate = reconcileReadingGate({
+      gate,
+      evidence: nextReadingEvidence,
+      now: nowMs,
+      currentDateKey,
+    });
+    if (reconciledGate) nextReadingGates[groupId] = reconciledGate;
+    else delete nextReadingGates[groupId];
   }
 
   // 4. Resolve active routine windows
@@ -629,10 +713,62 @@ export function processRhythmEvent(
     activeRestrictions: appRestrictions,
     dailyAppUsage: nextDailyAppUsage,
     groupAllowanceUsage: nextGroupAllowanceUsage,
+    dailyAttentionExchange: nextDailyAttentionExchange,
+    activeReadingGates: nextReadingGates,
+    ...(nextReadingEvidence ? { readingEvidence: nextReadingEvidence } : {}),
   };
 
   return {
     nextRuntime,
     effects,
   };
+}
+
+/** The single allocation path used by both JS cooldown creation routes and native imports. */
+function allocateAttentionCooldown(
+  groupId: string,
+  startedAt: number,
+  endsAt: number,
+  currentState: RhythmRuntime['dailyAttentionExchange'],
+  currentGates: Record<string, ActiveReadingGate>,
+  allocationAt: number = startedAt
+): {
+  cooldown: ActiveCooldown;
+  dailyAttentionExchange: NonNullable<RhythmRuntime['dailyAttentionExchange']>;
+  activeReadingGates: Record<string, ActiveReadingGate>;
+} {
+  const state = currentState ?? createDailyAttentionExchangeState(getLocalDateKey(allocationAt), allocationAt);
+  const allocation = allocateCooldownRequirement(state, allocationAt);
+  const cooldown: ActiveCooldown = {
+    groupId,
+    startedAt,
+    endsAt,
+    dailyCooldownOrdinal: allocation.ordinal,
+    attentionDateKey: allocation.nextState.dateKey,
+    requiredReadingSeconds: allocation.requirement.activeSeconds,
+    requiredQualifiedPages: allocation.requirement.qualifiedPages,
+  };
+  const activeReadingGates = { ...currentGates };
+  delete activeReadingGates[groupId];
+  if (allocation.requirement.activeSeconds > 0 || allocation.requirement.qualifiedPages > 0) {
+    activeReadingGates[groupId] = {
+      groupId,
+      attentionDateKey: allocation.nextState.dateKey,
+      dailyCooldownOrdinal: allocation.ordinal,
+      createdAt: startedAt,
+      cooldownEndsAt: endsAt,
+      requiredReadingSeconds: allocation.requirement.activeSeconds,
+      requiredQualifiedPages: allocation.requirement.qualifiedPages,
+    };
+  }
+  return {
+    cooldown,
+    dailyAttentionExchange: allocation.nextState,
+    activeReadingGates,
+  };
+}
+
+function replaceRecord<T>(target: Record<string, T>, source: Record<string, T>): void {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
 }
