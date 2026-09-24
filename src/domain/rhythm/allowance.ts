@@ -80,7 +80,8 @@ export interface GroupAllowanceEditResult {
     | 'below-minimum'
     | 'already-edited-today'
     | 'group-not-found'
-    | 'unavailable';
+    | 'unavailable'
+    | 'approval-required';
 }
 
 /**

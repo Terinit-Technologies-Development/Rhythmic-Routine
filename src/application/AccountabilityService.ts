@@ -18,6 +18,7 @@ export const RATE_LIMIT_LOCKOUT_MS = 60 * 1000; // 60 seconds
 
 export class AccountabilityService {
   private attemptStateMap = new Map<string, AttemptState>();
+  private hydratedAttemptIds = new Set<string>();
 
   constructor(
     private credentials: SecureCredentialProvider = getPlatformServices().credentials
@@ -35,6 +36,7 @@ export class AccountabilityService {
     if (state.lockedUntil && Date.now() >= state.lockedUntil) {
       const cleared: AttemptState = { failures: 0 };
       this.attemptStateMap.set(partnerId, cleared);
+      void this.credentials.saveApprovalAttemptState?.(partnerId, null).catch(() => {});
       return cleared;
     }
     return state;
@@ -43,7 +45,7 @@ export class AccountabilityService {
   /**
    * Records a failed password attempt and applies 60s lockout upon 5 consecutive failures.
    */
-  public recordFailure(partnerId: string): AttemptState {
+  private async recordFailure(partnerId: string): Promise<AttemptState> {
     const current = this.getAttemptState(partnerId);
     const failures = current.failures + 1;
     let lockedUntil: number | undefined = undefined;
@@ -52,14 +54,24 @@ export class AccountabilityService {
     }
     const next: AttemptState = { failures, lockedUntil };
     this.attemptStateMap.set(partnerId, next);
+    await this.credentials.saveApprovalAttemptState?.(partnerId, next);
     return next;
   }
 
   /**
    * Resets failed attempt counter upon successful password entry or partner removal.
    */
-  public resetAttempts(partnerId: string): void {
+  public async resetAttempts(partnerId: string): Promise<void> {
     this.attemptStateMap.delete(partnerId);
+    this.hydratedAttemptIds.add(partnerId);
+    await this.credentials.saveApprovalAttemptState?.(partnerId, null);
+  }
+
+  private async hydrateAttemptState(partnerId: string): Promise<void> {
+    if (this.hydratedAttemptIds.has(partnerId)) return;
+    const saved = await this.credentials.loadApprovalAttemptState?.(partnerId);
+    if (saved) this.attemptStateMap.set(partnerId, saved);
+    this.hydratedAttemptIds.add(partnerId);
   }
 
   /**
@@ -71,11 +83,17 @@ export class AccountabilityService {
     password: string,
     partner?: AccountabilityPartner
   ): Promise<ApprovalResult> {
-    if (!partner) {
+    if (!partner || partner.id !== request.partnerId) {
       return { ok: false, reason: 'partner-not-found' };
     }
     if (!partner.enabled) {
       return { ok: false, reason: 'partner-disabled' };
+    }
+
+    try {
+      await this.hydrateAttemptState(partner.id);
+    } catch {
+      return { ok: false, reason: 'verification-unavailable' };
     }
 
     const state = this.getAttemptState(partner.id);
@@ -87,13 +105,27 @@ export class AccountabilityService {
       };
     }
 
-    const valid = await this.credentials.verify(partner.credentialRef, password);
+    let valid: boolean;
+    try {
+      valid = await this.credentials.verify(partner.credentialRef, password);
+    } catch {
+      return { ok: false, reason: 'verification-unavailable' };
+    }
     if (valid) {
-      this.resetAttempts(partner.id);
+      try {
+        await this.resetAttempts(partner.id);
+      } catch {
+        return { ok: false, reason: 'verification-unavailable' };
+      }
       return { ok: true, partnerId: partner.id };
     }
 
-    const updatedState = this.recordFailure(partner.id);
+    let updatedState: AttemptState;
+    try {
+      updatedState = await this.recordFailure(partner.id);
+    } catch {
+      return { ok: false, reason: 'verification-unavailable' };
+    }
     if (updatedState.lockedUntil) {
       return {
         ok: false,
@@ -189,7 +221,7 @@ export class AccountabilityService {
     }
 
     await this.credentials.create(partner.credentialRef, newPassword);
-    this.resetAttempts(partner.id);
+    await this.resetAttempts(partner.id);
 
     return {
       ...partner,
@@ -201,8 +233,18 @@ export class AccountabilityService {
    * Removes secure credential material and clears attempt state.
    */
   public async removePartner(partner: AccountabilityPartner): Promise<void> {
-    await this.credentials.remove(partner.credentialRef);
-    this.resetAttempts(partner.id);
+    let removalError: unknown;
+    try {
+      await this.credentials.remove(partner.credentialRef);
+    } catch (error) {
+      removalError = error;
+    }
+    try {
+      await this.resetAttempts(partner.id);
+    } catch (error) {
+      removalError ??= error;
+    }
+    if (removalError) throw removalError;
   }
 }
 
@@ -218,4 +260,3 @@ export function getAccountabilityService(): AccountabilityService {
 export function resetAccountabilityService(): void {
   serviceInstance = new AccountabilityService();
 }
-

@@ -130,6 +130,7 @@ export const FallbackModule = {
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => isWeb,
   endAccessLease: async (_groupId: string): Promise<boolean> => isWeb,
+  resetEnforcementState: async (): Promise<boolean> => true,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
   getSharedRhythmState: async (): Promise<string | null> => null,
   synchronizeMonitoringConfiguration: async (
@@ -189,4 +190,3 @@ try {
 
 export const isRhythmNativeModuleAvailable = nativeModuleAvailable;
 export default NativeModule;
-

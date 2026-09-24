@@ -29,6 +29,10 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/java/expo/modules/rhythmdevice/RhythmNativePolicyKeys.kt'
   );
+  const iosModulePath = path.resolve(
+    __dirname,
+    '../../../../modules/rhythm-device/ios/RhythmDeviceModule.swift'
+  );
   const manifestPath = path.resolve(
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/AndroidManifest.xml'
@@ -66,6 +70,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     assert.ok(serviceSrc.includes('fun scheduleNearestCooldownExpiry'), 'Must define scheduleNearestCooldownExpiry');
     assert.ok(serviceSrc.includes('fun resolveCurrentForegroundPackage'), 'Must define resolveCurrentForegroundPackage');
     assert.ok(serviceSrc.includes('fun reconcileUsage'), 'Must define bounded reconcileUsage');
+    assert.ok(serviceSrc.includes('fun onNativePolicyReset()'), 'Reset must clear native enforcement timers and ledgers');
 
     const moduleSrc = fs.readFileSync(modulePath, 'utf8');
     assert.ok(moduleSrc.includes('setRiskGroupPolicies'), 'Must expose setRiskGroupPolicies');
@@ -73,6 +78,16 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     assert.ok(moduleSrc.includes('setCooldownPolicies'), 'Must expose setCooldownPolicies');
     assert.ok(moduleSrc.includes('getGroupAllowanceSnapshot'), 'Must expose getGroupAllowanceSnapshot');
     assert.ok(moduleSrc.includes('reconcileGroupUsage'), 'Must expose reconcileGroupUsage');
+    assert.ok(moduleSrc.includes('AsyncFunction("resetEnforcementState")'), 'Must expose native enforcement reset');
+    assert.ok(moduleSrc.includes('.edit()') && moduleSrc.includes('.clear()'), 'Android reset must clear persisted native policy state');
+    assert.ok(moduleSrc.includes('onNativePolicyReset()'), 'Android reset must clear in-memory enforcement state');
+
+    const iosModuleSrc = fs.readFileSync(iosModulePath, 'utf8');
+    assert.ok(iosModuleSrc.includes('AsyncFunction("resetEnforcementState")'), 'iOS must expose native enforcement reset');
+    assert.ok(iosModuleSrc.includes('center.stopMonitoring(rhythmActivities)'), 'iOS reset must stop Rhythm monitoring activities');
+    assert.ok(iosModuleSrc.includes('key.hasPrefix("selection.")'), 'iOS reset must clear persisted Family Controls selections');
+    assert.ok(iosModuleSrc.includes('key.hasPrefix("selection_revision.")'), 'iOS reset must clear selection revisions');
+    assert.ok(iosModuleSrc.includes('store.shield.applications = nil'), 'iOS reset must clear applied shields');
   });
 
   it('2. Permission boundary audit: strict verification of non-invasive permissions', () => {

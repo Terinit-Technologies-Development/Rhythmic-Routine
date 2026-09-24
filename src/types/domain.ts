@@ -154,7 +154,8 @@ export type SaveRiskGroupResult =
         | 'invalid-step'
         | 'below-minimum'
         | 'persistence-failed'
-        | 'unavailable';
+        | 'unavailable'
+        | 'approval-required';
     };
 
 export type RiskGroupPatch = Partial<
@@ -173,7 +174,8 @@ export type DeleteRiskGroupResult =
         | 'cannot-delete-seeded-group'
         | 'replacement-required'
         | 'invalid-replacement-group'
-        | 'active-runtime';
+        | 'active-runtime'
+        | 'approval-required';
     };
 
 /**

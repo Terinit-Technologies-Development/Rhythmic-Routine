@@ -11,6 +11,7 @@ import {
   utf8ToBytes,
   randomBytes,
 } from '@noble/hashes/utils.js';
+import type { AttemptState } from '../domain/accountability/types';
 
 export const PBKDF2_ITERATIONS = 150_000;
 export const PBKDF2_KEY_LENGTH = 32;
@@ -26,6 +27,8 @@ export interface SecureCredentialProvider {
   create(ref: string, password: string): Promise<void>;
   verify(ref: string, password: string): Promise<boolean>;
   remove(ref: string): Promise<void>;
+  loadApprovalAttemptState?(partnerId: string): Promise<AttemptState | null>;
+  saveApprovalAttemptState?(partnerId: string, state: AttemptState | null): Promise<void>;
 }
 
 /**
@@ -94,6 +97,7 @@ export async function verifyCredentialRecord(
  */
 export class InMemorySecureCredentialProvider implements SecureCredentialProvider {
   private store = new Map<string, string>();
+  private approvalAttempts = new Map<string, AttemptState>();
 
   async create(ref: string, password: string): Promise<void> {
     const record = await createCredentialRecord(password);
@@ -115,6 +119,16 @@ export class InMemorySecureCredentialProvider implements SecureCredentialProvide
     this.store.delete(ref);
   }
 
+  async loadApprovalAttemptState(partnerId: string): Promise<AttemptState | null> {
+    const state = this.approvalAttempts.get(partnerId);
+    return state ? { ...state } : null;
+  }
+
+  async saveApprovalAttemptState(partnerId: string, state: AttemptState | null): Promise<void> {
+    if (state) this.approvalAttempts.set(partnerId, { ...state });
+    else this.approvalAttempts.delete(partnerId);
+  }
+
   /**
    * Helper for tests to inspect if credential exists without revealing verifier.
    */
@@ -128,5 +142,6 @@ export class InMemorySecureCredentialProvider implements SecureCredentialProvide
 
   clear(): void {
     this.store.clear();
+    this.approvalAttempts.clear();
   }
 }

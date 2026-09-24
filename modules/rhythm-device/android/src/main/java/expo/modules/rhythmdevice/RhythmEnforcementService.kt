@@ -645,6 +645,28 @@ class RhythmEnforcementService : AccessibilityService() {
     fun cancelLeaseExpiry(groupId: String) { leaseCallbacks.remove(groupId)?.let { handler.removeCallbacks(it) } }
     override fun onInterrupt() {}
 
+    fun onNativePolicyReset() {
+        cancelAllowanceDeadline()
+        cancelMidnightRollover()
+        cancelRoutineBoundary()
+        cancelCooldownExpiry()
+        leaseCallbacks.values.forEach { handler.removeCallbacks(it) }
+        leaseCallbacks.clear()
+        activeUsageGroup = null
+        activeUsagePackage = null
+        activeUsageStartedAt = null
+        allowanceDeadlineAt = null
+        nextRoutineBoundaryAt = null
+        nextMidnightRolloverAt = null
+        nearestCooldownExpiryAt = null
+        lastUsageReconciledAt = 0L
+        lastForegroundPackage = null
+        lastInterventionPackage = null
+        lastInterventionAt = 0L
+        // The overlay polls effective restrictions and closes as soon as the cleared
+        // policy is observed; no foreground package data is needed here.
+    }
+
     companion object {
         const val TAG = "RhythmEnforcement"; var isRunning = false; var instance: RhythmEnforcementService? = null
         fun getLocalDateKey(timestamp: Long = System.currentTimeMillis()): String = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))

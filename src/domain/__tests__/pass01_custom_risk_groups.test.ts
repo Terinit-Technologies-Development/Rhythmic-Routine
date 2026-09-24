@@ -8,6 +8,8 @@ import { getPlatformServices } from '../../platform/PlatformServices';
 
 describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
   beforeEach(async () => {
+    usePrototypeStore.getState().cancelPendingApproval();
+    usePrototypeStore.setState({ accountability: { enabled: false, partners: [] } });
     await usePrototypeStore.getState().resetDemo();
   });
 
@@ -195,8 +197,8 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     });
 
     // Add to morning-buffer and evening-wind-down
-    store.toggleGroupProtection('morning-buffer', customId, true);
-    store.toggleGroupProtection('evening-wind-down', customId, true);
+    await store.toggleGroupProtection('morning-buffer', customId, true);
+    await store.toggleGroupProtection('evening-wind-down', customId, true);
 
     let windows = usePrototypeStore.getState().routineWindows;
     assert.equal(

@@ -84,17 +84,17 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(createdGroup?.name, 'News Feeds');
   });
 
-  test('Relationship Integrity: toggleGroupProtection syncs canonically', () => {
+  test('Relationship Integrity: toggleGroupProtection syncs canonically', async () => {
     const store = usePrototypeStore.getState();
 
     // Protect 'news-feeds' in 'morning-buffer'
-    store.toggleGroupProtection('morning-buffer', 'news-feeds', true);
+    await store.toggleGroupProtection('morning-buffer', 'news-feeds', true);
     let windows = usePrototypeStore.getState().routineWindows;
     let protectedIds = getProtectedWindowIdsForGroup(windows, 'news-feeds');
     assert.equal(protectedIds.includes('morning-buffer'), true);
 
     // Unprotect 'news-feeds' from 'morning-buffer'
-    store.toggleGroupProtection('morning-buffer', 'news-feeds', false);
+    await store.toggleGroupProtection('morning-buffer', 'news-feeds', false);
     windows = usePrototypeStore.getState().routineWindows;
     protectedIds = getProtectedWindowIdsForGroup(windows, 'news-feeds');
     assert.equal(protectedIds.includes('morning-buffer'), false);

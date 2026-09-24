@@ -45,7 +45,9 @@ export type ApprovalFailureReason =
   | 'rate-limited'
   | 'partner-not-found'
   | 'partner-disabled'
-  | 'no-enabled-partners';
+  | 'no-enabled-partners'
+  | 'verification-unavailable'
+  | 'approval-expired';
 
 export type ApprovalResult =
   | { ok: true; partnerId: string }
@@ -204,6 +206,9 @@ export interface PendingApproval<TPayload = unknown> {
   summary: string;
   payload: TPayload;
   requestedAt: number;
+  /** Execution-time stale-state check, captured when the request is created. */
+  authorizationSnapshot?: string;
+  accountabilityEnabledAtRequest?: boolean;
 }
 
 export interface AttemptState {

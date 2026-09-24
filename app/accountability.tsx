@@ -515,9 +515,9 @@ export default function AccountabilityScreen() {
         <View style={styles.infoCard}>
           <Shield size={18} color={colors.forest} />
           <Text style={styles.infoCardText}>
-            Partner passwords are never stored in plaintext or sent to any server. Verifiers are
-            salted and hashed on-device using PBKDF2 with 150,000 rounds and stored in secure
-            hardware storage.
+            Partner approval is checked locally on this device; approval requests and passwords are
+            never sent to a server. Password verifiers are salted and hashed on-device with PBKDF2;
+            native apps store them with SecureStore.
           </Text>
         </View>
 
@@ -527,7 +527,10 @@ export default function AccountabilityScreen() {
           <View style={{ flex: 1, marginLeft: 10 }}>
             <Text style={styles.boundaryTitle}>Security Boundary</Text>
             <Text style={styles.boundaryText}>
-              Accountability Mode is an intentional in-app behavioral guard designed to slow down impulsive changes. It cannot prevent operating system-level uninstallation, app data clearing, system permission revocation, or device wiping/rooting.
+              Accountability Mode is an in-app behavioral guard designed to slow down impulsive
+              changes. It does not provide OS-level anti-tamper guarantees and cannot prevent
+              uninstallation, app-data clearing, permission revocation, device wiping, or changes
+              made with operating-system or rooted-device access.
             </Text>
           </View>
         </View>

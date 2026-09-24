@@ -479,6 +479,41 @@ public class RhythmDeviceModule: Module {
       self.cleanupAfterAuthorizationLoss()
     }
 
+    AsyncFunction("resetEnforcementState") { () -> Bool in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+
+      #if canImport(DeviceActivity)
+      if #available(iOS 16.0, *) {
+        let center = DeviceActivityCenter()
+        let rhythmActivities = center.activities.filter {
+          self.isRhythmRoutineActivity($0) || self.isRhythmRiskActivity($0) || self.isRhythmExpiryActivity($0)
+        }
+        if !rhythmActivities.isEmpty {
+          center.stopMonitoring(rhythmActivities)
+        }
+      }
+      #endif
+
+      for key in defaults.dictionaryRepresentation().keys where
+        key == self.sharedStateKey || key == self.monitoringOperationalKey ||
+        key == self.persistentMonitoringOperationalKey || key == self.expiryMonitoringOperationalKey ||
+        key == self.monitoringLastErrorKey || key == self.monitoringConfigSignatureKey ||
+        key.hasPrefix("selection.") || key.hasPrefix("selection_revision.") ||
+        key.hasPrefix("pending_selection.") || key.hasPrefix("rollback_selection.") {
+        defaults.removeObject(forKey: key)
+      }
+
+      #if canImport(ManagedSettings)
+      if #available(iOS 16.0, *) {
+        let store = ManagedSettingsStore(named: .init(self.storeName))
+        store.shield.applications = nil
+        store.shield.applicationCategories = nil
+      }
+      #endif
+
+      return true
+    }
+
     AsyncFunction("getInstalledApps") { () -> [[String: Any]] in
       // iOS FamilyControls deliberately conceals plaintext bundle identifiers
       return []

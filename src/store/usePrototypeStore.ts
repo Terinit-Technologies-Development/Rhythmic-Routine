@@ -59,6 +59,7 @@ import {
   RoutineScheduleEditPayload,
 } from '../domain/accountability/types';
 import {
+  PROTECTED_OPERATIONS,
   requiresPartnerApproval,
   getEnabledPartners,
   formatDays,
@@ -270,7 +271,7 @@ interface PrototypeState {
   updateRiskGroup: (groupId: string, updates: Partial<RiskGroup>) => Promise<SaveRiskGroupResult>;
   updateRoutineWindow: (windowId: string, updates: Partial<RoutineWindow>) => Promise<void>;
   toggleRoutineDay: (day: number) => Promise<void>;
-  toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => void;
+  toggleGroupProtection: (windowId: string, groupId: string, enabled: boolean) => Promise<void>;
   createRiskGroup: (input: CreateRiskGroupInput) => Promise<string>;
   saveRiskGroupConfiguration: (groupId: string, draft: RiskGroupConfigurationDraft) => Promise<SaveRiskGroupResult>;
   saveRiskGroup: (groupId: string, patch: RiskGroupPatch) => Promise<void>;
@@ -341,6 +342,7 @@ const mutationExecutors = new Map<AccountabilityOperation, (payload: any) => Pro
 
 const transientApprovalSecrets = new Map<string, string>();
 const inFlightApprovalIds = new Set<string>();
+let protectedMutationInFlight = false;
 
 function createTransientSecretRef(secret: string): string {
   const ref = `secret_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -387,15 +389,317 @@ function cleanupPendingApprovalSecrets(pending: PendingApproval | null): void {
   }
 }
 
+type StoreGet = () => PrototypeState;
+type StoreSet = (partial: Partial<PrototypeState> | ((state: PrototypeState) => Partial<PrototypeState>)) => void;
+
+function clonePayload<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value as object)) throw new Error('Protected mutation payload must not contain cycles');
+  const clone: any = Array.isArray(value) ? [] : {};
+  seen.set(value as object, clone);
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    clone[key] = clonePayload(child, seen);
+  }
+  seen.delete(value as object);
+  return clone;
+}
+
+function freezePayload<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) freezePayload(child);
+  }
+  return value;
+}
+
+function captureProtectedStateSnapshot(state: PrototypeState): string {
+  return JSON.stringify({
+    accountability: state.accountability,
+    apps: state.apps.map(({ id, classification, riskGroupId }) => ({ id, classification, riskGroupId })),
+    riskGroups: state.riskGroups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      description: group.description,
+      appIds: group.appIds,
+      allowanceMinutes: group.allowanceMinutes,
+      sessionThresholdMinutes: group.sessionThresholdMinutes,
+      lastAllowanceEditedDateKey: group.lastAllowanceEditedDateKey,
+      cooldownMinutes: group.cooldownMinutes,
+      recoveryActivityId: group.recoveryActivityId,
+      nativeSelectionRef: group.nativeSelectionRef,
+      nativeSelectionCount: group.nativeSelectionCount,
+      nativeSelectionRevision: group.nativeSelectionRevision,
+      origin: group.origin,
+    })),
+    routineWindows: state.routineWindows.map((window) => ({
+      id: window.id,
+      name: window.name,
+      type: window.type,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      activeDays: window.activeDays,
+      protectedGroupIds: window.protectedGroupIds,
+      enabled: window.enabled,
+    })),
+  });
+}
+
+async function executeCreateRiskGroup(get: StoreGet, set: StoreSet, input: CreateRiskGroupInput): Promise<string> {
+  const name = input.name.trim();
+  if (!name) throw new Error('risk-group-name-required');
+
+  const id = createUniqueGroupId(name, get().riskGroups.map((group) => group.id));
+  const next: RiskGroup = {
+    id,
+    name,
+    description: input.description?.trim() || 'Custom protected attention group',
+    iconName: 'folder-heart',
+    iconColor: '#164B38',
+    iconBg: '#E8EFE5',
+    appIds: [],
+    allowanceMinutes: input.allowanceMinutes ?? 30,
+    cooldownMinutes: input.cooldownMinutes ?? 60,
+    recoveryActivityId: 'walk',
+    currentSessionMinutes: 0,
+    isBufferingToday: false,
+    origin: 'custom',
+  };
+  const nextGroups = [...get().riskGroups, next];
+  await RhythmCoordinator.getInstance().updateConfig({ riskGroups: nextGroups });
+  set({ riskGroups: nextGroups });
+  return id;
+}
+
+async function executeSaveRiskGroupConfiguration(
+  get: StoreGet,
+  set: StoreSet,
+  groupId: string,
+  draft: RiskGroupConfigurationDraft
+): Promise<SaveRiskGroupResult> {
+  const state = get();
+  const existing = state.riskGroups.find((group) => group.id === groupId);
+  if (!existing) return { ok: false, groupId, reason: 'group-not-found' };
+
+  const name = draft.name.trim();
+  if (!name) return { ok: false, groupId, reason: 'name-required' };
+
+  const currentAllowance = resolveGroupAllowanceMinutes(existing);
+  const allowanceChanged = draft.allowanceMinutes !== currentAllowance;
+  const todayKey = getLocalDateKey();
+  if (allowanceChanged) {
+    const validation = validateGroupAllowanceEdit({
+      currentMinutes: currentAllowance,
+      requestedMinutes: draft.allowanceMinutes,
+      lastEditedDateKey: existing.lastAllowanceEditedDateKey,
+      todayDateKey: todayKey,
+    });
+    if (!validation.ok) {
+      return { ok: false, groupId, reason: validation.reason ?? 'unavailable' };
+    }
+  }
+
+  const updatedRiskGroups = state.riskGroups.map((group) => {
+    if (group.id !== groupId) return group;
+    const nextGroup: RiskGroup = {
+      ...group,
+      name,
+      description: draft.description.trim(),
+      allowanceMinutes: draft.allowanceMinutes,
+      cooldownMinutes: draft.cooldownMinutes,
+      recoveryActivityId: draft.recoveryActivityId,
+      lastAllowanceEditedDateKey: allowanceChanged ? todayKey : group.lastAllowanceEditedDateKey,
+    };
+    if (group.sessionThresholdMinutes !== undefined || (draft as any).sessionThresholdMinutes !== undefined) {
+      nextGroup.sessionThresholdMinutes = draft.allowanceMinutes;
+    }
+    return nextGroup;
+  });
+
+  const updatedWindows = state.routineWindows.map((window) => {
+    let protectedGroupIds = [...window.protectedGroupIds];
+    if (window.id === 'morning-buffer') {
+      protectedGroupIds = draft.morningProtected
+        ? Array.from(new Set([...protectedGroupIds, groupId]))
+        : protectedGroupIds.filter((id) => id !== groupId);
+    } else if (window.id === 'evening-wind-down') {
+      protectedGroupIds = draft.eveningProtected
+        ? Array.from(new Set([...protectedGroupIds, groupId]))
+        : protectedGroupIds.filter((id) => id !== groupId);
+    }
+    return { ...window, protectedGroupIds };
+  });
+
+  try {
+    await RhythmCoordinator.getInstance().updateConfig({
+      riskGroups: updatedRiskGroups,
+      routineWindows: updatedWindows,
+    });
+  } catch {
+    return { ok: false, groupId, reason: 'persistence-failed' };
+  }
+  set({ riskGroups: updatedRiskGroups, routineWindows: updatedWindows });
+
+  if (allowanceChanged) {
+    try {
+      const { storage } = getPlatformServices();
+      await storage.appendHistoryEvent({
+        type: 'group-allowance-edited',
+        groupId,
+        previousMinutes: currentAllowance,
+        nextMinutes: draft.allowanceMinutes,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // Configuration has already committed; history is best-effort.
+    }
+  }
+  return { ok: true, groupId };
+}
+
+async function executeDeleteRiskGroup(
+  get: StoreGet,
+  set: StoreSet,
+  groupId: string,
+  replacementGroupId?: string
+): Promise<DeleteRiskGroupResult> {
+  const state = get();
+  const target = state.riskGroups.find((group) => group.id === groupId);
+  if (!target) return { ok: false, reason: 'group-not-found' };
+  if (target.origin === 'seeded' || groupId === 'social' || groupId === 'entertainment') {
+    return { ok: false, reason: 'cannot-delete-seeded-group' };
+  }
+
+  const coordinator = RhythmCoordinator.getInstance();
+  const runtime = coordinator.getRuntimeSnapshot();
+  if (runtime?.activeCooldowns?.[groupId] || runtime?.activeSession?.groupId === groupId) {
+    return { ok: false, reason: 'active-runtime' };
+  }
+
+  const members = state.apps.filter((app) => app.riskGroupId === groupId || target.appIds.includes(app.id));
+  if (members.length > 0 && !replacementGroupId) return { ok: false, reason: 'replacement-required' };
+  if (replacementGroupId) {
+    const replacement = state.riskGroups.find((group) => group.id === replacementGroupId);
+    if (!replacement || replacementGroupId === groupId) return { ok: false, reason: 'invalid-replacement-group' };
+  }
+
+  const memberIds = new Set(members.map((app) => app.id));
+  const updatedApps = state.apps.map((app) => memberIds.has(app.id) ? { ...app, riskGroupId: replacementGroupId } : app);
+  const updatedRiskGroups = state.riskGroups
+    .filter((group) => group.id !== groupId)
+    .map((group) => replacementGroupId && group.id === replacementGroupId
+      ? { ...group, appIds: Array.from(new Set([...group.appIds, ...members.map((app) => app.id)])) }
+      : group);
+  const updatedWindows = state.routineWindows.map((window) => ({
+    ...window,
+    protectedGroupIds: window.protectedGroupIds.filter((id) => id !== groupId),
+  }));
+  const activeRiskGroupId = state.activeRiskGroupId === groupId
+    ? replacementGroupId || updatedRiskGroups[0]?.id || 'social'
+    : state.activeRiskGroupId;
+  const groupUsageSnapshots = state.groupUsageSnapshots ? { ...state.groupUsageSnapshots } : undefined;
+  if (groupUsageSnapshots) delete groupUsageSnapshots[groupId];
+
+  await coordinator.updateConfig({ apps: updatedApps, riskGroups: updatedRiskGroups, routineWindows: updatedWindows });
+  await coordinator.dispatch({ type: 'RISK_GROUP_DELETED', groupId, timestamp: Date.now() });
+  set({ apps: updatedApps, riskGroups: updatedRiskGroups, routineWindows: updatedWindows, activeRiskGroupId, groupUsageSnapshots });
+  return { ok: true };
+}
+
+async function executeResetLocalState(get: StoreGet, set: StoreSet): Promise<void> {
+  const coordinator = RhythmCoordinator.getInstance();
+  const { storage, credentials } = getPlatformServices();
+  const service = getAccountabilityService();
+  const existingPartners = get().accountability?.partners ?? [];
+
+  // Fail before deleting JavaScript preferences or partner credentials if the
+  // platform-owned Pass 03 state cannot be reset.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const RhythmDevice = require('../../modules/rhythm-device').default;
+  const nativeResetSucceeded = await RhythmDevice.resetEnforcementState();
+  if (nativeResetSucceeded === false) {
+    throw new Error('Unable to clear native enforcement state during reset');
+  }
+
+  await storage.clearAll();
+  for (const partner of existingPartners) {
+    try {
+      await service.removePartner(partner);
+    } catch {
+      // Best-effort credential cleanup.
+    }
+  }
+  if (credentials instanceof InMemorySecureCredentialProvider) credentials.clear();
+  transientApprovalSecrets.clear();
+  inFlightApprovalIds.clear();
+
+  resetAccountabilityService();
+  coordinator.destroy();
+  const runtime = await coordinator.initialize();
+  const config = coordinator.getConfiguration();
+  const primaryCooldown = getPrimaryCooldown(runtime);
+  set({
+    rhythmState: runtime.state,
+    activeRiskGroupId: primaryCooldown?.groupId ?? runtime.activeSession?.groupId ?? 'social',
+    activeTimerEndsAt: primaryCooldown?.endsAt,
+    apps: config?.apps ?? [...initialApps],
+    riskGroups: config?.riskGroups ?? [...initialRiskGroups],
+    routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
+    offlineActivities: [...defaultOfflineActivities],
+    accountability: config?.accountability ?? { enabled: false, partners: [] },
+    pendingApproval: null,
+    insightMetrics: getPlatformOS() === 'web' ? { ...initialInsightMetrics } : { ...emptyInsightMetrics },
+    weeklySummary: undefined,
+    todaySummary: undefined,
+    dailyUsageSnapshot: undefined,
+    groupUsageSnapshots: undefined,
+    dailyUsageLoading: false,
+    dailyUsageError: undefined,
+    insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',
+    searchQuery: '',
+    filterClassification: 'all',
+    demoSwitcherVisible: false,
+    emergencyModalVisible: false,
+    timeSelector: { visible: false },
+    appEdit: { visible: false },
+  });
+}
+
+type MutationAuthorization =
+  | { kind: 'disabled-mode' }
+  | { kind: 'partner-approved'; partnerId: string; expectedEnabled: boolean };
+
 async function executeRegisteredMutation(
   operation: AccountabilityOperation,
-  payload: unknown
+  payload: unknown,
+  authorization: MutationAuthorization,
+  get: StoreGet,
+  alreadyLocked = false
 ): Promise<unknown> {
   const executor = mutationExecutors.get(operation);
   if (!executor) {
     throw new Error(`No protected mutation executor registered for ${operation}`);
   }
-  return await executor(payload);
+  if (!alreadyLocked) {
+    if (protectedMutationInFlight) throw new Error('A protected change is already being applied');
+    protectedMutationInFlight = true;
+  }
+  try {
+    const currentSettings = get().accountability;
+    if (authorization.kind === 'disabled-mode') {
+      if (requiresPartnerApproval(currentSettings, operation)) {
+        throw new Error('Partner approval is required for this protected change');
+      }
+    } else {
+      if (currentSettings.enabled !== authorization.expectedEnabled) {
+        throw new Error('Accountability state changed while approval was pending');
+      }
+      const approvingPartner = currentSettings.partners.find((partner) => partner.id === authorization.partnerId);
+      if (!approvingPartner?.enabled) throw new Error('Approving partner is no longer enabled');
+    }
+    return await executor(payload);
+  } finally {
+    if (!alreadyLocked) protectedMutationInFlight = false;
+  }
 }
 
 function registerDefaultMutationExecutors(
@@ -406,6 +710,10 @@ function registerDefaultMutationExecutors(
 
   mutationExecutors.set('enable-accountability', async () => {
     const state = get();
+    if (state.accountability.enabled) return;
+    if (getEnabledPartners(state.accountability).length === 0) {
+      throw new Error('At least one enabled accountability partner is required');
+    }
     const nextAccountability: AccountabilitySettings = {
       ...state.accountability,
       enabled: true,
@@ -418,6 +726,7 @@ function registerDefaultMutationExecutors(
 
   mutationExecutors.set('disable-accountability', async () => {
     const state = get();
+    if (!state.accountability.enabled) return;
     const nextAccountability: AccountabilitySettings = {
       ...state.accountability,
       enabled: false,
@@ -524,39 +833,40 @@ function registerDefaultMutationExecutors(
     if (!group) {
       throw new Error('Risk group not found');
     }
-    await get().updateRiskGroupAllowance(groupId, allowanceMinutes);
+    const result = await RhythmCoordinator.getInstance().updateRiskGroupAllowance(groupId, allowanceMinutes);
+    if (result.ok) {
+      const config = RhythmCoordinator.getInstance().getConfig();
+      if (config) set({ riskGroups: [...config.riskGroups] });
+      await get().refreshDailyUsage();
+    }
+    return result;
   });
 
   mutationExecutors.set('create-risk-group', async (input) => {
-    return await get().createRiskGroup(input);
+    return await executeCreateRiskGroup(get, set, input);
   });
 
   mutationExecutors.set('edit-risk-group', async ({ groupId, draft }) => {
-    const state = get();
-    const group = state.riskGroups.find((g) => g.id === groupId);
-    if (!group) {
-      throw new Error('Risk group not found');
-    }
-    return await get().saveRiskGroupConfiguration(groupId, draft);
+    return await executeSaveRiskGroupConfiguration(get, set, groupId, draft);
   });
 
   mutationExecutors.set('delete-risk-group', async ({ groupId, replacementGroupId }) => {
-    const state = get();
-    const group = state.riskGroups.find((g) => g.id === groupId);
-    if (!group) {
-      throw new Error('Risk group not found');
-    }
-    if (replacementGroupId) {
-      const repl = state.riskGroups.find((g) => g.id === replacementGroupId);
-      if (!repl || repl.id === groupId) {
-        throw new Error('Invalid replacement group');
-      }
-    }
-    return await get().deleteRiskGroup(groupId, replacementGroupId);
+    return await executeDeleteRiskGroup(get, set, groupId, replacementGroupId);
   });
 
   mutationExecutors.set('edit-risk-group-protection', async ({ windowId, groupId, enabled }) => {
-    get().toggleGroupProtection(windowId, groupId, enabled);
+    const state = get();
+    if (!state.riskGroups.some((group) => group.id === groupId)) throw new Error('Risk group not found');
+    if (!state.routineWindows.some((window) => window.id === windowId)) throw new Error('Routine window not found');
+    const routineWindows = state.routineWindows.map((window) => {
+      if (window.id !== windowId) return window;
+      const protectedGroupIds = enabled
+        ? Array.from(new Set([...window.protectedGroupIds, groupId]))
+        : window.protectedGroupIds.filter((id) => id !== groupId);
+      return { ...window, protectedGroupIds };
+    });
+    await RhythmCoordinator.getInstance().updateConfig({ routineWindows });
+    set({ routineWindows });
   });
 
   mutationExecutors.set('edit-routine-schedule', async ({ routineWindows }: RoutineScheduleEditPayload) => {
@@ -574,17 +884,24 @@ function registerDefaultMutationExecutors(
     if (!group) {
       throw new Error('Risk group not found');
     }
-    await get().startAccessLease(groupId, durationMinutes);
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = await coordinator.dispatch({
+      type: 'START_ACCESS_LEASE',
+      groupId,
+      durationMinutes,
+      reason: 'emergency',
+      timestamp: Date.now(),
+    });
+    set({ rhythmState: runtime.state, emergencyModalVisible: false });
+    await get().refreshInsights();
   });
 
   mutationExecutors.set('reset-local-state', async () => {
-    await get().resetDemo();
+    await executeResetLocalState(get, set);
   });
 
   mutationExecutors.set('manage-accountability-partner', async (payload: ManagePartnerMutationPayload) => {
     const service = getAccountabilityService();
-    const state = get();
-    const nextPartners = [...state.accountability.partners];
 
     if (payload.action === 'create') {
       const password = consumeTransientSecret(payload.secretRef);
@@ -594,9 +911,10 @@ function registerDefaultMutationExecutors(
         password,
       });
 
+      const current = get();
       const nextAccountability: AccountabilitySettings = {
-        ...state.accountability,
-        partners: [...state.accountability.partners, partner],
+        ...current.accountability,
+        partners: [...current.accountability.partners, partner],
       };
 
       try {
@@ -613,10 +931,12 @@ function registerDefaultMutationExecutors(
       }
 
       set({ accountability: nextAccountability });
-      return;
+      return partner;
     }
 
     if (payload.action === 'update') {
+      const state = get();
+      const nextPartners = [...state.accountability.partners];
       const existing = nextPartners.find((p) => p.id === payload.partnerId);
       if (existing) {
         if (state.accountability.enabled && payload.updates.enabled === false && existing.enabled) {
@@ -635,11 +955,14 @@ function registerDefaultMutationExecutors(
           accountability: nextAccountability,
         });
         set({ accountability: nextAccountability });
+        return updated;
       }
-      return;
+      throw new Error('Partner not found');
     }
 
     if (payload.action === 'remove') {
+      const state = get();
+      const nextPartners = [...state.accountability.partners];
       const existing = nextPartners.find((p) => p.id === payload.partnerId);
       if (existing) {
         if (state.accountability.enabled) {
@@ -664,13 +987,14 @@ function registerDefaultMutationExecutors(
         } catch {
           // Non-fatal orphan cleanup failure.
         }
+        return;
       }
-      return;
+      throw new Error('Partner not found');
     }
 
     if (payload.action === 'replace-password') {
       const password = consumeTransientSecret(payload.secretRef);
-      const existing = nextPartners.find((p) => p.id === payload.partnerId);
+      const existing = get().accountability.partners.find((p) => p.id === payload.partnerId);
       if (!existing) {
         throw new Error('Partner not found');
       }
@@ -735,6 +1059,67 @@ function registerDefaultMutationExecutors(
     await get().checkPermissions();
     return { success: true };
   });
+}
+
+async function verifyAndExecuteAccountabilityTransition(
+  get: StoreGet,
+  set: StoreSet,
+  operation: 'enable-accountability' | 'disable-accountability',
+  partnerId: string,
+  password: string,
+  expectedEnabled: boolean
+): Promise<ApprovalResult> {
+  registerDefaultMutationExecutors(get, set);
+  const initial = get();
+  if (protectedMutationInFlight || initial.pendingApproval) {
+    return { ok: false, reason: 'approval-expired' };
+  }
+  if (initial.accountability.enabled !== expectedEnabled) {
+    return { ok: false, reason: 'approval-expired' };
+  }
+  if (operation === 'enable-accountability' && getEnabledPartners(initial.accountability).length === 0) {
+    return { ok: false, reason: 'no-enabled-partners' };
+  }
+  const partner = initial.accountability.partners.find((item) => item.id === partnerId);
+  if (!partner || !partner.enabled) {
+    return { ok: false, reason: partner ? 'partner-disabled' : 'partner-not-found' };
+  }
+
+  protectedMutationInFlight = true;
+  try {
+    const result = await getAccountabilityService().verifyApproval(
+      {
+        operation,
+        summary: operation === 'enable-accountability' ? 'Enable Accountability Mode' : 'Disable Accountability Mode',
+        partnerId,
+      },
+      password,
+      partner
+    );
+    if (!result.ok) return result;
+
+    const current = get();
+    const currentPartner = current.accountability.partners.find((item) => item.id === partnerId);
+    if (
+      current.pendingApproval ||
+      current.accountability.enabled !== expectedEnabled ||
+      !currentPartner?.enabled ||
+      currentPartner.credentialRef !== partner.credentialRef
+    ) {
+      return { ok: false, reason: 'approval-expired' };
+    }
+
+    await executeRegisteredMutation(
+      operation,
+      {},
+      { kind: 'partner-approved', partnerId, expectedEnabled },
+      get,
+      true
+    );
+    return result;
+  } finally {
+    protectedMutationInFlight = false;
+  }
 }
 
 export const usePrototypeStore = create<PrototypeState>((set, get) => ({
@@ -1146,21 +1531,12 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   startAccessLease: async (groupId: string, durationMinutes = EMERGENCY_ACCESS_MINUTES) => {
-    const coordinator = RhythmCoordinator.getInstance();
-    const runtime = await coordinator.dispatch({
-      type: 'START_ACCESS_LEASE',
-      groupId,
-      durationMinutes,
-      reason: 'emergency',
-      timestamp: Date.now(),
+    const group = get().riskGroups.find((item) => item.id === groupId);
+    await get().requestProtectedMutation({
+      operation: 'start-access-lease',
+      summary: `Allow ${group?.name ?? 'Risk Group'} for ${durationMinutes} minutes`,
+      payload: { groupId, durationMinutes },
     });
-
-    set({
-      rhythmState: runtime.state,
-      emergencyModalVisible: false,
-    });
-
-    await get().refreshInsights();
   },
 
   triggerEmergencyBypass: async () => {
@@ -1174,130 +1550,56 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   resetDemo: async () => {
-    transientApprovalSecrets.clear();
-    inFlightApprovalIds.clear();
-    registerDefaultMutationExecutors(get, set);
-    resetAccountabilityService();
-    const coordinator = RhythmCoordinator.getInstance();
-    const { storage, credentials } = getPlatformServices();
-    await storage.clearAll();
-
-    const existingPartners = get().accountability?.partners ?? [];
-    for (const partner of existingPartners) {
-      try {
-        await credentials.remove(partner.credentialRef);
-      } catch {
-        // Non-fatal credential cleanup.
-      }
-    }
-    if (credentials instanceof InMemorySecureCredentialProvider) {
-      credentials.clear();
-    }
-
-    coordinator.destroy();
-    const runtime = await coordinator.initialize();
-    const config = coordinator.getConfiguration();
-    const primaryCooldown = getPrimaryCooldown(runtime);
-
-    set({
-      rhythmState: runtime.state,
-      activeRiskGroupId:
-        primaryCooldown?.groupId ??
-        runtime.activeSession?.groupId ??
-        'social',
-      activeTimerEndsAt: primaryCooldown?.endsAt,
-      apps: config?.apps ?? [...initialApps],
-      riskGroups: config?.riskGroups ?? [...initialRiskGroups],
-      routineWindows: config?.routineWindows ?? [...initialRoutineWindows],
-      offlineActivities: [...defaultOfflineActivities],
-      accountability: config?.accountability ?? { enabled: false, partners: [] },
-      pendingApproval: null,
-      insightMetrics: getPlatformOS() === 'web' ? { ...initialInsightMetrics } : { ...emptyInsightMetrics },
-      weeklySummary: undefined,
-      todaySummary: undefined,
-      dailyUsageSnapshot: undefined,
-      groupUsageSnapshots: undefined,
-      dailyUsageLoading: false,
-      dailyUsageError: undefined,
-      insightDataState: getPlatformOS() === 'web' ? 'demo-web' : 'loading',
-      searchQuery: '',
-      filterClassification: 'all',
-      demoSwitcherVisible: false,
-      emergencyModalVisible: false,
-      timeSelector: { visible: false },
-      appEdit: { visible: false },
+    await get().requestProtectedMutation({
+      operation: 'reset-local-state',
+      summary: 'Reset all demo data, local configuration, and accountability',
+      payload: {},
     });
   },
 
   updateRiskGroupAllowance: async (groupId, nextMinutes) => {
-    const result = await RhythmCoordinator.getInstance().updateRiskGroupAllowance(groupId, nextMinutes);
-    if (result.ok) {
-      const config = RhythmCoordinator.getInstance().getConfig();
-      if (config) {
-        set({ riskGroups: [...config.riskGroups] });
-      }
-      await get().refreshDailyUsage();
+    const result = await get().requestProtectedMutation({
+      operation: 'change-daily-allowance',
+      summary: `Change ${get().riskGroups.find((group) => group.id === groupId)?.name ?? 'Risk Group'} allowance to ${nextMinutes} minutes`,
+      payload: { groupId, allowanceMinutes: nextMinutes },
+    });
+    if (result.status === 'pending-approval') {
+      return { ok: false, nextMinutes, groupId, reason: 'approval-required' };
     }
-    return result;
+    return result.result as GroupAllowanceEditResult & { groupId: string };
   },
 
   updateRiskGroupRecoveryActivity: async (groupId, activityId) => {
-    const result = await RhythmCoordinator.getInstance().updateRiskGroupRecoveryActivity(
-      groupId,
-      activityId,
-      Date.now(),
-      get().offlineActivities.map((a) => a.id)
-    );
-    if (result.ok) {
-      const config = RhythmCoordinator.getInstance().getConfig();
-      if (config) {
-        set({ riskGroups: [...config.riskGroups] });
-      }
-    }
-    return result;
+    const state = get();
+    const group = state.riskGroups.find((item) => item.id === groupId);
+    if (!group) return { ok: false, groupId, activityId };
+    const morning = state.routineWindows.find((window) => window.id === 'morning-buffer');
+    const evening = state.routineWindows.find((window) => window.id === 'evening-wind-down');
+    const draft: RiskGroupConfigurationDraft = {
+      name: group.name,
+      description: group.description ?? '',
+      allowanceMinutes: resolveGroupAllowanceMinutes(group),
+      cooldownMinutes: group.cooldownMinutes,
+      recoveryActivityId: activityId,
+      morningProtected: morning?.protectedGroupIds.includes(groupId) ?? false,
+      eveningProtected: evening?.protectedGroupIds.includes(groupId) ?? false,
+    };
+    const result = await get().saveRiskGroupConfiguration(groupId, draft);
+    return { ok: result.ok, groupId, activityId: result.ok ? activityId : resolveGroupRecoveryActivityId(group) };
   },
 
   updateAppClassification: async (appId, classification, riskGroupId) => {
     const state = get();
-    const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
-
-    const updatedApps = state.apps.map((app) => {
-      if (app.id === appId) {
-        // v1.0.2: classification + membership only. Per-app allowance no
-        // longer exists; group policy/guard/usage are never reset by moves.
-        const { dailyRiskAllowance: _removed, ...rest } = app;
-        void _removed;
-        return {
-          ...rest,
-          classification,
-          riskGroupId: targetGroupId,
-          dailyRiskAllowance: undefined,
-        };
-      }
-      return app;
-    });
-
-    // Maintain Invariant: if not 'risk', remove app from all risk groups
-    const updatedRiskGroups = state.riskGroups.map((group) => {
-      const hasApp = group.appIds.includes(appId);
-      const shouldHave = classification === 'risk' && group.id === targetGroupId;
-
-      if (shouldHave && !hasApp) {
-        return { ...group, appIds: [...group.appIds, appId] };
-      } else if (!shouldHave && hasApp) {
-        return { ...group, appIds: group.appIds.filter((id) => id !== appId) };
-      }
-      return group;
-    });
-
-    await RhythmCoordinator.getInstance().updateConfig({
-      apps: updatedApps,
-      riskGroups: updatedRiskGroups,
-    });
-
-    set({
-      apps: updatedApps,
-      riskGroups: updatedRiskGroups,
+    const app = state.apps.find((item) => item.id === appId);
+    const payload: AppPolicyPayload = {
+      appId,
+      classification,
+      riskGroupId: classification === 'risk' ? (riskGroupId || 'social') : undefined,
+    };
+    await get().requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: app ? `${app.name} classification change` : `Change app classification`,
+      payload,
     });
   },
 
@@ -1374,62 +1676,21 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     });
   },
 
-  toggleGroupProtection: (windowId, groupId, enabled) => {
-    set((state) => {
-      const updatedWindows = state.routineWindows.map((w) => {
-        if (w.id !== windowId) return w;
-
-        const currentIds = w.protectedGroupIds;
-        const nextIds = enabled
-          ? Array.from(new Set([...currentIds, groupId]))
-          : currentIds.filter((id) => id !== groupId);
-
-        return {
-          ...w,
-          protectedGroupIds: nextIds,
-        };
-      });
-
-      RhythmCoordinator.getInstance().updateConfig({
-        routineWindows: updatedWindows,
-      }).catch(() => {});
-
-      return { routineWindows: updatedWindows };
+  toggleGroupProtection: async (windowId, groupId, enabled) => {
+    await get().requestProtectedMutation({
+      operation: 'edit-risk-group-protection',
+      summary: `${enabled ? 'Protect' : 'Unprotect'} ${get().riskGroups.find((group) => group.id === groupId)?.name ?? 'Risk Group'}`,
+      payload: { windowId, groupId, enabled },
     });
   },
 
   createRiskGroup: async (input: CreateRiskGroupInput) => {
-    const name = input.name.trim();
-    if (!name) throw new Error('risk-group-name-required');
-
-    const id = createUniqueGroupId(
-      name,
-      get().riskGroups.map((g) => g.id)
-    );
-
-    const allowanceMinutes = input.allowanceMinutes ?? 30;
-    const cooldownMinutes = input.cooldownMinutes ?? 60;
-
-    const next: RiskGroup = {
-      id,
-      name,
-      description: input.description?.trim() || 'Custom protected attention group',
-      iconName: 'folder-heart',
-      iconColor: '#164B38',
-      iconBg: '#E8EFE5',
-      appIds: [],
-      allowanceMinutes,
-      cooldownMinutes,
-      recoveryActivityId: 'walk',
-      currentSessionMinutes: 0,
-      isBufferingToday: false,
-      origin: 'custom',
-    };
-
-    const nextGroups = [...get().riskGroups, next];
-    await RhythmCoordinator.getInstance().updateConfig({ riskGroups: nextGroups });
-    set({ riskGroups: nextGroups });
-    return id;
+    const result = await get().requestProtectedMutation({
+      operation: 'create-risk-group',
+      summary: `Create Risk Group “${input.name.trim()}”`,
+      payload: clonePayload(input),
+    });
+    return result.status === 'executed' ? result.result as string : 'pending';
   },
 
   saveRiskGroupConfiguration: async (
@@ -1441,101 +1702,15 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     if (!existing) {
       return { ok: false, groupId, reason: 'group-not-found' };
     }
-
-    const name = draft.name.trim();
-    if (!name) {
-      return { ok: false, groupId, reason: 'name-required' };
-    }
-
-    const currentAllowance = resolveGroupAllowanceMinutes(existing);
-    const allowanceChanged = draft.allowanceMinutes !== currentAllowance;
-    const todayKey = getLocalDateKey();
-
-    if (allowanceChanged) {
-      const validation = validateGroupAllowanceEdit({
-        currentMinutes: currentAllowance,
-        requestedMinutes: draft.allowanceMinutes,
-        lastEditedDateKey: existing.lastAllowanceEditedDateKey,
-        todayDateKey: todayKey,
-      });
-      if (!validation.ok) {
-        return {
-          ok: false,
-          groupId,
-          reason: validation.reason ?? 'unavailable',
-        };
-      }
-    }
-
-    const updatedRiskGroups = state.riskGroups.map((group) => {
-      if (group.id !== groupId) return group;
-      const nextGroup: RiskGroup = {
-        ...group,
-        name,
-        description: draft.description.trim(),
-        allowanceMinutes: draft.allowanceMinutes,
-        cooldownMinutes: draft.cooldownMinutes,
-        recoveryActivityId: draft.recoveryActivityId,
-        lastAllowanceEditedDateKey: allowanceChanged ? todayKey : group.lastAllowanceEditedDateKey,
-      };
-      if (
-        group.sessionThresholdMinutes !== undefined ||
-        (draft as any).sessionThresholdMinutes !== undefined
-      ) {
-        nextGroup.sessionThresholdMinutes = draft.allowanceMinutes;
-      }
-      return nextGroup;
+    const result = await get().requestProtectedMutation({
+      operation: 'edit-risk-group',
+      summary: `Update ${existing.name}`,
+      payload: { groupId, draft: clonePayload(draft) },
     });
-
-    const updatedWindows = state.routineWindows.map((win) => {
-      let protectedGroupIds = [...win.protectedGroupIds];
-      if (win.id === 'morning-buffer') {
-        if (draft.morningProtected && !protectedGroupIds.includes(groupId)) {
-          protectedGroupIds.push(groupId);
-        } else if (!draft.morningProtected && protectedGroupIds.includes(groupId)) {
-          protectedGroupIds = protectedGroupIds.filter((id) => id !== groupId);
-        }
-      } else if (win.id === 'evening-wind-down') {
-        if (draft.eveningProtected && !protectedGroupIds.includes(groupId)) {
-          protectedGroupIds.push(groupId);
-        } else if (!draft.eveningProtected && protectedGroupIds.includes(groupId)) {
-          protectedGroupIds = protectedGroupIds.filter((id) => id !== groupId);
-        }
-      }
-      return { ...win, protectedGroupIds };
-    });
-
-    try {
-      await RhythmCoordinator.getInstance().updateConfig({
-        riskGroups: updatedRiskGroups,
-        routineWindows: updatedWindows,
-      });
-    } catch {
-      return { ok: false, groupId, reason: 'persistence-failed' };
+    if (result.status === 'pending-approval') {
+      return { ok: false, groupId, reason: 'approval-required' };
     }
-
-    set({
-      riskGroups: updatedRiskGroups,
-      routineWindows: updatedWindows,
-    });
-
-    if (allowanceChanged) {
-      try {
-        const { storage } = getPlatformServices();
-        await storage.appendHistoryEvent({
-          type: 'group-allowance-edited',
-          groupId,
-          previousMinutes: currentAllowance,
-          nextMinutes: draft.allowanceMinutes,
-          timestamp: Date.now(),
-        });
-      } catch {
-        // Configuration has already committed.
-        // History failure must not report the save itself as failed.
-      }
-    }
-
-    return { ok: true, groupId };
+    return result.result as SaveRiskGroupResult;
   },
 
   saveRiskGroup: async (groupId: string, patch: RiskGroupPatch) => {
@@ -1583,118 +1758,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     if (!target) {
       return { ok: false, reason: 'group-not-found' };
     }
-
-    const isSeeded = target.origin === 'seeded' || target.id === 'social' || target.id === 'entertainment';
-    if (isSeeded) {
-      return { ok: false, reason: 'cannot-delete-seeded-group' };
-    }
-
-    const coordinator = RhythmCoordinator.getInstance();
-    const runtime = coordinator.getRuntimeSnapshot();
-
-    const hasActiveCooldown = Boolean(runtime?.activeCooldowns?.[groupId]);
-    const hasActiveSession = runtime?.activeSession?.groupId === groupId;
-
-    if (hasActiveCooldown || hasActiveSession) {
-      return {
-        ok: false,
-        reason: 'active-runtime',
-      };
-    }
-
-    // Find apps that belong to this group (by app.riskGroupId or target.appIds)
-    const members = state.apps.filter(
-      (a) => a.riskGroupId === groupId || target.appIds.includes(a.id)
-    );
-
-    if (members.length > 0) {
-      if (!replacementGroupId) {
-        return { ok: false, reason: 'replacement-required' };
-      }
-      if (replacementGroupId === groupId) {
-        return { ok: false, reason: 'invalid-replacement-group' };
-      }
-      const replacement = state.riskGroups.find((g) => g.id === replacementGroupId);
-      if (!replacement) {
-        return { ok: false, reason: 'invalid-replacement-group' };
-      }
-    } else if (replacementGroupId) {
-      if (replacementGroupId === groupId) {
-        return { ok: false, reason: 'invalid-replacement-group' };
-      }
-      const replacement = state.riskGroups.find((g) => g.id === replacementGroupId);
-      if (!replacement) {
-        return { ok: false, reason: 'invalid-replacement-group' };
-      }
-    }
-
-    // 1. Reassign member apps
-    const memberAppIds = new Set(members.map((a) => a.id));
-    const updatedApps = state.apps.map((app) => {
-      if (memberAppIds.has(app.id)) {
-        return {
-          ...app,
-          riskGroupId: replacementGroupId,
-        };
-      }
-      return app;
+    const result = await get().requestProtectedMutation({
+      operation: 'delete-risk-group',
+      summary: `Delete ${target.name}`,
+      payload: { groupId, replacementGroupId },
     });
-
-    // 2. Remove group from riskGroups & append to replacement group appIds
-    const updatedRiskGroups = state.riskGroups
-      .filter((g) => g.id !== groupId)
-      .map((g) => {
-        if (replacementGroupId && g.id === replacementGroupId) {
-          const combinedAppIds = Array.from(
-            new Set([...g.appIds, ...members.map((a) => a.id)])
-          );
-          return { ...g, appIds: combinedAppIds };
-        }
-        return g;
-      });
-
-    // 3. Remove group id from routine window protection arrays
-    const updatedWindows = state.routineWindows.map((w) => ({
-      ...w,
-      protectedGroupIds: w.protectedGroupIds.filter((id) => id !== groupId),
-    }));
-
-    // 4. Safely reconcile activeRiskGroupId
-    let nextActiveRiskGroupId = state.activeRiskGroupId;
-    if (nextActiveRiskGroupId === groupId) {
-      nextActiveRiskGroupId = replacementGroupId || updatedRiskGroups[0]?.id || 'social';
-    }
-
-    // 5. Clean up snapshots
-    let updatedSnapshots = state.groupUsageSnapshots;
-    if (updatedSnapshots && updatedSnapshots[groupId]) {
-      updatedSnapshots = { ...updatedSnapshots };
-      delete updatedSnapshots[groupId];
-    }
-
-    // Persist one coherent config update
-    await RhythmCoordinator.getInstance().updateConfig({
-      apps: updatedApps,
-      riskGroups: updatedRiskGroups,
-      routineWindows: updatedWindows,
-    });
-
-    // Dispatch RISK_GROUP_DELETED to engine to purge active cooldowns, leases, usage, and session
-    await RhythmCoordinator.getInstance().dispatch({
-      type: 'RISK_GROUP_DELETED',
-      groupId,
-      timestamp: Date.now(),
-    });
-
-    set({
-      apps: updatedApps,
-      riskGroups: updatedRiskGroups,
-      routineWindows: updatedWindows,
-      activeRiskGroupId: nextActiveRiskGroupId,
-      groupUsageSnapshots: updatedSnapshots,
-    });
-
-    return { ok: true };
+    if (result.status === 'pending-approval') return { ok: false, reason: 'approval-required' };
+    return result.result as DeleteRiskGroupResult;
   },
 
   addNewRiskGroup: async (name: string, description: string): Promise<string> => {
@@ -1802,19 +1872,26 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   ): Promise<{ status: 'executed' | 'pending-approval'; result?: unknown }> => {
     registerDefaultMutationExecutors(get, set);
     const state = get();
+    if (!PROTECTED_OPERATIONS.includes(mutation.operation)) {
+      throw new Error('Unknown protected mutation operation');
+    }
+    if (protectedMutationInFlight) throw new Error('A protected change is already being applied');
+    if (state.pendingApproval) throw new Error('Another protected change is already awaiting approval');
+
+    const immutablePayload = freezePayload(clonePayload(mutation.payload));
     const requires = requiresPartnerApproval(state.accountability, mutation.operation);
     if (!requires) {
-      const execResult = await executeRegisteredMutation(mutation.operation, mutation.payload);
+      const execResult = await executeRegisteredMutation(
+        mutation.operation,
+        immutablePayload,
+        { kind: 'disabled-mode' },
+        get
+      );
       return { status: 'executed', result: execResult };
     }
 
-    const currentPending = state.pendingApproval;
-    if (currentPending) {
-      throw new Error('Another protected change is already awaiting approval');
-    }
-
     const enabledPartners = getEnabledPartners(state.accountability);
-    if (enabledPartners.length === 0 && mutation.operation !== 'enable-accountability') {
+    if (enabledPartners.length === 0) {
       throw new Error('No enabled accountability partners available to approve this operation');
     }
 
@@ -1822,8 +1899,10 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       id: `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       operation: mutation.operation,
       summary: mutation.summary,
-      payload: mutation.payload,
+      payload: immutablePayload,
       requestedAt: Date.now(),
+      authorizationSnapshot: captureProtectedStateSnapshot(state),
+      accountabilityEnabledAtRequest: state.accountability.enabled,
     };
 
     set({ pendingApproval: pending });
@@ -1837,7 +1916,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     registerDefaultMutationExecutors(get, set);
     const state = get();
     const pending = state.pendingApproval;
-    if (!pending || inFlightApprovalIds.has(pending.id)) {
+    if (!pending || inFlightApprovalIds.has(pending.id) || protectedMutationInFlight) {
       return { ok: false, reason: 'partner-not-found' };
     }
 
@@ -1860,16 +1939,51 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         return result;
       }
 
-      // Double-submit safety: atomically clear pendingApproval before running executor
+      const current = get();
+      const currentPartner = current.accountability.partners.find((item) => item.id === partnerId);
+      if (current.pendingApproval?.id !== pending.id || !currentPartner?.enabled || currentPartner.credentialRef !== partner?.credentialRef) {
+        cleanupPendingApprovalSecrets(pending);
+        if (current.pendingApproval?.id === pending.id) set({ pendingApproval: null });
+        return { ok: false, reason: 'approval-expired' };
+      }
+      if (current.accountability.enabled !== pending.accountabilityEnabledAtRequest) {
+        cleanupPendingApprovalSecrets(pending);
+        set({ pendingApproval: null });
+        return { ok: false, reason: 'approval-expired' };
+      }
+      if (
+        pending.authorizationSnapshot !== undefined &&
+        pending.authorizationSnapshot !== captureProtectedStateSnapshot(current)
+      ) {
+        cleanupPendingApprovalSecrets(pending);
+        set({ pendingApproval: null });
+        throw new Error('Protected mutation target changed while approval was pending. Review and submit the change again.');
+      }
+
+      // Double-submit safety: lock execution and clear the pending request before
+      // entering the internal executor.
+      protectedMutationInFlight = true;
       set({ pendingApproval: null });
 
       try {
-        await executeRegisteredMutation(pending.operation, pending.payload);
+        await executeRegisteredMutation(
+          pending.operation,
+          pending.payload,
+          {
+            kind: 'partner-approved',
+            partnerId,
+            expectedEnabled: pending.accountabilityEnabledAtRequest ?? true,
+          },
+          get,
+          true
+        );
         cleanupPendingApprovalSecrets(pending);
         return result;
       } catch (error) {
         cleanupPendingApprovalSecrets(pending);
         throw error;
+      } finally {
+        protectedMutationInFlight = false;
       }
     } finally {
       inFlightApprovalIds.delete(pending.id);
@@ -1888,63 +2002,35 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     relationshipLabel?: string;
     password: string;
   }): Promise<AccountabilityPartner> => {
-    const state = get();
-    if (state.accountability.enabled) {
-      const secretRef = createTransientSecretRef(params.password);
-      try {
-        const result = await get().requestProtectedMutation({
-          operation: 'manage-accountability-partner',
-          summary: `Add accountability partner "${params.name}"`,
-          payload: {
-            action: 'create',
-            name: params.name,
-            relationshipLabel: params.relationshipLabel,
-            secretRef,
-          } satisfies ManagePartnerMutationPayload,
-        });
-
-        if (result.status !== 'pending-approval') {
-          deleteTransientSecret(secretRef);
-        }
-      } catch (error) {
+    const secretRef = createTransientSecretRef(params.password);
+    try {
+      const result = await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Add accountability partner "${params.name}"`,
+        payload: {
+          action: 'create',
+          name: params.name,
+          relationshipLabel: params.relationshipLabel,
+          secretRef,
+        } satisfies ManagePartnerMutationPayload,
+      });
+      if (result.status === 'executed') {
         deleteTransientSecret(secretRef);
-        throw error;
+        return result.result as AccountabilityPartner;
       }
-
-      const now = Date.now();
       return {
         id: 'pending',
         name: params.name,
         relationshipLabel: params.relationshipLabel,
         credentialRef: 'pending',
-        createdAt: now,
-        updatedAt: now,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
         enabled: true,
       };
-    }
-
-    const service = getAccountabilityService();
-    const partner = await service.createPartner(params);
-    const nextAccountability: AccountabilitySettings = {
-      ...state.accountability,
-      partners: [...state.accountability.partners, partner],
-    };
-
-    try {
-      await RhythmCoordinator.getInstance().updateConfig({
-        accountability: nextAccountability,
-      });
     } catch (error) {
-      try {
-        await service.removePartner(partner);
-      } catch {
-        // Best-effort rollback.
-      }
+      deleteTransientSecret(secretRef);
       throw error;
     }
-
-    set({ accountability: nextAccountability });
-    return partner;
   },
 
   updateAccountabilityPartner: async (
@@ -1960,40 +2046,18 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     if (!existing) {
       throw new Error('Partner not found');
     }
-
-    if (state.accountability.enabled) {
-      if (updates.enabled === false && existing.enabled) {
-        const remainingEnabled = state.accountability.partners.filter((p) => p.id !== partnerId && p.enabled);
-        if (remainingEnabled.length === 0) {
-          throw new Error('Cannot disable the last enabled partner while Accountability Mode is active.');
-        }
+    if (state.accountability.enabled && existing.enabled && updates.enabled === false) {
+      const remainingEnabled = state.accountability.partners.filter((partner) => partner.id !== partnerId && partner.enabled);
+      if (remainingEnabled.length === 0) {
+        throw new Error('Cannot disable the last enabled partner while Accountability Mode is active.');
       }
-      await get().requestProtectedMutation({
-        operation: 'manage-accountability-partner',
-        summary: `Update partner "${existing.name}"`,
-        payload: {
-          action: 'update',
-          partnerId,
-          updates,
-        } satisfies ManagePartnerMutationPayload,
-      });
-      return existing;
     }
-
-    const service = getAccountabilityService();
-    const updated = service.updatePartnerMetadata(existing, updates);
-    const nextAccountability: AccountabilitySettings = {
-      ...state.accountability,
-      partners: state.accountability.partners.map((p) =>
-        p.id === partnerId ? updated : p
-      ),
-    };
-
-    await RhythmCoordinator.getInstance().updateConfig({
-      accountability: nextAccountability,
+    const result = await get().requestProtectedMutation({
+      operation: 'manage-accountability-partner',
+      summary: `Update partner "${existing.name}"`,
+      payload: { action: 'update', partnerId, updates } satisfies ManagePartnerMutationPayload,
     });
-    set({ accountability: nextAccountability });
-    return updated;
+    return result.status === 'executed' ? result.result as AccountabilityPartner : existing;
   },
 
   deleteAccountabilityPartner: async (partnerId: string): Promise<void> => {
@@ -2002,40 +2066,18 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     if (!existing) {
       throw new Error('Partner not found');
     }
-
-    if (state.accountability.enabled) {
-      const remainingEnabled = state.accountability.partners.filter((p) => p.id !== partnerId && p.enabled);
+    if (state.accountability.enabled && existing.enabled) {
+      const remainingEnabled = state.accountability.partners.filter((partner) => partner.id !== partnerId && partner.enabled);
       if (remainingEnabled.length === 0) {
         throw new Error('Cannot remove the last enabled partner while Accountability Mode is active.');
       }
-      await get().requestProtectedMutation({
-        operation: 'manage-accountability-partner',
-        summary: `Remove accountability partner "${existing.name}"`,
-        payload: {
-          action: 'remove',
-          partnerId,
-        } satisfies ManagePartnerMutationPayload,
-      });
-      return;
     }
 
-    const nextAccountability: AccountabilitySettings = {
-      ...state.accountability,
-      partners: state.accountability.partners.filter((p) => p.id !== partnerId),
-    };
-
-    await RhythmCoordinator.getInstance().updateConfig({
-      accountability: nextAccountability,
+    await get().requestProtectedMutation({
+      operation: 'manage-accountability-partner',
+      summary: `Remove accountability partner "${existing.name}"`,
+      payload: { action: 'remove', partnerId } satisfies ManagePartnerMutationPayload,
     });
-    set({ accountability: nextAccountability });
-
-    // Credential cleanup is secondary (best-effort)
-    try {
-      const service = getAccountabilityService();
-      await service.removePartner(existing);
-    } catch {
-      // Non-fatal orphan cleanup failure.
-    }
   },
 
   replaceAccountabilityPartnerPassword: async (
@@ -2048,109 +2090,32 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       throw new Error('Partner not found');
     }
 
-    if (state.accountability.enabled) {
-      const secretRef = createTransientSecretRef(newPassword);
-      try {
-        const result = await get().requestProtectedMutation({
-          operation: 'manage-accountability-partner',
-          summary: `Change password for partner "${existing.name}"`,
-          payload: {
-            action: 'replace-password',
-            partnerId,
-            secretRef,
-          } satisfies ManagePartnerMutationPayload,
-        });
-
-        if (result.status !== 'pending-approval') {
-          deleteTransientSecret(secretRef);
-        }
-      } catch (error) {
-        deleteTransientSecret(secretRef);
-        throw error;
-      }
-      return;
+    const secretRef = createTransientSecretRef(newPassword);
+    try {
+      const result = await get().requestProtectedMutation({
+        operation: 'manage-accountability-partner',
+        summary: `Change password for partner "${existing.name}"`,
+        payload: { action: 'replace-password', partnerId, secretRef } satisfies ManagePartnerMutationPayload,
+      });
+      if (result.status === 'executed') deleteTransientSecret(secretRef);
+    } catch (error) {
+      deleteTransientSecret(secretRef);
+      throw error;
     }
-
-    const service = getAccountabilityService();
-    await service.replacePartnerPassword(existing, newPassword);
   },
 
   enableAccountability: async (
     partnerId: string,
     password: string
   ): Promise<ApprovalResult> => {
-    const state = get();
-    const enabledPartners = getEnabledPartners(state.accountability);
-    if (enabledPartners.length === 0) {
-      return { ok: false, reason: 'no-enabled-partners' };
-    }
-
-    const partner = state.accountability.partners.find((p) => p.id === partnerId);
-    if (!partner || !partner.enabled) {
-      return { ok: false, reason: partner ? 'partner-disabled' : 'partner-not-found' };
-    }
-
-    const service = getAccountabilityService();
-    const result = await service.verifyApproval(
-      {
-        operation: 'enable-accountability',
-        summary: 'Enable Accountability Mode',
-        partnerId,
-      },
-      password,
-      partner
-    );
-
-    if (result.ok) {
-      const nextAccountability: AccountabilitySettings = {
-        ...state.accountability,
-        enabled: true,
-      };
-      await RhythmCoordinator.getInstance().updateConfig({
-        accountability: nextAccountability,
-      });
-      set({ accountability: nextAccountability });
-    }
-
-    return result;
+    return verifyAndExecuteAccountabilityTransition(get, set, 'enable-accountability', partnerId, password, false);
   },
 
   disableAccountability: async (
     partnerId: string,
     password: string
   ): Promise<ApprovalResult> => {
-    const state = get();
-    if (!state.accountability.enabled) {
-      return { ok: true, partnerId };
-    }
-
-    const partner = state.accountability.partners.find((p) => p.id === partnerId);
-    if (!partner || !partner.enabled) {
-      return { ok: false, reason: partner ? 'partner-disabled' : 'partner-not-found' };
-    }
-
-    const service = getAccountabilityService();
-    const result = await service.verifyApproval(
-      {
-        operation: 'disable-accountability',
-        summary: 'Disable Accountability Mode',
-        partnerId,
-      },
-      password,
-      partner
-    );
-
-    if (result.ok) {
-      const nextAccountability: AccountabilitySettings = {
-        ...state.accountability,
-        enabled: false,
-      };
-      await RhythmCoordinator.getInstance().updateConfig({
-        accountability: nextAccountability,
-      });
-      set({ accountability: nextAccountability });
-    }
-
-    return result;
+    if (!get().accountability.enabled) return { ok: true, partnerId };
+    return verifyAndExecuteAccountabilityTransition(get, set, 'disable-accountability', partnerId, password, true);
   },
 }));

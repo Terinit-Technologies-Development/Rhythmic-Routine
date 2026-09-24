@@ -350,7 +350,7 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
       assert.equal(allowanceRes.ok, true);
 
       // 2. Move the app to another group; group policy/guard must survive the move
-      await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'risk', 'custom-group');
+      await usePrototypeStore.getState().updateAppClassification('com.instagram.android', 'risk', 'entertainment');
 
       const social = coordinator.getConfiguration()?.riskGroups.find((g) => g.id === 'social')!;
       assert.equal(social.allowanceMinutes, 45);
@@ -358,11 +358,11 @@ describe('Pass 03 — Daily Allowance UX, Native Ledger Hydration & Real Insight
 
       const savedApp = coordinator.getConfiguration()?.apps.find((a) => a.id === 'com.instagram.android')!;
       assert.equal(savedApp.dailyRiskAllowance, undefined);
-      assert.equal(savedApp.riskGroupId, 'custom-group');
+      assert.equal(savedApp.riskGroupId, 'entertainment');
 
       const storeApp = usePrototypeStore.getState().apps.find((a) => a.id === 'com.instagram.android')!;
       assert.equal(storeApp.dailyRiskAllowance, undefined);
-      assert.equal(storeApp.riskGroupId, 'custom-group');
+      assert.equal(storeApp.riskGroupId, 'entertainment');
       coordinator.destroy();
     });
 

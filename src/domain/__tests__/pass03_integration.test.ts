@@ -9,6 +9,7 @@ import {
   __getFallbackGroupRevisionForTests,
   __resetFallbackRevisionsForTests,
 } from '../../../modules/rhythm-device/src/RhythmDeviceModule';
+import RhythmDeviceModule from '../../../modules/rhythm-device';
 import { AppPolicyPayload } from '../accountability/types';
 import { buildAppPolicySummary, buildRiskGroupEditSummary } from '../accountability/policy';
 import { RiskGroupConfigurationDraft } from '../../types/domain';
@@ -21,6 +22,8 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     }
     __resetFallbackRevisionsForTests();
     resetAccountabilityService();
+    usePrototypeStore.getState().cancelPendingApproval();
+    usePrototypeStore.setState({ accountability: { enabled: false, partners: [] } });
     await usePrototypeStore.getState().resetDemo();
   });
 
@@ -382,8 +385,19 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     });
     assert.equal(res.status, 'pending-approval');
 
-    // Approve reset
-    await store.approveProtectedMutation(partner.id, 'password123');
+    // Approve reset and verify platform-owned Pass 03 enforcement state is cleared.
+    const resetNativeState = RhythmDeviceModule.resetEnforcementState;
+    let nativeResetCount = 0;
+    RhythmDeviceModule.resetEnforcementState = async () => {
+      nativeResetCount += 1;
+      return true;
+    };
+    try {
+      await store.approveProtectedMutation(partner.id, 'password123');
+    } finally {
+      RhythmDeviceModule.resetEnforcementState = resetNativeState;
+    }
+    assert.equal(nativeResetCount, 1);
 
     const state = usePrototypeStore.getState();
     assert.equal(state.accountability.enabled, false);
@@ -392,6 +406,28 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     if (credentials instanceof InMemorySecureCredentialProvider) {
       assert.equal(credentials.size, 0);
     }
+  });
+
+  test('10a. reset aborts before deleting local and credential state when native reset fails', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Retain on native failure',
+      password: 'password123',
+    });
+    const { credentials } = getPlatformServices();
+    const resetNativeState = RhythmDeviceModule.resetEnforcementState;
+    RhythmDeviceModule.resetEnforcementState = async () => false;
+    try {
+      await assert.rejects(store.resetDemo(), /Unable to clear native enforcement state/);
+    } finally {
+      RhythmDeviceModule.resetEnforcementState = resetNativeState;
+    }
+
+    assert.equal(usePrototypeStore.getState().accountability.partners[0]?.id, partner.id);
+    if (credentials instanceof InMemorySecureCredentialProvider) {
+      assert.equal(credentials.has(partner.credentialRef), true);
+    }
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
   });
 
   test('11. disabling accountability is gated', async () => {
@@ -892,5 +928,109 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
 
     const coordCommitted = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'evening-wind-down');
     assert.equal(coordCommitted?.startTime, '21:15');
+  });
+
+  test('26. direct public mutation commands use the same approval gateway', async () => {
+    const store = usePrototypeStore.getState();
+    const disposableGroupId = await store.createRiskGroup({ name: 'Direct delete guard' });
+    const partner = await store.createAccountabilityPartner({ name: 'Alice', password: 'password123' });
+    await store.enableAccountability(partner.id, 'password123');
+
+    await store.updateAppClassification('instagram', 'normal');
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'change-app-classification');
+    assert.equal(usePrototypeStore.getState().apps.find((app) => app.id === 'instagram')?.classification, 'risk');
+    store.cancelPendingApproval();
+
+    const allowanceResult = await store.updateRiskGroupAllowance('social', 45);
+    assert.equal(allowanceResult.reason, 'approval-required');
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'change-daily-allowance');
+    store.cancelPendingApproval();
+
+    assert.equal(await store.createRiskGroup({ name: 'Direct create guard' }), 'pending');
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'create-risk-group');
+    store.cancelPendingApproval();
+
+    const deleteResult = await store.deleteRiskGroup(disposableGroupId);
+    assert.equal(deleteResult.ok, false);
+    if (!deleteResult.ok) assert.equal(deleteResult.reason, 'approval-required');
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'delete-risk-group');
+    store.cancelPendingApproval();
+
+    await store.toggleGroupProtection('morning-buffer', 'social', false);
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'edit-risk-group-protection');
+    store.cancelPendingApproval();
+
+    await store.updateRoutineWindow('morning-buffer', { endTime: '08:15' });
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'edit-routine-schedule');
+    store.cancelPendingApproval();
+
+    const social = usePrototypeStore.getState().riskGroups.find((group) => group.id === 'social')!;
+    const saveResult = await store.saveRiskGroupConfiguration('social', {
+      name: social.name,
+      description: social.description,
+      allowanceMinutes: social.allowanceMinutes ?? 30,
+      cooldownMinutes: social.cooldownMinutes + 15,
+      recoveryActivityId: social.recoveryActivityId ?? 'walk',
+      morningProtected: usePrototypeStore.getState().routineWindows
+        .find((window) => window.id === 'morning-buffer')!.protectedGroupIds.includes('social'),
+      eveningProtected: usePrototypeStore.getState().routineWindows
+        .find((window) => window.id === 'evening-wind-down')!.protectedGroupIds.includes('social'),
+    });
+    assert.equal(saveResult.ok, false);
+    if (!saveResult.ok) assert.equal(saveResult.reason, 'approval-required');
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'edit-risk-group');
+    store.cancelPendingApproval();
+
+    const recoveryResult = await store.updateRiskGroupRecoveryActivity('social', 'stretch');
+    assert.equal(recoveryResult.ok, false);
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'edit-risk-group');
+    store.cancelPendingApproval();
+
+    await store.startAccessLease('social', 5);
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'start-access-lease');
+    store.cancelPendingApproval();
+
+    await store.resetDemo();
+    assert.equal(usePrototypeStore.getState().pendingApproval?.operation, 'reset-local-state');
+    assert.equal(usePrototypeStore.getState().accountability.enabled, true);
+    store.cancelPendingApproval();
+  });
+
+  test('27. approval payload is immutable and stale protected state is rejected at execution', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({ name: 'Alice', password: 'password123' });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const payload: AppPolicyPayload = { appId: 'instagram', classification: 'normal' };
+    await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: 'Change Instagram to normal',
+      payload,
+    });
+    payload.classification = 'essential';
+    assert.equal(
+      (usePrototypeStore.getState().pendingApproval?.payload as AppPolicyPayload).classification,
+      'normal'
+    );
+    await store.approveProtectedMutation(partner.id, 'password123');
+    assert.equal(usePrototypeStore.getState().apps.find((app) => app.id === 'instagram')?.classification, 'normal');
+
+    await store.requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary: 'Restore Instagram to risk',
+      payload: { appId: 'instagram', classification: 'risk', riskGroupId: 'social' },
+    });
+    const windows = usePrototypeStore.getState().routineWindows;
+    usePrototypeStore.setState({
+      routineWindows: windows.map((window) => window.id === 'morning-buffer'
+        ? { ...window, startTime: '06:45' }
+        : window),
+    });
+    await assert.rejects(
+      store.approveProtectedMutation(partner.id, 'password123'),
+      /changed while approval was pending/
+    );
+    assert.equal(usePrototypeStore.getState().pendingApproval, null);
+    assert.equal(usePrototypeStore.getState().apps.find((app) => app.id === 'instagram')?.classification, 'normal');
   });
 });

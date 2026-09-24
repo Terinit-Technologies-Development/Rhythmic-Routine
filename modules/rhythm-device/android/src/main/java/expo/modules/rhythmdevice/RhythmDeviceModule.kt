@@ -147,6 +147,16 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
+    AsyncFunction("resetEnforcementState") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .clear()
+        .apply()
+      RhythmEnforcementService.instance?.onNativePolicyReset()
+      return@AsyncFunction true
+    }
+
     AsyncFunction("setRiskGroupPolicies") { policiesList: List<Map<String, Any>> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       val parsedPolicies = policiesList.mapNotNull { item ->

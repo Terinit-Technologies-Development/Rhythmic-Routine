@@ -27,6 +27,8 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
       credentials.clear();
     }
     resetAccountabilityService();
+    usePrototypeStore.getState().cancelPendingApproval();
+    usePrototypeStore.setState({ accountability: { enabled: false, partners: [] } });
     await usePrototypeStore.getState().resetDemo();
   });
 
@@ -215,6 +217,31 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     if (!nextFail.ok) {
       assert.equal(nextFail.reason, 'invalid-password');
       assert.equal(nextFail.remainingAttempts, 4);
+    }
+  });
+
+  test('7a. approval lockout survives service recreation through the credential provider', async () => {
+    const service = getAccountabilityService();
+    const partner = await service.createPartner({ name: 'Persistent lockout', password: 'persistent-pass' });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await service.verifyApproval(
+        { operation: 'disable-accountability', summary: 'Disable', partnerId: partner.id },
+        'incorrect-password',
+        partner
+      );
+    }
+
+    resetAccountabilityService();
+    const restartedService = getAccountabilityService();
+    const afterRestart = await restartedService.verifyApproval(
+      { operation: 'disable-accountability', summary: 'Disable', partnerId: partner.id },
+      'persistent-pass',
+      partner
+    );
+    assert.equal(afterRestart.ok, false);
+    if (!afterRestart.ok) {
+      assert.equal(afterRestart.reason, 'rate-limited');
+      assert.ok(afterRestart.lockoutEndsAt && afterRestart.lockoutEndsAt > Date.now());
     }
   });
 
