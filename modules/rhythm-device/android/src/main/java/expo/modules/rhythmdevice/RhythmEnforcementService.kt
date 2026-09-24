@@ -1214,6 +1214,30 @@ class RhythmEnforcementService : AccessibilityService() {
                 .commit()
         }
 
+        internal fun attentionMutationPreferenceValues(
+            ledger: Map<String, NativeGroupAllowanceUsage>,
+            cooldowns: List<NativeCooldownPolicy>,
+            state: NativeDailyAttentionExchangeState?,
+            gates: Map<String, NativeReadingGate>,
+            existingAccountedWatermarks: Map<String, Long>,
+            accountedWatermarkUpdates: Map<String, Long> = emptyMap(),
+        ): Map<String, String> = mutableMapOf(
+            RhythmNativePolicyKeys.GROUP_USAGE_LEDGER_JSON to serializeGroupUsageLedger(ledger),
+            RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON to serializeCooldownPolicies(cooldowns),
+            RhythmNativePolicyKeys.READING_GATES_JSON to serializeReadingGates(gates),
+        ).apply {
+            if (state != null) {
+                put(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON, serializeAttentionState(state))
+            }
+            if (accountedWatermarkUpdates.isNotEmpty()) {
+                val watermarks = NativeGroupUsageAccounting.withWatermarkUpdates(
+                    existingAccountedWatermarks,
+                    accountedWatermarkUpdates,
+                )
+                put(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, serializeAccountedWatermarks(watermarks))
+            }
+        }
+
         private fun persistAttentionMutation(
             context: Context,
             ledger: Map<String, NativeGroupAllowanceUsage>,
@@ -1223,18 +1247,20 @@ class RhythmEnforcementService : AccessibilityService() {
             accountedWatermarkUpdates: Map<String, Long> = emptyMap(),
         ): Boolean {
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            val preferenceValues = attentionMutationPreferenceValues(
+                ledger = ledger,
+                cooldowns = cooldowns,
+                state = state,
+                gates = gates,
+                existingAccountedWatermarks = if (accountedWatermarkUpdates.isEmpty()) {
+                    emptyMap()
+                } else {
+                    loadAccountedWatermarks(context)
+                },
+                accountedWatermarkUpdates = accountedWatermarkUpdates,
+            )
             val editor = prefs.edit()
-                .putString(RhythmNativePolicyKeys.GROUP_USAGE_LEDGER_JSON, serializeGroupUsageLedger(ledger))
-                .putString(RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON, serializeCooldownPolicies(cooldowns))
-                .putString(RhythmNativePolicyKeys.READING_GATES_JSON, serializeReadingGates(gates))
-            if (state != null) editor.putString(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON, serializeAttentionState(state))
-            if (accountedWatermarkUpdates.isNotEmpty()) {
-                val watermarks = NativeGroupUsageAccounting.withWatermarkUpdates(
-                    loadAccountedWatermarks(context),
-                    accountedWatermarkUpdates,
-                )
-                editor.putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, serializeAccountedWatermarks(watermarks))
-            }
+            preferenceValues.forEach { (key, value) -> editor.putString(key, value) }
             return editor.commit()
         }
 

@@ -5,12 +5,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONArray
+import org.json.JSONObject
 
 class NativeGroupUsageAccountingTest {
     private val dateKey = "2026-09-24"
     private val localMidnight = 1_790_179_200_000L
     private val segmentStartedAt = localMidnight + 12 * 60 * 60_000L
-    private val exhaustionAt = segmentStartedAt + 5 * 60_000L
+    private val exhaustionAt = segmentStartedAt + 5 * 60_000L + 1L
     private val allowanceMillis = 30 * 60_000L
 
     @Test
@@ -43,7 +45,7 @@ class NativeGroupUsageAccountingTest {
             existingWatermark = staleWatermark,
         )
 
-        assertEquals(allowanceMillis, exhaustion.usage.usedMillis)
+        assertEquals(allowanceMillis + 1L, exhaustion.usage.usedMillis)
         assertEquals(exhaustionAt, exhaustion.usage.exhaustedAt)
         assertEquals(exhaustionAt, exhaustion.accountedThrough)
         assertNull(exhaustion.usage.activePackageName)
@@ -87,6 +89,30 @@ class NativeGroupUsageAccountingTest {
                 mapOf("social" to exhaustion.accountedThrough),
             )["social"],
         )
+
+        // Exercise the exact preference payload builder used by persistAttentionMutation().
+        // Ledger, cooldown, gate, daily ordinal state, and the monotonic watermark are written
+        // through one SharedPreferences.Editor/commit by that persistence path.
+        val preferenceValues = RhythmEnforcementService.attentionMutationPreferenceValues(
+            ledger = mapOf("social" to exhaustion.usage),
+            cooldowns = firstAllocation.cooldowns.values.toList(),
+            state = firstAllocation.dailyAttentionExchange,
+            gates = firstAllocation.readingGates,
+            existingAccountedWatermarks = mapOf("social" to staleWatermark),
+            accountedWatermarkUpdates = mapOf("social" to exhaustion.accountedThrough),
+        )
+        val persistedUsage = JSONArray(preferenceValues.getValue(RhythmNativePolicyKeys.GROUP_USAGE_LEDGER_JSON))
+            .getJSONObject(0)
+        assertEquals(allowanceMillis + 1L, persistedUsage.getLong("usedMillis"))
+        assertEquals(exhaustionAt, persistedUsage.getLong("exhaustedAt"))
+        assertEquals(
+            exhaustionAt,
+            JSONObject(preferenceValues.getValue(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON))
+                .getLong("social"),
+        )
+        assertTrue(preferenceValues.containsKey(RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON))
+        assertTrue(preferenceValues.containsKey(RhythmNativePolicyKeys.READING_GATES_JSON))
+        assertTrue(preferenceValues.containsKey(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON))
 
         val completedAt = exhaustionAt + 60 * 60_000L
         val resetUsage = NativeAttentionExchangeLogic.completeGroupCycle(
