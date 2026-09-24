@@ -159,8 +159,11 @@ class RhythmEnforcementService : AccessibilityService() {
         val started = activeUsageStartedAt ?: current?.activeSegmentStartedAt
         if (current != null && started != null && current.dateKey == getLocalDateKey(now)) {
             ledger[groupId] = current.copy(usedMillis = current.usedMillis + maxOf(0L, now - maxOf(getLocalMidnight(now), started)), activePackageName = null, activeSegmentStartedAt = null)
-            saveGroupUsageLedger(applicationContext, ledger)
-            advanceWatermark(groupId, now)
+            val watermarks = NativeGroupUsageAccounting.withWatermarkUpdates(
+                loadAccountedWatermarks(applicationContext),
+                mapOf(groupId to now),
+            )
+            persistUsageAccountingState(applicationContext, ledger, watermarks)
         }
         if (activeUsageGroup == groupId) { activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null }
     }
@@ -172,25 +175,20 @@ class RhythmEnforcementService : AccessibilityService() {
         val prior = ledger[policy.groupId]?.takeIf { it.dateKey == dateKey }
         val cooldowns = loadCooldownPolicies(applicationContext).associateBy { it.groupId }
         val gates = loadReadingGates(applicationContext)
-        if (prior?.exhaustedAt != null || cooldowns.containsKey(policy.groupId) || gates[policy.groupId]?.attentionDateKey == dateKey) return
+        if (NativeGroupUsageAccounting.hasCommittedExhaustion(policy.groupId, dateKey, prior, cooldowns, gates)) return
 
-        val allowance = policy.allowanceMinutes * 60_000L
         val activeStartedAt = activeUsageStartedAt ?: ledger[policy.groupId]?.activeSegmentStartedAt
-        val accumulated = if (activeStartedAt != null && ledger[policy.groupId]?.dateKey == dateKey) {
-            ledger[policy.groupId]?.usedMillis.orZero() + maxOf(0L, now - maxOf(getLocalMidnight(now), activeStartedAt))
-        } else {
-            ledger[policy.groupId]?.takeIf { it.dateKey == dateKey }?.usedMillis ?: 0L
-        }
-        val exhaustedUsage = NativeGroupAllowanceUsage(
+        val exhaustion = NativeGroupUsageAccounting.prepareExhaustion(
             groupId = policy.groupId,
             dateKey = dateKey,
-            usedMillis = maxOf(accumulated, allowance),
-            activePackageName = null,
-            activeSegmentStartedAt = null,
-            exhaustedAt = now,
-            cycleRevision = prior?.cycleRevision ?: ledger[policy.groupId]?.cycleRevision ?: 0L,
+            now = now,
+            localMidnight = getLocalMidnight(now),
+            allowanceMillis = policy.allowanceMinutes * 60_000L,
+            previousUsage = ledger[policy.groupId],
+            activeSegmentStartedAt = activeStartedAt,
+            existingWatermark = loadAccountedWatermarks(applicationContext)[policy.groupId],
         )
-        ledger[policy.groupId] = exhaustedUsage
+        ledger[policy.groupId] = exhaustion.usage
         val endsAt = now + policy.cooldownMinutes * 60_000L
         val attention = loadAttentionExchangeState(applicationContext, now)
         val allocation = NativeAttentionExchangeLogic.allocateCooldown(
@@ -207,13 +205,18 @@ class RhythmEnforcementService : AccessibilityService() {
         )
         if (!allocation.allocated) return
         val updatedCooldowns = allocation.cooldowns.values.toList()
-        persistAttentionMutation(
+        val saved = persistAttentionMutation(
             context = applicationContext,
             ledger = ledger,
             cooldowns = updatedCooldowns,
             state = allocation.dailyAttentionExchange,
             gates = allocation.readingGates,
+            accountedWatermarkUpdates = mapOf(policy.groupId to exhaustion.accountedThrough),
         )
+        if (!saved) {
+            Log.e(TAG, "Failed to persist exhaustion accounting for ${policy.groupId}")
+            return
+        }
         activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null
         scheduleNearestCooldownExpiry(now)
         if (lastForegroundPackage == foregroundPackage && !hasActiveAccessLease(applicationContext, foregroundPackage, now)) presentIntervention(foregroundPackage, policy, endsAt)
@@ -572,19 +575,25 @@ class RhythmEnforcementService : AccessibilityService() {
             val ledger = loadGroupUsageLedger(applicationContext).toMutableMap(); val watermarks = loadAccountedWatermarks(applicationContext).toMutableMap()
             for (policy in policies) {
                 val watermark = watermarks[policy.groupId] ?: 0L; var activePackage: String? = null; var start: Long? = null; var delta = 0L
+                val localMidnight = getLocalMidnight(toTime)
                 transitions.filter { it.packageName in policy.packageNames }.sortedBy { it.timestamp }.forEach { t ->
                     if (t.foreground) {
-                        if (activePackage != null && activePackage != t.packageName && start != null) delta += maxOf(0L, t.timestamp - maxOf(start!!, watermark, getLocalMidnight(toTime)))
+                        if (activePackage != null && activePackage != t.packageName && start != null) {
+                            delta += NativeGroupUsageAccounting.unaccountedIntervalMillis(start!!, t.timestamp, watermark, localMidnight)
+                        }
                         if (activePackage != t.packageName) { activePackage = t.packageName; start = t.timestamp }
                     } else if (activePackage == t.packageName && start != null) {
-                        delta += maxOf(0L, t.timestamp - maxOf(start!!, watermark, getLocalMidnight(toTime))); activePackage = null; start = null
+                        delta += NativeGroupUsageAccounting.unaccountedIntervalMillis(start!!, t.timestamp, watermark, localMidnight)
+                        activePackage = null; start = null
                     }
                 }
-                if (start != null && policy.groupId != activeUsageGroup) delta += maxOf(0L, toTime - maxOf(start!!, watermark, getLocalMidnight(toTime)))
+                if (start != null && policy.groupId != activeUsageGroup) {
+                    delta += NativeGroupUsageAccounting.unaccountedIntervalMillis(start!!, toTime, watermark, localMidnight)
+                }
                 if (delta > 0L) { val current = ledger[policy.groupId]?.takeIf { it.dateKey == getLocalDateKey(toTime) } ?: NativeGroupAllowanceUsage(policy.groupId, getLocalDateKey(toTime), 0L, null, null, null, 0L); ledger[policy.groupId] = current.copy(usedMillis = current.usedMillis + delta); }
                 watermarks[policy.groupId] = maxOf(watermarks[policy.groupId] ?: 0L, toTime)
             }
-            saveGroupUsageLedger(applicationContext, ledger); saveAccountedWatermarks(applicationContext, watermarks)
+            persistUsageAccountingState(applicationContext, ledger, watermarks)
             pruneExpiredCooldowns(toTime)
             val reconciledLedger = loadGroupUsageLedger(applicationContext)
             policies.forEach { policy ->
@@ -1189,12 +1198,29 @@ class RhythmEnforcementService : AccessibilityService() {
             }
         }.toString()
 
+        private fun serializeAccountedWatermarks(watermarks: Map<String, Long>): String = JSONObject().apply {
+            watermarks.forEach { (groupId, timestamp) -> put(groupId, timestamp) }
+        }.toString()
+
+        fun persistUsageAccountingState(
+            context: Context,
+            ledger: Map<String, NativeGroupAllowanceUsage>,
+            watermarks: Map<String, Long>,
+        ): Boolean {
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            return prefs.edit()
+                .putString(RhythmNativePolicyKeys.GROUP_USAGE_LEDGER_JSON, serializeGroupUsageLedger(ledger))
+                .putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, serializeAccountedWatermarks(watermarks))
+                .commit()
+        }
+
         private fun persistAttentionMutation(
             context: Context,
             ledger: Map<String, NativeGroupAllowanceUsage>,
             cooldowns: List<NativeCooldownPolicy>,
             state: NativeDailyAttentionExchangeState?,
             gates: Map<String, NativeReadingGate>,
+            accountedWatermarkUpdates: Map<String, Long> = emptyMap(),
         ): Boolean {
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
             val editor = prefs.edit()
@@ -1202,6 +1228,13 @@ class RhythmEnforcementService : AccessibilityService() {
                 .putString(RhythmNativePolicyKeys.COOLDOWN_POLICIES_JSON, serializeCooldownPolicies(cooldowns))
                 .putString(RhythmNativePolicyKeys.READING_GATES_JSON, serializeReadingGates(gates))
             if (state != null) editor.putString(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON, serializeAttentionState(state))
+            if (accountedWatermarkUpdates.isNotEmpty()) {
+                val watermarks = NativeGroupUsageAccounting.withWatermarkUpdates(
+                    loadAccountedWatermarks(context),
+                    accountedWatermarkUpdates,
+                )
+                editor.putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, serializeAccountedWatermarks(watermarks))
+            }
             return editor.commit()
         }
 
@@ -1257,7 +1290,7 @@ class RhythmEnforcementService : AccessibilityService() {
             )
         }
         fun loadAccountedWatermarks(context: Context): Map<String, Long> { val json = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).getString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, null) ?: return emptyMap(); val out = mutableMapOf<String, Long>(); try { val o = JSONObject(json); o.keys().forEach { out[it] = o.optLong(it) } } catch (_: Exception) {}; return out }
-        fun saveAccountedWatermarks(context: Context, values: Map<String, Long>) { val o = JSONObject(); values.forEach { (k, v) -> o.put(k, v) }; context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).edit().putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, o.toString()).apply() }
+        fun saveAccountedWatermarks(context: Context, values: Map<String, Long>) { context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).edit().putString(RhythmNativePolicyKeys.LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON, serializeAccountedWatermarks(values)).apply() }
         fun loadRoutineSchedule(context: Context): NativeRoutineSchedule {
             val json = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE).getString(RhythmNativePolicyKeys.ROUTINE_SCHEDULE_JSON, null) ?: return NativeRoutineSchedule(emptyList(), emptySet())
             return parseRoutineJson(json)
@@ -1294,7 +1327,6 @@ class RhythmEnforcementService : AccessibilityService() {
         return evidence
     }
 
-    private fun advanceWatermark(groupId: String, timestamp: Long) { val m = loadAccountedWatermarks(applicationContext).toMutableMap(); m[groupId] = maxOf(m[groupId] ?: 0L, timestamp); saveAccountedWatermarks(applicationContext, m) }
     private fun loadCooldownForPackage(packageName: String, now: Long) = loadCooldownPolicies(applicationContext).firstOrNull { packageName in it.packageNames && it.endsAt > now }
     fun pruneExpiredCooldowns(now: Long) {
         rolloverIfNeeded(now)
