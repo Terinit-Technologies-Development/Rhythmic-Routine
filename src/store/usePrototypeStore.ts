@@ -27,7 +27,9 @@ import { MockUsageProvider } from '../platform/mock/MockUsageProvider';
 import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
-import { getPrimaryCooldown } from '../domain/rhythm/types';
+import { getPrimaryCooldown, RhythmRuntime } from '../domain/rhythm/types';
+import { deriveAttentionGateStatus, AttentionGateStatus, ActiveReadingGate, DailyAttentionExchangeState } from '../domain/rhythm/attentionExchange';
+import { ReadingEvidenceSnapshot } from '../domain/rhythm/readingEvidence';
 import {
   DailyRhythmSummary,
   LocalInsightsRepository,
@@ -145,11 +147,61 @@ export interface AppEditConfig {
   appId?: string;
 }
 
+function projectPrimaryAttentionStatus(runtime: RhythmRuntime, now: number): AttentionGateStatus | undefined {
+  const gates = runtime.activeReadingGates ?? {};
+  const cooldowns = runtime.activeCooldowns ?? {};
+  const hasAttention = (groupId: string) =>
+    Boolean(gates[groupId] || (cooldowns[groupId] && cooldowns[groupId].endsAt > now));
+
+  const foregroundGroupId = runtime.nativeForegroundGroupId;
+  const activeSessionGroupId = runtime.activeSession?.groupId;
+  const primaryCooldown = getPrimaryCooldown(runtime, now)?.groupId;
+  const candidates = [
+    foregroundGroupId,
+    activeSessionGroupId,
+    primaryCooldown,
+    ...Object.values(gates)
+      .sort((a, b) => b.dailyCooldownOrdinal - a.dailyCooldownOrdinal || b.createdAt - a.createdAt || a.groupId.localeCompare(b.groupId))
+      .map((gate) => gate.groupId),
+    ...Object.values(cooldowns)
+      .filter((cooldown) => cooldown.endsAt > now)
+      .sort((a, b) => b.startedAt - a.startedAt || a.groupId.localeCompare(b.groupId))
+      .map((cooldown) => cooldown.groupId),
+  ].filter((groupId): groupId is string => Boolean(groupId && hasAttention(groupId)));
+  const groupId = candidates[0];
+  if (!groupId) return undefined;
+  return deriveAttentionGateStatus({
+    groupId,
+    gate: gates[groupId],
+    cooldown: cooldowns[groupId],
+    evidence: runtime.readingEvidence,
+    now,
+    currentDateKey: getLocalDateKey(now),
+  });
+}
+
+function attentionStateProjection(runtime: RhythmRuntime, now = Date.now()) {
+  return {
+    activeAttentionGateStatus: projectPrimaryAttentionStatus(runtime, now),
+    activeReadingGates: Object.fromEntries(
+      Object.entries(runtime.activeReadingGates ?? {}).map(([groupId, gate]) => [groupId, { ...gate }])
+    ) as Record<string, ActiveReadingGate>,
+    dailyAttentionExchange: runtime.dailyAttentionExchange
+      ? { ...runtime.dailyAttentionExchange }
+      : undefined,
+    readingEvidence: runtime.readingEvidence ? { ...runtime.readingEvidence } : undefined,
+  };
+}
+
 interface PrototypeState {
   // Domain data (projected from RhythmCoordinator / Engine)
   rhythmState: RhythmState;
   activeRiskGroupId: string;
   activeTimerEndsAt?: number; // Absolute timestamp for countdowns
+  activeAttentionGateStatus?: AttentionGateStatus;
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  dailyAttentionExchange?: DailyAttentionExchangeState;
+  readingEvidence?: ReadingEvidenceSnapshot;
   apps: DeviceApp[];
   riskGroups: RiskGroup[];
   routineWindows: RoutineWindow[];
@@ -181,6 +233,8 @@ interface PrototypeState {
   initializeApps: () => Promise<void>;
   refreshInstalledApps: () => Promise<void>;
   refreshDailyUsage: () => Promise<void>;
+  refreshReadingEvidence: () => Promise<void>;
+  openRhythmicReader: () => Promise<boolean>;
   refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
@@ -730,16 +784,19 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       // Subscribe store to live runtime engine updates
       coordinator.subscribe((nextRuntime) => {
         const primaryCooldown = getPrimaryCooldown(nextRuntime);
+        const attention = attentionStateProjection(nextRuntime);
         set({
           rhythmState: nextRuntime.state,
           activeTimerEndsAt: primaryCooldown?.endsAt,
-          activeRiskGroupId: primaryCooldown?.groupId || nextRuntime.activeSession?.groupId || get().activeRiskGroupId,
+          activeRiskGroupId: attention.activeAttentionGateStatus?.groupId || primaryCooldown?.groupId || nextRuntime.activeSession?.groupId || get().activeRiskGroupId,
+          ...attention,
         });
       });
 
       const { permissions } = getPlatformServices();
       const permStatus = await permissions.getStatus();
       const primaryCooldown = getPrimaryCooldown(runtime);
+      const attention = attentionStateProjection(runtime);
 
       set({
         apps: config?.apps ?? get().apps,
@@ -748,7 +805,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         accountability: config?.accountability ?? get().accountability,
         rhythmState: runtime.state,
         activeTimerEndsAt: primaryCooldown?.endsAt || (runtime.state === 'morning-buffer' ? Date.now() + INITIAL_TIMER_MS : undefined),
-        activeRiskGroupId: primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
+        activeRiskGroupId: attention.activeAttentionGateStatus?.groupId || primaryCooldown?.groupId || runtime.activeSession?.groupId || 'social',
+        ...attention,
         permissionState: permStatus,
       });
 
@@ -840,6 +898,20 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         dailyUsageSnapshot: undefined,
         groupUsageSnapshots: undefined,
       });
+    }
+  },
+
+  refreshReadingEvidence: async () => {
+    await RhythmCoordinator.getInstance().refreshDailyReadingEvidence();
+  },
+
+  openRhythmicReader: async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+      return await RhythmDeviceModule.openRhythmicReader();
+    } catch {
+      return false;
     }
   },
 

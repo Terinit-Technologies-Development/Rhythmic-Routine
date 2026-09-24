@@ -1,6 +1,7 @@
 import { AccessLease, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow } from '../../types/domain';
 import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns, RestrictionReason } from './types';
-import { isGroupAllowanceExhausted } from './allowance';
+import type { ActiveReadingGate } from './attentionExchange';
+import { getLocalDateKey, isGroupAllowanceExhausted } from './allowance';
 
 export interface RestrictionOptions {
   isOvernight?: boolean;
@@ -8,6 +9,9 @@ export interface RestrictionOptions {
   groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
   /** Pass 03: recovery satisfaction state per group for cooldown re-entry gating. */
   groupRecoverySatisfied?: Record<string, boolean>;
+  /** Pass 03: reading obligations persist after their native cooldown timer expires. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  currentDateKey?: string;
 }
 
 /**
@@ -94,6 +98,20 @@ export function computeEffectiveRestrictions(
         type: 'cooldown',
         sourceId: cooldown.groupId,
       });
+    }
+  }
+
+  // An expired timer is no longer a cooldown. A current-day native reading gate
+  // remains a separate restriction reason until native reconciliation clears it.
+  const currentDateKey = options?.currentDateKey ?? getLocalDateKey(now);
+  for (const [groupId, gate] of Object.entries(options?.activeReadingGates ?? {})) {
+    if (gate.attentionDateKey !== currentDateKey || gate.cooldownEndsAt > now) continue;
+    const group = riskGroups.find((item) => item.id === groupId);
+    if (!group) continue;
+    for (const appId of group.appIds) {
+      const app = apps.find((item) => item.id === appId);
+      if (app?.classification !== 'risk') continue;
+      addReason(appId, { type: 'reading-quota', sourceId: groupId });
     }
   }
 

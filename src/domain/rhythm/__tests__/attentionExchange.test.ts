@@ -307,6 +307,81 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     assert.equal(engine.getRuntime().dailyAttentionExchange?.cooldownsTriggered, 3);
   });
 
+  test('native authority keeps expired reading gates through JS evidence sync and access leases', () => {
+    const now = localTime(2026, 9, 24, 12);
+    const dateKey = getLocalDateKey(now);
+    const gate: ActiveReadingGate = {
+      groupId: 'social',
+      attentionDateKey: dateKey,
+      dailyCooldownOrdinal: 3,
+      createdAt: now - 90 * 60_000,
+      cooldownEndsAt: now - 1,
+      requiredReadingSeconds: 3600,
+      requiredQualifiedPages: 36,
+    };
+    const engine = new RhythmEngine(config, null, now);
+    engine.dispatch({
+      type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
+      dailyAttentionExchange: {
+        dateKey,
+        cooldownsTriggered: 3,
+        highestRequiredActiveSeconds: 3600,
+        highestRequiredQualifiedPages: 36,
+        updatedAt: now,
+      },
+      activeReadingGates: { social: gate },
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      groupAllowanceUsage: {},
+      timestamp: now,
+    });
+    engine.dispatch({
+      type: 'SYNC_DAILY_READING_EVIDENCE',
+      evidence: evidence(dateKey, 3600, 36),
+      timestamp: now + 1,
+    });
+
+    let runtime = engine.getRuntime();
+    assert.equal(runtime.nativeAttentionAuthority, true);
+    assert.ok(runtime.activeReadingGates?.social);
+    assert.ok(runtime.activeRestrictions.some((restriction) =>
+      restriction.reasons.some((reason) => reason.type === 'reading-quota' && reason.sourceId === 'social')
+    ));
+
+    engine.dispatch({
+      type: 'START_ACCESS_LEASE',
+      groupId: 'social',
+      durationMinutes: 1,
+      timestamp: now + 2,
+    });
+    runtime = engine.getRuntime();
+    assert.ok(runtime.activeReadingGates?.social, 'access lease must not remove native gate state');
+    assert.equal(runtime.activeRestrictions.some((restriction) => restriction.appId === 'instagram'), false);
+
+    engine.dispatch({ type: 'RECONCILE', timestamp: now + 60_003 });
+    runtime = engine.getRuntime();
+    assert.ok(runtime.activeReadingGates?.social, 'JS expiry must not satisfy a native gate');
+    assert.ok(runtime.activeRestrictions.some((restriction) => restriction.appId === 'instagram'));
+
+    engine.dispatch({
+      type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
+      dailyAttentionExchange: {
+        dateKey,
+        cooldownsTriggered: 3,
+        highestRequiredActiveSeconds: 3600,
+        highestRequiredQualifiedPages: 36,
+        updatedAt: now + 60_004,
+      },
+      activeReadingGates: {},
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      groupAllowanceUsage: {},
+      readingEvidence: evidence(dateKey, 3600, 36),
+      timestamp: now + 60_004,
+    });
+    assert.equal(engine.getRuntime().activeReadingGates?.social, undefined);
+  });
+
   test('repeated native restoration allocates one ordinal for a newly observed cooldown', () => {
     const now = localTime(2026, 9, 24, 12);
     const engine = new RhythmEngine(config, null, now);

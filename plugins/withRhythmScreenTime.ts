@@ -10,10 +10,43 @@ import * as path from 'path';
 const APP_GROUP_IDENTIFIER = 'group.com.terinit.rhythmicroutine';
 const EXTENSION_TARGET_NAME = 'RhythmDeviceActivityMonitor';
 const EXTENSION_BUNDLE_IDENTIFIER = 'com.terinit.rhythmicroutine.activitymonitor';
+const RHYTHMIC_READER_PACKAGE = 'com.terinit.rhythmicreader';
+
+/** Keeps Reader launch visibility available on Android 11+ without broad package access. */
+export function ensureRhythmicReaderPackageVisibility(androidManifest: any): any {
+  const manifest = androidManifest.manifest;
+  const queries: any[] = Array.isArray(manifest.queries)
+    ? manifest.queries
+    : manifest.queries
+      ? [manifest.queries]
+      : [];
+  const alreadyDeclared = queries.some((query) =>
+    (Array.isArray(query.package) ? query.package : query.package ? [query.package] : []).some(
+      (item: any) => item.$?.['android:name'] === RHYTHMIC_READER_PACKAGE
+    )
+  );
+
+  if (!alreadyDeclared) {
+    const query = queries[0] ?? {};
+    const packages = Array.isArray(query.package)
+      ? query.package
+      : query.package
+        ? [query.package]
+        : [];
+    packages.push({
+      $: { 'android:name': RHYTHMIC_READER_PACKAGE },
+    });
+    query.package = packages;
+    if (!queries.includes(query)) queries.push(query);
+  }
+
+  manifest.queries = queries;
+  return androidManifest;
+}
 
 /**
  * Expo Config Plugin for Rhythmic-Routine Screen Time & Device Activity Monitor Extension:
- * 1. Declares Android PACKAGE_USAGE_STATS permission in AndroidManifest.xml.
+ * 1. Declares Android usage permission and Reader package visibility in AndroidManifest.xml.
  * 2. Injects iOS Family Controls & App Group entitlements into main application.
  * 3. Synthesizes and configures the out-of-process RhythmDeviceActivityMonitor Xcode extension target.
  */
@@ -37,6 +70,8 @@ const withRhythmScreenTime: ConfigPlugin = (config) => {
         },
       } as any);
     }
+
+    configProps.modResults = ensureRhythmicReaderPackageVisibility(configProps.modResults);
 
     return configProps;
   });

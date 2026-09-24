@@ -56,6 +56,8 @@ export class RhythmEngine {
         ...(normalized.readingEvidence?.dateKey === todayKey
           ? { readingEvidence: { ...normalized.readingEvidence } }
           : {}),
+        nativeAttentionAuthority: normalized.nativeAttentionAuthority === true,
+        nativeForegroundGroupId: normalized.nativeForegroundGroupId,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
     } else {
@@ -68,6 +70,7 @@ export class RhythmEngine {
         groupAllowanceUsage: {},
         dailyAttentionExchange: createDailyAttentionExchangeState(todayKey, now),
         activeReadingGates: {},
+        nativeAttentionAuthority: false,
         activeRestrictions: [], // Start with empty baseline
       };
     }
@@ -142,6 +145,8 @@ export class RhythmEngine {
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
+      nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
+      nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
       readingEvidence: this.runtime.readingEvidence ? { ...this.runtime.readingEvidence } : undefined,
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
@@ -201,6 +206,8 @@ export class RhythmEngine {
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
+      nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
+      nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
     };
     if (this.runtime.readingEvidence) {
       res.readingEvidence = { ...this.runtime.readingEvidence };

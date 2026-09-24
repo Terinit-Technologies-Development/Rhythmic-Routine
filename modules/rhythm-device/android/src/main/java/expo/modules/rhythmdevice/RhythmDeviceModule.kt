@@ -11,13 +11,8 @@ import android.content.pm.PackageManager
 import android.os.Process
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
-import android.net.Uri
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import java.text.ParsePosition
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 
 class RhythmDeviceModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -177,6 +172,35 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction true
     }
 
+    AsyncFunction("setAttentionExchangePolicy") { input: Map<String, Any> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val policy = NativeReadingAttentionPolicy(
+        freeCooldownCount = (input["freeCooldownCount"] as? Number)?.toInt() ?: 2,
+        baselineActiveSeconds = (input["baselineActiveSeconds"] as? Number)?.toLong() ?: 3600L,
+        baselineQualifiedPages = (input["baselineQualifiedPages"] as? Number)?.toInt() ?: 36,
+        incrementalActiveSeconds = (input["incrementalActiveSeconds"] as? Number)?.toLong() ?: 1800L,
+        incrementalQualifiedPages = (input["incrementalQualifiedPages"] as? Number)?.toInt() ?: 11,
+      )
+      return@AsyncFunction RhythmEnforcementService.saveAttentionPolicy(context, policy)
+    }
+
+    AsyncFunction("setAttentionExchangeState") { snapshot: Map<String, Any?> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      return@AsyncFunction RhythmEnforcementService.syncAttentionExchangeState(context, snapshot, System.currentTimeMillis())
+    }
+
+    AsyncFunction("getAttentionExchangeSnapshot") {
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      val now = System.currentTimeMillis()
+      RhythmEnforcementService.reconcileAttentionExchangeInContext(context, now)
+      return@AsyncFunction attentionExchangeSnapshot(context, now)
+    }
+
+    AsyncFunction("reconcileAttentionExchange") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      return@AsyncFunction RhythmEnforcementService.reconcileAttentionExchangeInContext(context, System.currentTimeMillis())
+    }
+
     AsyncFunction("getGroupUsageSnapshot") {
       val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
       return@AsyncFunction groupSnapshots(context)
@@ -207,22 +231,27 @@ class RhythmDeviceModule : Module() {
         val gid = it["groupId"] as? String ?: return@mapNotNull null
         val endsAt = (it["endsAt"] as? Number)?.toLong() ?: return@mapNotNull null
         val pkgsList = (it["packageNames"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
-        NativeCooldownPolicy(gid, pkgsList, endsAt)
-      }
-      // Expiry resets the ledger before any cooldown is removed or merged.
-      RhythmEnforcementService.instance?.pruneExpiredCooldowns(System.currentTimeMillis())
-      // A stale JS projection may not delete a native-created cooldown.
-      val native = RhythmEnforcementService.loadCooldownPolicies(context)
-      val merged = (native + parsed).groupBy { it.groupId }.map { (_, values) ->
         NativeCooldownPolicy(
-          values.first().groupId,
-          values.flatMap { it.packageNames }.toSet(),
-          values.maxOf { it.endsAt }
+          groupId = gid,
+          packageNames = pkgsList,
+          startedAt = (it["startedAt"] as? Number)?.toLong() ?: 0L,
+          endsAt = endsAt,
+          attentionDateKey = it["attentionDateKey"] as? String,
+          dailyCooldownOrdinal = (it["dailyCooldownOrdinal"] as? Number)?.toInt(),
+          requiredReadingSeconds = (it["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
+          requiredQualifiedPages = (it["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
         )
       }
-      RhythmEnforcementService.saveCooldownPolicies(context, merged)
-      RhythmEnforcementService.instance?.onCooldownPoliciesChanged()
-      return@AsyncFunction true
+      val normalized = parsed.groupBy { it.groupId }.values.map { values ->
+        val latest = values.maxBy { it.endsAt }
+        latest.copy(
+          packageNames = values.flatMap { it.packageNames }.toSet(),
+          endsAt = values.maxOf { it.endsAt },
+        )
+      }
+      val now = System.currentTimeMillis()
+      RhythmEnforcementService.instance?.pruneExpiredCooldowns(now)
+      return@AsyncFunction RhythmEnforcementService.mergeCooldownPoliciesFromJs(context, normalized, now)
     }
 
     AsyncFunction("getEnforcementDiagnostics") {
@@ -241,6 +270,11 @@ class RhythmDeviceModule : Module() {
       val ledger = RhythmEnforcementService.loadGroupUsageLedger(context)
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
       val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
+      val attentionState = RhythmEnforcementService.loadAttentionExchangeState(context)
+      val gates = RhythmEnforcementService.loadReadingGates(context).values
+        .filter { it.attentionDateKey == RhythmEnforcementService.getLocalDateKey() }
+      val evidence = RhythmEnforcementService.loadDailyReadingEvidence(context)
+        ?.takeIf { it.dateKey == RhythmEnforcementService.getLocalDateKey() }
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
@@ -249,8 +283,24 @@ class RhythmDeviceModule : Module() {
         "cooldownCount" to cooldowns.size,
         "routineWindowCount" to schedule.windows.size,
         "overlayVisible" to RhythmOverlayActivity.isVisible,
-        "groupUsageLedgerCount" to ledger.size
+        "groupUsageLedgerCount" to ledger.size,
+        "attentionDateKey" to attentionState.dateKey,
+        "dailyCooldownOrdinal" to attentionState.cooldownsTriggered,
+        "readingGateCount" to gates.size,
+        "readerProviderAvailable" to evidence?.providerAvailable,
+        "readerProtocolCompatible" to evidence?.protocolCompatible,
       )
+      val foregroundPolicy = service?.lastForegroundPackage?.let { pkg ->
+        RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }
+      }
+      val primaryGate = foregroundPolicy?.let { policy -> gates.firstOrNull { it.groupId == policy.groupId } }
+        ?: gates.maxByOrNull { it.dailyCooldownOrdinal }
+      if (primaryGate != null) {
+        result["activeReadingGateGroupId"] = primaryGate.groupId
+        result["activeReadingGateOrdinal"] = primaryGate.dailyCooldownOrdinal
+        result["activeReadingRequiredSeconds"] = primaryGate.requiredReadingSeconds
+        result["activeReadingRequiredPages"] = primaryGate.requiredQualifiedPages
+      }
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
       }
@@ -402,94 +452,90 @@ class RhythmDeviceModule : Module() {
     AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
-      if (!isValidLocalDateKey(dateKey)) {
-        return@AsyncFunction unavailableDailyEvidence(dateKey)
-      }
+      return@AsyncFunction evidenceMap(RhythmEnforcementService.queryDailyReadingEvidence(context, dateKey))
+    }
 
-      val uri = Uri.Builder()
-        .scheme("content")
-        .authority("com.terinit.rhythmicreader.evidence")
-        .appendPath("daily")
-        .appendPath(dateKey)
-        .build()
-      val projection = arrayOf(
-        "protocolVersion",
-        "dateKey",
-        "verifiedActiveSeconds",
-        "qualifiedPages",
-        "updatedAtEpochMs"
-      )
-
+    AsyncFunction("openRhythmicReader") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
       try {
-        val cursor = context.contentResolver.query(uri, projection, null, null, null)
-          ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
-        cursor.use {
-          // Reader defines an empty cursor for a valid date with no evidence.
-          // Preserve that distinction from provider/query failure.
-          if (!it.moveToFirst()) {
-            return@AsyncFunction mapOf(
-              "providerAvailable" to true,
-              "protocolCompatible" to true,
-              "protocolVersion" to 2,
-              "dateKey" to dateKey,
-              "verifiedActiveSeconds" to 0,
-              "qualifiedPages" to 0,
-              "updatedAtEpochMs" to 0
-            )
-          }
-
-          val protocolIndex = it.getColumnIndex("protocolVersion")
-          val dateIndex = it.getColumnIndex("dateKey")
-          val secondsIndex = it.getColumnIndex("verifiedActiveSeconds")
-          val pagesIndex = it.getColumnIndex("qualifiedPages")
-          val updatedIndex = it.getColumnIndex("updatedAtEpochMs")
-          if (protocolIndex < 0 || dateIndex < 0 || secondsIndex < 0 || pagesIndex < 0 || updatedIndex < 0) {
-            return@AsyncFunction unavailableDailyEvidence(dateKey)
-          }
-
-          val protocolVersion = it.getInt(protocolIndex)
-          val returnedDateKey = it.getString(dateIndex) ?: ""
-          val seconds = it.getLong(secondsIndex)
-          val pages = it.getLong(pagesIndex)
-          val updatedAt = it.getLong(updatedIndex)
-          val compatible = protocolVersion == 2 &&
-            returnedDateKey == dateKey &&
-            seconds >= 0L && pages in 0L..Int.MAX_VALUE.toLong() && updatedAt >= 0L
-
-          mapOf(
-            "providerAvailable" to true,
-            "protocolCompatible" to compatible,
-            "protocolVersion" to protocolVersion,
-            "dateKey" to returnedDateKey,
-            "verifiedActiveSeconds" to if (compatible) seconds.toDouble() else 0.0,
-            "qualifiedPages" to if (compatible) pages.toInt() else 0,
-            "updatedAtEpochMs" to if (compatible) updatedAt.toDouble() else 0.0
-          )
-        }
+        val launchIntent = context.packageManager.getLaunchIntentForPackage("com.terinit.rhythmicreader")
+          ?: return@AsyncFunction false
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(launchIntent)
+        true
       } catch (_: Exception) {
-        unavailableDailyEvidence(dateKey)
+        false
       }
     }
   }
 
-  private fun unavailableDailyEvidence(dateKey: String): Map<String, Any> = mapOf(
-    "providerAvailable" to false,
-    "protocolCompatible" to false,
-    "dateKey" to dateKey,
-    "verifiedActiveSeconds" to 0,
-    "qualifiedPages" to 0,
-    "updatedAtEpochMs" to 0
-  )
+  private fun unavailableDailyEvidence(dateKey: String): Map<String, Any> =
+    evidenceMap(DailyReadingEvidenceProviderClient.unavailable(dateKey))
 
-  private fun isValidLocalDateKey(dateKey: String): Boolean {
-    if (!dateKey.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return false
-    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply {
-      isLenient = false
-      timeZone = TimeZone.getTimeZone("UTC")
+  private fun evidenceMap(evidence: NativeDailyReadingEvidenceResult): Map<String, Any> = buildMap {
+    put("providerAvailable", evidence.providerAvailable)
+    put("protocolCompatible", evidence.protocolCompatible)
+    evidence.protocolVersion?.let { put("protocolVersion", it) }
+    put("dateKey", evidence.dateKey)
+    put("verifiedActiveSeconds", evidence.verifiedActiveSeconds.toDouble())
+    put("qualifiedPages", evidence.qualifiedPages)
+    put("updatedAtEpochMs", evidence.updatedAtEpochMs.toDouble())
+  }
+
+  private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {
+    val dateKey = RhythmEnforcementService.getLocalDateKey(now)
+    val state = RhythmEnforcementService.loadAttentionExchangeState(context, now)
+    val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
+      .filter { it.endsAt > now }
+      .map { cooldown ->
+        buildMap<String, Any> {
+          put("groupId", cooldown.groupId)
+          put("packageNames", cooldown.packageNames.sorted())
+          put("startedAt", cooldown.startedAt.toDouble())
+          put("endsAt", cooldown.endsAt.toDouble())
+          cooldown.attentionDateKey?.let { put("attentionDateKey", it) }
+          cooldown.dailyCooldownOrdinal?.let { put("dailyCooldownOrdinal", it) }
+          put("requiredReadingSeconds", cooldown.requiredReadingSeconds.toDouble())
+          put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
+        }
+      }
+    val gates = RhythmEnforcementService.loadReadingGates(context).values
+      .filter { it.attentionDateKey == dateKey }
+      .map { gate ->
+        mapOf(
+          "groupId" to gate.groupId,
+          "attentionDateKey" to gate.attentionDateKey,
+          "dailyCooldownOrdinal" to gate.dailyCooldownOrdinal,
+          "createdAt" to gate.createdAt.toDouble(),
+          "cooldownEndsAt" to gate.cooldownEndsAt.toDouble(),
+          "requiredReadingSeconds" to gate.requiredReadingSeconds.toDouble(),
+          "requiredQualifiedPages" to gate.requiredQualifiedPages,
+        )
+      }
+    val result = mutableMapOf<String, Any?>(
+      "attentionStateInitialized" to context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+        .contains(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON),
+      "dateKey" to state.dateKey,
+      "cooldownsTriggered" to state.cooldownsTriggered,
+      "highestRequiredActiveSeconds" to state.highestRequiredActiveSeconds.toDouble(),
+      "highestRequiredQualifiedPages" to state.highestRequiredQualifiedPages,
+      "cooldowns" to cooldowns,
+      "readingGates" to gates,
+      "groupUsage" to groupSnapshots(context),
+      "activeAccessLeases" to RhythmEnforcementService.loadActiveLeases(context, now).map { lease ->
+        mapOf("groupId" to lease.groupId, "packageNames" to lease.packageNames.sorted(), "endsAt" to lease.endsAt.toDouble())
+      },
+      "updatedAt" to now.toDouble(),
+    )
+    val foregroundPackage = RhythmEnforcementService.instance?.lastForegroundPackage
+    val foregroundGroup = foregroundPackage?.let { pkg ->
+      RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }?.groupId
     }
-    val position = ParsePosition(0)
-    val date = formatter.parse(dateKey, position) ?: return false
-    return position.index == dateKey.length && formatter.format(date) == dateKey
+    if (foregroundGroup != null) result["foregroundGroupId"] = foregroundGroup
+    RhythmEnforcementService.loadDailyReadingEvidence(context)
+      ?.takeIf { it.dateKey == dateKey }
+      ?.let { result["evidence"] = evidenceMap(it) }
+    return result
   }
 
   private fun groupSnapshots(context: Context): List<Map<String, Any?>> {

@@ -17,9 +17,14 @@ android {
   lintOptions {
     abortOnError false
   }
+
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
 }
 
 dependencies {
   implementation project(':expo-modules-core')
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+  testImplementation "junit:junit:4.13.2"
 }

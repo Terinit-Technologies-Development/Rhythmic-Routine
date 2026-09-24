@@ -27,6 +27,7 @@ export {
   DailyRiskAllowancePolicy,
   GroupAllowanceUsage,
 };
+export type { ActiveReadingGate, DailyAttentionExchangeState } from './attentionExchange';
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -87,6 +88,9 @@ export interface RhythmRuntime {
   activeReadingGates?: Record<string, ActiveReadingGate>;
   /** Cached Reader Protocol V2 projection; Reader remains the evidence authority. */
   readingEvidence?: ReadingEvidenceSnapshot;
+  /** Android native state owns gate clearing while AccessibilityService enforcement is active. */
+  nativeAttentionAuthority?: boolean;
+  nativeForegroundGroupId?: string;
 }
 
 export interface PersistedRuntime {
@@ -105,6 +109,8 @@ export interface PersistedRuntime {
   activeReadingGates?: Record<string, ActiveReadingGate>;
   /** Cached Reader Protocol V2 projection; always refresh from Reader when available. */
   readingEvidence?: ReadingEvidenceSnapshot;
+  nativeAttentionAuthority?: boolean;
+  nativeForegroundGroupId?: string;
   lastReconciledAt: number;
 }
 
@@ -165,10 +171,22 @@ export type RhythmEvent =
   | { type: 'UPDATE_GROUP_ALLOWANCE'; groupId: string; allowanceMinutes: number; timestamp: number }
   | { type: 'UPDATE_GROUP_RECOVERY_ACTIVITY'; groupId: string; activityId: string; timestamp: number }
   | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
-  | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; timestamp: number }
-  | { type: 'SYNC_DAILY_READING_EVIDENCE'; evidence: ReadingEvidenceSnapshot; timestamp: number }
+  | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; replaceExisting?: boolean; timestamp: number }
+  | { type: 'SYNC_DAILY_READING_EVIDENCE'; evidence: ReadingEvidenceSnapshot; timestamp: number; preserveNativeGates?: boolean }
+  | {
+      type: 'SYNC_NATIVE_ATTENTION_EXCHANGE';
+      dailyAttentionExchange: DailyAttentionExchangeState;
+      activeReadingGates: Record<string, ActiveReadingGate>;
+      activeCooldowns: Record<string, ActiveCooldown>;
+      activeAccessLeases: Record<string, AccessLease>;
+      groupAllowanceUsage: Record<string, GroupAllowanceUsage>;
+      foregroundGroupId?: string;
+      readingEvidence?: ReadingEvidenceSnapshot;
+      timestamp: number;
+    }
+  | { type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED'; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
-  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; legacy?: boolean; timestamp: number }
   | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
   | { type: 'RISK_GROUP_DELETED'; groupId: string; timestamp: number };
 
@@ -272,6 +290,8 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
   if (isValidPersistedReadingEvidence(raw.readingEvidence)) {
     res.readingEvidence = { ...raw.readingEvidence };
   }
+  if (raw.nativeAttentionAuthority === true) res.nativeAttentionAuthority = true;
+  if (typeof raw.nativeForegroundGroupId === 'string') res.nativeForegroundGroupId = raw.nativeForegroundGroupId;
 
   res.dailyAttentionExchange = raw.dailyAttentionExchange &&
     typeof raw.dailyAttentionExchange === 'object' &&

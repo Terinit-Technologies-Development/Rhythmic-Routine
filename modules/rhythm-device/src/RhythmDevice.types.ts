@@ -95,10 +95,56 @@ export interface NativeGroupAllowanceSnapshot {
   cycleRevision: number;
 }
 
+export interface NativeReadingAttentionPolicyInput {
+  freeCooldownCount: number;
+  baselineActiveSeconds: number;
+  baselineQualifiedPages: number;
+  incrementalActiveSeconds: number;
+  incrementalQualifiedPages: number;
+}
+
+export interface NativeDailyAttentionExchangeState {
+  dateKey: string;
+  cooldownsTriggered: number;
+  highestRequiredActiveSeconds: number;
+  highestRequiredQualifiedPages: number;
+  updatedAt: number;
+}
+
+export interface NativeReadingGateInput {
+  groupId: string;
+  attentionDateKey: string;
+  dailyCooldownOrdinal: number;
+  createdAt: number;
+  cooldownEndsAt: number;
+  requiredReadingSeconds: number;
+  requiredQualifiedPages: number;
+}
+
 export interface NativeCooldownPolicyInput {
   groupId: string;
   packageNames: string[];
+  startedAt?: number;
   endsAt: number;
+  attentionDateKey?: string;
+  dailyCooldownOrdinal?: number;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
+}
+
+export interface NativeAttentionExchangeSnapshot {
+  attentionStateInitialized: boolean;
+  dateKey: string;
+  cooldownsTriggered: number;
+  highestRequiredActiveSeconds: number;
+  highestRequiredQualifiedPages: number;
+  cooldowns: NativeCooldownPolicyInput[];
+  readingGates: NativeReadingGateInput[];
+  groupUsage: NativeGroupAllowanceSnapshot[];
+  activeAccessLeases: { groupId: string; packageNames: string[]; endsAt: number }[];
+  foregroundGroupId?: string;
+  evidence?: NativeDailyReadingEvidence;
+  updatedAt: number;
 }
 
 export interface NativeRoutineWindowInput {
@@ -137,6 +183,15 @@ export interface NativeEnforcementDiagnostics {
   dailyUsageAppCount?: number;
   lastUsageReconciledAt?: number;
   lastUsageAccountedAt?: number;
+  attentionDateKey?: string;
+  dailyCooldownOrdinal?: number;
+  readingGateCount?: number;
+  activeReadingGateGroupId?: string;
+  activeReadingGateOrdinal?: number;
+  activeReadingRequiredSeconds?: number;
+  activeReadingRequiredPages?: number;
+  readerProviderAvailable?: boolean;
+  readerProtocolCompatible?: boolean;
 }
 
 export interface NativeRecoveryStatus {

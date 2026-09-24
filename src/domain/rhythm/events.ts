@@ -76,6 +76,8 @@ export function processRhythmEvent(
   let nextReadingEvidence = currentRuntime.readingEvidence?.dateKey === currentDateKey
     ? { ...currentRuntime.readingEvidence }
     : undefined;
+  let nextNativeAttentionAuthority = currentRuntime.nativeAttentionAuthority === true;
+  let nextNativeForegroundGroupId = currentRuntime.nativeForegroundGroupId;
   const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
     currentRuntime.dailyAppUsage || {},
     nowMs
@@ -352,12 +354,48 @@ export function processRhythmEvent(
     }
 
     case 'SYNC_GROUP_ALLOWANCE_USAGE': {
-      Object.assign(nextGroupAllowanceUsage, event.groupAllowanceUsage);
+      if (event.replaceExisting) replaceRecord(nextGroupAllowanceUsage, event.groupAllowanceUsage);
+      else Object.assign(nextGroupAllowanceUsage, event.groupAllowanceUsage);
       break;
     }
 
     case 'SYNC_DAILY_READING_EVIDENCE': {
       nextReadingEvidence = { ...event.evidence };
+      break;
+    }
+
+    case 'SYNC_NATIVE_ATTENTION_EXCHANGE': {
+      nextNativeAttentionAuthority = true;
+      nextDailyAttentionExchange = event.dailyAttentionExchange.dateKey === currentDateKey
+        ? { ...event.dailyAttentionExchange }
+        : createDailyAttentionExchangeState(currentDateKey, nowMs);
+      replaceRecord(nextReadingGates, Object.fromEntries(
+        Object.entries(event.activeReadingGates)
+          .filter(([groupId, gate]) => groupId === gate.groupId && gate.attentionDateKey === currentDateKey)
+          .map(([groupId, gate]) => [groupId, { ...gate }])
+      ));
+      replaceRecord(nextCooldowns, Object.fromEntries(
+        Object.entries(event.activeCooldowns)
+          .filter(([, cooldown]) => cooldown.endsAt > nowMs)
+          .map(([groupId, cooldown]) => [groupId, { ...cooldown }])
+      ));
+      replaceRecord(nextAccessLeases, Object.fromEntries(
+        Object.entries(event.activeAccessLeases)
+          .filter(([, lease]) => lease.endsAt > nowMs)
+          .map(([groupId, lease]) => [groupId, { ...lease }])
+      ));
+      replaceRecord(nextGroupAllowanceUsage, Object.fromEntries(
+        Object.entries(event.groupAllowanceUsage).map(([groupId, usage]) => [groupId, { ...usage }])
+      ));
+      nextNativeForegroundGroupId = event.foregroundGroupId;
+      if (event.readingEvidence?.dateKey === currentDateKey) {
+        nextReadingEvidence = { ...event.readingEvidence };
+      }
+      break;
+    }
+
+    case 'NATIVE_ATTENTION_AUTHORITY_ENABLED': {
+      nextNativeAttentionAuthority = true;
       break;
     }
 
@@ -467,6 +505,17 @@ export function processRhythmEvent(
           if (gate && gate.dailyCooldownOrdinal === existing.dailyCooldownOrdinal) {
             nextReadingGates[event.groupId] = { ...gate, cooldownEndsAt: endsAt };
           }
+        } else if (event.legacy) {
+          nextCooldowns[event.groupId] = {
+            groupId: event.groupId,
+            startedAt,
+            endsAt,
+          };
+          nextDailyAttentionExchange = {
+            ...nextDailyAttentionExchange,
+            cooldownsTriggered: nextDailyAttentionExchange.cooldownsTriggered + 1,
+            updatedAt: nowMs,
+          };
         } else {
           // A newly observed native cooldown can be allocated once. Native-only cycles
           // that elapsed while JS was absent cannot be reconstructed in Pass 02.
@@ -532,15 +581,19 @@ export function processRhythmEvent(
 
   // A completed requirement remains represented during its timer, then disappears
   // only after both the timer and verified daily evidence satisfy the gate.
-  for (const [groupId, gate] of Object.entries(nextReadingGates)) {
-    const reconciledGate = reconcileReadingGate({
-      gate,
-      evidence: nextReadingEvidence,
-      now: nowMs,
-      currentDateKey,
-    });
-    if (reconciledGate) nextReadingGates[groupId] = reconciledGate;
-    else delete nextReadingGates[groupId];
+  const nativeGatesMustRemain = nextNativeAttentionAuthority ||
+    (event.type === 'SYNC_DAILY_READING_EVIDENCE' && event.preserveNativeGates === true);
+  if (!nativeGatesMustRemain) {
+    for (const [groupId, gate] of Object.entries(nextReadingGates)) {
+      const reconciledGate = reconcileReadingGate({
+        gate,
+        evidence: nextReadingEvidence,
+        now: nowMs,
+        currentDateKey,
+      });
+      if (reconciledGate) nextReadingGates[groupId] = reconciledGate;
+      else delete nextReadingGates[groupId];
+    }
   }
 
   // 4. Resolve active routine windows
@@ -674,6 +727,8 @@ export function processRhythmEvent(
     {
       isOvernight,
       groupAllowanceUsage: nextGroupAllowanceUsage,
+      activeReadingGates: nextReadingGates,
+      currentDateKey,
     }
   );
 
@@ -716,6 +771,8 @@ export function processRhythmEvent(
     dailyAttentionExchange: nextDailyAttentionExchange,
     activeReadingGates: nextReadingGates,
     ...(nextReadingEvidence ? { readingEvidence: nextReadingEvidence } : {}),
+    nativeAttentionAuthority: nextNativeAttentionAuthority,
+    nativeForegroundGroupId: nextNativeForegroundGroupId,
   };
 
   return {

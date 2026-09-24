@@ -7,6 +7,8 @@ import {
   RhythmEvent,
   RhythmRuntime,
 } from '../domain/rhythm/types';
+import type { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import { isValidLocalDateKey } from '../domain/rhythm/attentionExchange';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
 import { DeviceApp, RiskGroup } from '../types/domain';
@@ -26,6 +28,128 @@ import {
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
 const ENGINE_RECONCILE_INTERVAL_MS = 60_000;
+
+function getPlatformOS(): string {
+  if (typeof process !== 'undefined' && process.env?.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('react-native')?.Platform?.OS ?? 'web';
+  } catch {
+    return 'web';
+  }
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function createNativeAttentionImportEvent(
+  snapshot: NativeAttentionExchangeSnapshot,
+  now: number
+): RhythmEvent | undefined {
+  const today = getLocalDateKey(now);
+  if (
+    !snapshot ||
+    snapshot.dateKey !== today ||
+    !isValidLocalDateKey(snapshot.dateKey) ||
+    !Number.isInteger(snapshot.cooldownsTriggered) || snapshot.cooldownsTriggered < 0 ||
+    !isFiniteNonNegative(snapshot.highestRequiredActiveSeconds) ||
+    !Number.isInteger(snapshot.highestRequiredQualifiedPages) || snapshot.highestRequiredQualifiedPages < 0
+  ) return undefined;
+
+  const activeReadingGates = Object.fromEntries(
+    (Array.isArray(snapshot.readingGates) ? snapshot.readingGates : [])
+      .filter((gate) =>
+        gate && typeof gate.groupId === 'string' && gate.groupId.length > 0 &&
+        gate.attentionDateKey === today && Number.isInteger(gate.dailyCooldownOrdinal) && gate.dailyCooldownOrdinal > 0 &&
+        isFiniteNonNegative(gate.createdAt) && isFiniteNonNegative(gate.cooldownEndsAt) &&
+        isFiniteNonNegative(gate.requiredReadingSeconds) && Number.isInteger(gate.requiredQualifiedPages) && gate.requiredQualifiedPages >= 0
+      )
+      .map((gate) => [gate.groupId, { ...gate }])
+  );
+  const activeCooldowns = Object.fromEntries(
+    (Array.isArray(snapshot.cooldowns) ? snapshot.cooldowns : [])
+      .filter((cooldown) =>
+        cooldown && typeof cooldown.groupId === 'string' && cooldown.groupId.length > 0 &&
+        isFiniteNonNegative(cooldown.endsAt) && cooldown.endsAt > now &&
+        (cooldown.startedAt === undefined || isFiniteNonNegative(cooldown.startedAt))
+      )
+      .map((cooldown) => [cooldown.groupId, {
+        groupId: cooldown.groupId,
+        startedAt: cooldown.startedAt ?? 0,
+        endsAt: cooldown.endsAt,
+        ...(cooldown.attentionDateKey ? { attentionDateKey: cooldown.attentionDateKey } : {}),
+        ...(cooldown.dailyCooldownOrdinal !== undefined ? { dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal } : {}),
+        requiredReadingSeconds: cooldown.requiredReadingSeconds ?? 0,
+        requiredQualifiedPages: cooldown.requiredQualifiedPages ?? 0,
+      }])
+  );
+  const activeAccessLeases = Object.fromEntries(
+    (Array.isArray(snapshot.activeAccessLeases) ? snapshot.activeAccessLeases : [])
+      .filter((lease) => lease && typeof lease.groupId === 'string' && isFiniteNonNegative(lease.endsAt) && lease.endsAt > now)
+      .map((lease) => [lease.groupId, {
+        id: `native-lease-${lease.groupId}-${lease.endsAt}`,
+        groupId: lease.groupId,
+        startedAt: now,
+        endsAt: lease.endsAt,
+        reason: 'emergency' as const,
+      }])
+  );
+
+  const groupAllowanceUsage = Object.fromEntries(
+    (Array.isArray(snapshot.groupUsage) ? snapshot.groupUsage : [])
+      .filter((usage) =>
+        usage && typeof usage.groupId === 'string' && usage.dateKey === today &&
+        isFiniteNonNegative(usage.usedSeconds) && Number.isFinite(usage.cycleRevision)
+      )
+      .map((usage) => [usage.groupId, {
+        groupId: usage.groupId,
+        dateKey: usage.dateKey,
+        usedSeconds: Math.floor(usage.usedSeconds),
+        ...(usage.activePackageName ? { activePackageName: usage.activePackageName } : {}),
+        ...(isFiniteNonNegative(usage.activeSegmentStartedAt) ? { activeSegmentStartedAt: usage.activeSegmentStartedAt } : {}),
+        ...(isFiniteNonNegative(usage.exhaustedAt) ? { exhaustedAt: usage.exhaustedAt } : usage.exhausted ? { exhaustedAt: now } : {}),
+        cycleRevision: Math.max(0, Math.floor(usage.cycleRevision)),
+      }])
+  );
+
+  const readingEvidence = snapshot.evidence && snapshot.evidence.dateKey === today &&
+    typeof snapshot.evidence.providerAvailable === 'boolean' &&
+    typeof snapshot.evidence.protocolCompatible === 'boolean' &&
+    isFiniteNonNegative(snapshot.evidence.verifiedActiveSeconds) &&
+    Number.isInteger(snapshot.evidence.qualifiedPages) && snapshot.evidence.qualifiedPages >= 0 &&
+    isFiniteNonNegative(snapshot.evidence.updatedAtEpochMs)
+    ? {
+        dateKey: today,
+        providerAvailable: snapshot.evidence.providerAvailable,
+        protocolCompatible: snapshot.evidence.protocolCompatible,
+        verifiedActiveSeconds: snapshot.evidence.verifiedActiveSeconds,
+        qualifiedPages: snapshot.evidence.qualifiedPages,
+        readerUpdatedAtEpochMs: snapshot.evidence.updatedAtEpochMs,
+        syncedAtEpochMs: now,
+      }
+    : undefined;
+
+  return {
+    type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
+    dailyAttentionExchange: {
+      dateKey: today,
+      cooldownsTriggered: snapshot.cooldownsTriggered,
+      highestRequiredActiveSeconds: Math.floor(snapshot.highestRequiredActiveSeconds),
+      highestRequiredQualifiedPages: snapshot.highestRequiredQualifiedPages,
+      updatedAt: isFiniteNonNegative(snapshot.updatedAt) ? snapshot.updatedAt : now,
+    },
+    activeReadingGates,
+    activeCooldowns,
+    activeAccessLeases,
+    groupAllowanceUsage,
+    ...(typeof snapshot.foregroundGroupId === 'string' ? { foregroundGroupId: snapshot.foregroundGroupId } : {}),
+    ...(readingEvidence ? { readingEvidence } : {}),
+    timestamp: now,
+  };
+}
 
 export class RhythmCoordinator {
   private static instance: RhythmCoordinator | null = null;
@@ -191,73 +315,97 @@ export class RhythmCoordinator {
       return;
     }
 
-    const snapshot = await getPlatformServices().nativeRhythm.getSnapshot?.();
-    if (!snapshot) return;
+    const services = getPlatformServices();
+    if (getPlatformOS() === 'android') {
+      let snapshot: NativeAttentionExchangeSnapshot | null = null;
+      try {
+        snapshot = await services.nativeRhythm.getAndroidSnapshot?.() ?? null;
+      } catch {
+        snapshot = null;
+      }
 
-    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
-      if (endsAt <= now) continue;
+      if (!snapshot) {
+        try {
+          // Android native authority is imported independently of the iOS App Group snapshot.
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+          snapshot = await RhythmDeviceModule?.getAttentionExchangeSnapshot?.() ?? null;
+        } catch {
+          snapshot = null;
+        }
+      }
 
-      const effects = this.engine.dispatch({
-        type: 'NATIVE_COOLDOWN_RESTORED',
-        groupId,
-        endsAt,
-        timestamp: now,
-      });
-
-      await this.executeEffects(effects);
-    }
-
-    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
-      if (endsAt <= now) continue;
-
-      const effects = this.engine.dispatch({
-        type: 'NATIVE_ACCESS_LEASE_RESTORED',
-        groupId,
-        endsAt,
-        timestamp: now,
-      });
-
-      await this.executeEffects(effects);
-    }
-
-    // Reconcile the authoritative Android group usage snapshot if available.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
-      if (RhythmDeviceModule?.getGroupUsageSnapshot) {
-        const usageSnapshot = await RhythmDeviceModule.getGroupUsageSnapshot();
-        if (usageSnapshot?.length > 0) {
-          const currentGroupUsage = { ...(this.engine.getGroupAllowanceUsage() || {}) };
-          for (const group of usageSnapshot) {
-            if (group.cooldownEndsAt && group.cooldownEndsAt > now) {
-              const cooldownEffects = this.engine.dispatch({
-                type: 'NATIVE_COOLDOWN_RESTORED',
-                groupId: group.groupId,
-                endsAt: group.cooldownEndsAt,
-                timestamp: now,
-              });
-              await this.executeEffects(cooldownEffects);
-            }
-            currentGroupUsage[group.groupId] = {
-              groupId: group.groupId,
-              dateKey: group.dateKey,
-              usedSeconds: group.usedSeconds,
-              activePackageName: group.activePackageName,
-              activeSegmentStartedAt: group.activeSegmentStartedAt,
-              exhaustedAt: group.exhausted ? group.exhaustedAt ?? now : undefined,
-              cycleRevision: group.cycleRevision,
-            };
-          }
+      if (snapshot?.attentionStateInitialized) {
+        const event = createNativeAttentionImportEvent(snapshot, now);
+        if (event) {
+          const effects = this.engine.dispatch(event);
+          await this.executeEffects(effects);
+        } else if (!this.engine.getRuntime().nativeAttentionAuthority) {
+          const effects = this.engine.dispatch({ type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED', timestamp: now });
+          await this.executeEffects(effects);
+        }
+      } else if (snapshot) {
+        // Upgrade bridge for pre-v1.2 native cooldowns: restore existing timers
+        // without retroactive reading debt, while preserving usage and leases.
+        for (const cooldown of snapshot.cooldowns ?? []) {
+          if (cooldown.endsAt <= now) continue;
           const effects = this.engine.dispatch({
-            type: 'SYNC_GROUP_ALLOWANCE_USAGE',
-            groupAllowanceUsage: currentGroupUsage,
+            type: 'NATIVE_COOLDOWN_RESTORED',
+            groupId: cooldown.groupId,
+            endsAt: cooldown.endsAt,
+            legacy: true,
             timestamp: now,
           });
           await this.executeEffects(effects);
         }
+        for (const lease of snapshot.activeAccessLeases ?? []) {
+          if (lease.endsAt <= now) continue;
+          const effects = this.engine.dispatch({
+            type: 'NATIVE_ACCESS_LEASE_RESTORED',
+            groupId: lease.groupId,
+            endsAt: lease.endsAt,
+            timestamp: now,
+          });
+          await this.executeEffects(effects);
+        }
+        const groupAllowanceUsage = Object.fromEntries(
+          (snapshot.groupUsage ?? [])
+            .filter((usage) => usage.dateKey === getLocalDateKey(now) && isFiniteNonNegative(usage.usedSeconds))
+            .map((usage) => [usage.groupId, {
+              groupId: usage.groupId,
+              dateKey: usage.dateKey,
+              usedSeconds: Math.floor(usage.usedSeconds),
+              ...(usage.activePackageName ? { activePackageName: usage.activePackageName } : {}),
+              ...(isFiniteNonNegative(usage.activeSegmentStartedAt) ? { activeSegmentStartedAt: usage.activeSegmentStartedAt } : {}),
+              ...(isFiniteNonNegative(usage.exhaustedAt) ? { exhaustedAt: usage.exhaustedAt } : usage.exhausted ? { exhaustedAt: now } : {}),
+              cycleRevision: Math.max(0, Math.floor(usage.cycleRevision)),
+            }])
+        );
+        const effects = this.engine.dispatch({
+          type: 'SYNC_GROUP_ALLOWANCE_USAGE',
+          groupAllowanceUsage,
+          replaceExisting: true,
+          timestamp: now,
+        });
+        await this.executeEffects(effects);
       }
-    } catch {
-      // Native snapshot import boundary (non-fatal)
+
+      return;
+    }
+
+    // iOS keeps its existing App Group snapshot import path.
+    const snapshot = await services.nativeRhythm.getSnapshot?.();
+    if (!snapshot) return;
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+      const effects = this.engine.dispatch({ type: 'NATIVE_COOLDOWN_RESTORED', groupId, endsAt, timestamp: now });
+      await this.executeEffects(effects);
+    }
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+      const effects = this.engine.dispatch({ type: 'NATIVE_ACCESS_LEASE_RESTORED', groupId, endsAt, timestamp: now });
+      await this.executeEffects(effects);
     }
   }
 
@@ -348,6 +496,11 @@ export class RhythmCoordinator {
       return;
     }
 
+    const now = Date.now();
+    // Import native policy/gates before usage refresh can dispatch and sync JS
+    // projections; stale JavaScript state must never be written over Android authority.
+    await this.importNativeStateOnResume(now);
+
     // Explicitly trigger an immediate bounded activity events refresh to update
     // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
     const { usage } = getPlatformServices();
@@ -359,8 +512,8 @@ export class RhythmCoordinator {
       }
     }
 
-    await this.reconcilePlatformActivation(Date.now(), {
-      importNativeState: true,
+    await this.reconcilePlatformActivation(now, {
+      importNativeState: false,
       finalSync: true,
     });
 
@@ -369,10 +522,10 @@ export class RhythmCoordinator {
 
   /** Refreshes Reader Protocol V2 evidence for the current local date on demand. */
   public async refreshDailyReadingEvidence(now: number = Date.now()): Promise<void> {
-    await this.refreshDailyEvidence(now, true);
+    await this.refreshDailyEvidence(now, true, true);
   }
 
-  private async refreshDailyEvidence(now: number, force: boolean): Promise<void> {
+  private async refreshDailyEvidence(now: number, force: boolean, reconcileNative: boolean = false): Promise<void> {
     if (!this.engine || !this.config) return;
     if (this.evidenceRefreshPromise) {
       await this.evidenceRefreshPromise;
@@ -393,10 +546,17 @@ export class RhythmCoordinator {
       const effects = this.engine.dispatch({
         type: 'SYNC_DAILY_READING_EVIDENCE',
         evidence,
+        preserveNativeGates: this.engine.getRuntime().nativeAttentionAuthority === true,
         timestamp: now,
       });
       await this.executeEffects(effects);
+      if (reconcileNative && getPlatformOS() === 'android') {
+        // Native re-queries Reader through the shared Android client and imports
+        // its gate-clearing decision; the JS cache never deletes native gates.
+        await this.importNativeStateOnResume(now);
+      }
       await getPlatformServices().storage.saveRuntime(this.engine.toPersistedRuntime(now));
+      if (reconcileNative) await this.syncNativeState();
       this.notifyListeners();
     })();
     this.evidenceRefreshPromise = refresh;

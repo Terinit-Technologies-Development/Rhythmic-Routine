@@ -11,6 +11,8 @@ import {
   NativeRoutineWindowInput,
   NativeRoutineScheduleInput,
   NativeCooldownPolicyInput,
+  NativeReadingAttentionPolicyInput,
+  NativeAttentionExchangeSnapshot,
   NativeUsageEvent,
   NativeRecoveryStatus,
   NativeDailyReadingEvidence,
@@ -114,6 +116,10 @@ export const FallbackModule = {
   reconcileGroupUsage: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => true,
   setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => true,
+  setAttentionExchangePolicy: async (_policy: NativeReadingAttentionPolicyInput): Promise<boolean> => true,
+  setAttentionExchangeState: async (_snapshot: Record<string, unknown>): Promise<boolean> => true,
+  getAttentionExchangeSnapshot: async (): Promise<NativeAttentionExchangeSnapshot | null> => null,
+  reconcileAttentionExchange: async (): Promise<boolean> => false,
   getEnforcementDiagnostics: async (): Promise<NativeEnforcementDiagnostics> => ({
     serviceRunning: false,
     baseRestrictedPackageCount: 0,
@@ -160,6 +166,7 @@ export const FallbackModule = {
     qualifiedPages: 0,
     updatedAtEpochMs: 0,
   }),
+  openRhythmicReader: async (): Promise<boolean> => false,
 };
 
 let nativeModuleAvailable = false;
