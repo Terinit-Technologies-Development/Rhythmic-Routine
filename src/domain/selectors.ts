@@ -1,4 +1,6 @@
 import { DeviceApp, RiskGroup, RoutineWindow } from '../types/domain';
+import { resolveGroupAllowanceMinutes } from './rhythm/allowance';
+export { getRiskGroupStatus, RiskGroupStatus } from './rhythm/allowance';
 
 /**
  * Finds a routine window by type.
@@ -118,3 +120,42 @@ export function formatSecondsToHHMMSS(totalSeconds: number): string {
     .toString()
     .padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+export interface CooldownDisplayInfo {
+  activeGroup?: RiskGroup;
+  groupName: string;
+  allowanceMinutes?: number;
+  sessionThresholdMinutes?: number;
+  cooldownMinutes?: number;
+  title: string;
+  subtitle: string;
+}
+
+/**
+ * Resolves runtime cooldown information dynamically without hardcoded Social labels.
+ * If the runtime references a missing group, falls back gracefully without crashing.
+ */
+export function resolveCooldownInfo(
+  riskGroups: RiskGroup[],
+  activeRiskGroupId?: string
+): CooldownDisplayInfo {
+  const activeGroup = activeRiskGroupId
+    ? riskGroups.find((g) => g.id === activeRiskGroupId)
+    : undefined;
+
+  const allowance = activeGroup ? resolveGroupAllowanceMinutes(activeGroup) : undefined;
+  const recovery = activeGroup?.cooldownMinutes;
+
+  return {
+    activeGroup,
+    groupName: activeGroup ? activeGroup.name : 'Protected Apps',
+    allowanceMinutes: allowance,
+    sessionThresholdMinutes: allowance,
+    cooldownMinutes: recovery,
+    title: activeGroup ? `${activeGroup.name} cooldown` : 'Recovery break active',
+    subtitle: activeGroup
+      ? `${allowance} min group allowance reached · ${recovery} min recovery`
+      : 'Recovery break active',
+  };
+}
+

@@ -8,6 +8,7 @@ import { DemoStateSwitcher } from '../src/components/DemoStateSwitcher';
 import { TimeSelectorModal } from '../src/components/TimeSelectorModal';
 import { AppEditModal } from '../src/components/AppEditModal';
 import { EmergencyAccessModal } from '../src/components/EmergencyAccessModal';
+import { AccountabilityApprovalModal } from '../src/components/AccountabilityApprovalModal';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { configurePlatformServices } from '../src/platform/PlatformServices';
 import { NativeUsageProvider } from '../src/platform/native/NativeUsageProvider';
@@ -44,6 +45,7 @@ export default function RootLayout() {
           await store.checkPermissions();
           await store.refreshDailyUsage();
           await store.refreshInsights();
+          await store.refreshReadingEvidence();
         };
 
         resume().catch(() => {});
@@ -71,6 +73,7 @@ export default function RootLayout() {
             <Stack.Screen name="risk-groups/[id]" />
             <Stack.Screen name="touch-grass" />
             <Stack.Screen name="settings" />
+            <Stack.Screen name="accountability" />
           </Stack>
 
           {/* Web-only interactive state simulation switcher */}
@@ -80,6 +83,7 @@ export default function RootLayout() {
           <TimeSelectorModal />
           <AppEditModal />
           <EmergencyAccessModal />
+          <AccountabilityApprovalModal />
         </View>
       </View>
     </SafeAreaProvider>

@@ -1,16 +1,27 @@
-import { AccessLease, DailyAppUsage, DeviceApp, RiskGroup, RoutineWindow } from '../../types/domain';
+import { AccessLease, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow } from '../../types/domain';
 import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns, RestrictionReason } from './types';
-import { isDailyAllowanceExhausted } from './allowance';
+import type { ActiveReadingGate } from './attentionExchange';
+import { getLocalDateKey, isGroupAllowanceExhausted } from './allowance';
 
 export interface RestrictionOptions {
   isOvernight?: boolean;
-  dailyAppUsage?: Record<string, DailyAppUsage>;
+  /** v1.0.2: authoritative per-group allowance ledgers (sole allowance authority). */
+  groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** Pass 03: recovery satisfaction state per group for cooldown re-entry gating. */
+  groupRecoverySatisfied?: Record<string, boolean>;
+  /** Pass 03: reading obligations persist after their native cooldown timer expires. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  currentDateKey?: string;
 }
 
 /**
  * Computes effective desired app restrictions across active routine windows, overnight protection,
- * all active cooldowns, and exhausted daily allowances, minus active access lease suppressions.
+ * all active cooldowns, and exhausted group allowances, minus active access lease suppressions.
  * Maintains the fundamental invariant: Essential apps are NEVER restricted.
+ *
+ * v1.0.2: the Risk Group shared allowance is the SOLE allowance authority. Legacy
+ * per-app ledgers (DailyAppUsage) are never consulted here, even if present on
+ * the runtime for migration/observational compatibility.
  */
 export function computeEffectiveRestrictions(
   activeWindows: RoutineWindow[],
@@ -72,7 +83,12 @@ export function computeEffectiveRestrictions(
     : [];
 
   for (const cooldown of cooldownList) {
-    if (cooldown.endsAt <= now) continue;
+    const isElapsed = cooldown.endsAt <= now;
+    const isRecoveryRequired = cooldown.recoveryRequired ?? false;
+    const isSatisfied = options?.groupRecoverySatisfied?.[cooldown.groupId] ?? false;
+
+    // Cooldown restriction clears only when time has elapsed AND (recovery is not required OR recovery is satisfied)
+    if (isElapsed && (!isRecoveryRequired || isSatisfied)) continue;
 
     const group = riskGroups.find((g) => g.id === cooldown.groupId);
     if (!group) continue;
@@ -82,6 +98,20 @@ export function computeEffectiveRestrictions(
         type: 'cooldown',
         sourceId: cooldown.groupId,
       });
+    }
+  }
+
+  // An expired timer is no longer a cooldown. A current-day native reading gate
+  // remains a separate restriction reason until native reconciliation clears it.
+  const currentDateKey = options?.currentDateKey ?? getLocalDateKey(now);
+  for (const [groupId, gate] of Object.entries(options?.activeReadingGates ?? {})) {
+    if (gate.attentionDateKey !== currentDateKey || gate.cooldownEndsAt > now) continue;
+    const group = riskGroups.find((item) => item.id === groupId);
+    if (!group) continue;
+    for (const appId of group.appIds) {
+      const app = apps.find((item) => item.id === appId);
+      if (app?.classification !== 'risk') continue;
+      addReason(appId, { type: 'reading-quota', sourceId: groupId });
     }
   }
 
@@ -97,14 +127,21 @@ export function computeEffectiveRestrictions(
     }
   }
 
-  // 4. Process Daily Allowance Exhaustion
-  for (const app of apps) {
-    if (app.classification === 'risk') {
-      if (isDailyAllowanceExhausted(app, options?.dailyAppUsage, now)) {
-        addReason(app.id, {
-          type: 'daily-allowance',
-          sourceId: app.id,
-        });
+  // 4. Process Group Allowance Exhaustion (v1.0.2 sole allowance authority).
+  // When a group's shared allowance is exhausted, every member Risk app is
+  // restricted. Per-app ledgers are deliberately never consulted.
+  if (options?.groupAllowanceUsage) {
+    for (const group of riskGroups) {
+      if (isGroupAllowanceExhausted(group, options.groupAllowanceUsage[group.id], now)) {
+        for (const appId of group.appIds) {
+          const app = apps.find((a) => a.id === appId);
+          if (app && app.classification === 'risk') {
+            addReason(appId, {
+              type: 'daily-allowance',
+              sourceId: group.id,
+            });
+          }
+        }
       }
     }
   }

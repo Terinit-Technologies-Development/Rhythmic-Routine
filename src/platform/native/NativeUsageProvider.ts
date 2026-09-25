@@ -1,4 +1,4 @@
-import { AppUsageSnapshot, DeviceApp, DailyUsageSnapshot } from '../../types/domain';
+import { AppUsageSnapshot, DeviceApp, GroupAllowanceSnapshot } from '../../types/domain';
 import { UsageActivityEvent, UsageProvider } from '../UsageProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 import { initialApps } from '../../data/mockData';
@@ -47,14 +47,14 @@ export class NativeUsageProvider implements UsageProvider {
     }
   }
 
-  async getDailyUsageSnapshot(): Promise<DailyUsageSnapshot> {
-    return RhythmDeviceModule.getDailyUsageSnapshot();
+  async getGroupUsageSnapshot(): Promise<GroupAllowanceSnapshot[]> {
+    return RhythmDeviceModule.getGroupUsageSnapshot();
   }
 
-  async reconcileDailyUsage(): Promise<DailyUsageSnapshot> {
-    const snapshot = await RhythmDeviceModule.reconcileDailyUsage();
+  async reconcileGroupUsage(): Promise<GroupAllowanceSnapshot[]> {
+    const snapshot = await RhythmDeviceModule.reconcileGroupUsage();
     if (!snapshot) {
-      return this.getDailyUsageSnapshot();
+      return this.getGroupUsageSnapshot();
     }
     return snapshot;
   }

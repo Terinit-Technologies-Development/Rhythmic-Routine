@@ -1,5 +1,6 @@
 import { DeviceApp, RiskGroup } from '../../types/domain';
 import { ActiveRiskSession, SESSION_RESET_GAP_MS } from './types';
+import { resolveGroupAllowanceMinutes } from './allowance';
 
 /**
  * Finds the risk group ID for a specific app if it is classified as 'risk'.
@@ -83,14 +84,21 @@ export function resumeRiskSession(
 }
 
 /**
- * Checks whether an active session has reached or exceeded the group continuous session threshold.
+ * Checks whether an active session has reached or exceeded the group shared
+ * allowance. v1.0.2: allowanceMinutes is the single active policy;
+ * legacy sessionThresholdMinutes is consulted only as a fallback for
+ * unmigrated fixtures. A 0-minute allowance is exhausted immediately by the
+ * group-allowance contract (see isGroupAllowanceExhausted); session-threshold
+ * evaluation here returns false for <= 0 so cooldown creation stays with the
+ * allowance/cooldown lifecycle owned by Pass 02.
  */
 export function isThresholdReached(
   session: ActiveRiskSession,
   group: RiskGroup
 ): boolean {
-  if (!group || !group.sessionThresholdMinutes || group.sessionThresholdMinutes <= 0) {
+  const allowance = resolveGroupAllowanceMinutes(group);
+  if (!Number.isFinite(allowance) || allowance <= 0) {
     return false;
   }
-  return session.accumulatedSeconds >= group.sessionThresholdMinutes * 60;
+  return session.accumulatedSeconds >= allowance * 60;
 }

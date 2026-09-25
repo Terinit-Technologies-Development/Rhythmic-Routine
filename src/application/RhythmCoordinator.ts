@@ -7,20 +7,149 @@ import {
   RhythmEvent,
   RhythmRuntime,
 } from '../domain/rhythm/types';
+import type { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import { isValidLocalDateKey } from '../domain/rhythm/attentionExchange';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
-import { DeviceApp, RiskGroup, DailyRiskAllowancePolicy } from '../types/domain';
+import { DeviceApp, RiskGroup } from '../types/domain';
 import { reconcileRiskGroupMembership } from '../domain/rhythm/membershipReconciliation';
 import {
-  AllowanceEditResult,
-  DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
+  DailyReadingEvidenceClient,
+  NativeDailyReadingEvidenceClient,
+} from '../domain/rhythm/readingEvidence';
+import {
+  GroupAllowanceEditResult,
   getLocalDateKey,
-  validateDailyAllowanceEdit,
+  resolveGroupAllowanceMinutes,
+  resolveGroupRecoveryActivityId,
+  validateGroupAllowanceEdit,
 } from '../domain/rhythm/allowance';
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
 const ENGINE_RECONCILE_INTERVAL_MS = 60_000;
+
+function getPlatformOS(): string {
+  if (typeof process !== 'undefined' && process.env?.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('react-native')?.Platform?.OS ?? 'web';
+  } catch {
+    return 'web';
+  }
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function createNativeAttentionImportEvent(
+  snapshot: NativeAttentionExchangeSnapshot,
+  now: number
+): RhythmEvent | undefined {
+  const today = getLocalDateKey(now);
+  if (
+    !snapshot ||
+    snapshot.dateKey !== today ||
+    !isValidLocalDateKey(snapshot.dateKey) ||
+    !Number.isInteger(snapshot.cooldownsTriggered) || snapshot.cooldownsTriggered < 0 ||
+    !isFiniteNonNegative(snapshot.highestRequiredActiveSeconds) ||
+    !Number.isInteger(snapshot.highestRequiredQualifiedPages) || snapshot.highestRequiredQualifiedPages < 0
+  ) return undefined;
+
+  const activeReadingGates = Object.fromEntries(
+    (Array.isArray(snapshot.readingGates) ? snapshot.readingGates : [])
+      .filter((gate) =>
+        gate && typeof gate.groupId === 'string' && gate.groupId.length > 0 &&
+        gate.attentionDateKey === today && Number.isInteger(gate.dailyCooldownOrdinal) && gate.dailyCooldownOrdinal > 0 &&
+        isFiniteNonNegative(gate.createdAt) && isFiniteNonNegative(gate.cooldownEndsAt) &&
+        isFiniteNonNegative(gate.requiredReadingSeconds) && Number.isInteger(gate.requiredQualifiedPages) && gate.requiredQualifiedPages >= 0
+      )
+      .map((gate) => [gate.groupId, { ...gate }])
+  );
+  const activeCooldowns = Object.fromEntries(
+    (Array.isArray(snapshot.cooldowns) ? snapshot.cooldowns : [])
+      .filter((cooldown) =>
+        cooldown && typeof cooldown.groupId === 'string' && cooldown.groupId.length > 0 &&
+        isFiniteNonNegative(cooldown.endsAt) && cooldown.endsAt > now &&
+        (cooldown.startedAt === undefined || isFiniteNonNegative(cooldown.startedAt))
+      )
+      .map((cooldown) => [cooldown.groupId, {
+        groupId: cooldown.groupId,
+        startedAt: cooldown.startedAt ?? 0,
+        endsAt: cooldown.endsAt,
+        ...(cooldown.attentionDateKey ? { attentionDateKey: cooldown.attentionDateKey } : {}),
+        ...(cooldown.dailyCooldownOrdinal !== undefined ? { dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal } : {}),
+        requiredReadingSeconds: cooldown.requiredReadingSeconds ?? 0,
+        requiredQualifiedPages: cooldown.requiredQualifiedPages ?? 0,
+      }])
+  );
+  const activeAccessLeases = Object.fromEntries(
+    (Array.isArray(snapshot.activeAccessLeases) ? snapshot.activeAccessLeases : [])
+      .filter((lease) => lease && typeof lease.groupId === 'string' && isFiniteNonNegative(lease.endsAt) && lease.endsAt > now)
+      .map((lease) => [lease.groupId, {
+        id: `native-lease-${lease.groupId}-${lease.endsAt}`,
+        groupId: lease.groupId,
+        startedAt: now,
+        endsAt: lease.endsAt,
+        reason: 'emergency' as const,
+      }])
+  );
+
+  const groupAllowanceUsage = Object.fromEntries(
+    (Array.isArray(snapshot.groupUsage) ? snapshot.groupUsage : [])
+      .filter((usage) =>
+        usage && typeof usage.groupId === 'string' && usage.dateKey === today &&
+        isFiniteNonNegative(usage.usedSeconds) && Number.isFinite(usage.cycleRevision)
+      )
+      .map((usage) => [usage.groupId, {
+        groupId: usage.groupId,
+        dateKey: usage.dateKey,
+        usedSeconds: Math.floor(usage.usedSeconds),
+        ...(usage.activePackageName ? { activePackageName: usage.activePackageName } : {}),
+        ...(isFiniteNonNegative(usage.activeSegmentStartedAt) ? { activeSegmentStartedAt: usage.activeSegmentStartedAt } : {}),
+        ...(isFiniteNonNegative(usage.exhaustedAt) ? { exhaustedAt: usage.exhaustedAt } : usage.exhausted ? { exhaustedAt: now } : {}),
+        cycleRevision: Math.max(0, Math.floor(usage.cycleRevision)),
+      }])
+  );
+
+  const readingEvidence = snapshot.evidence && snapshot.evidence.dateKey === today &&
+    typeof snapshot.evidence.providerAvailable === 'boolean' &&
+    typeof snapshot.evidence.protocolCompatible === 'boolean' &&
+    isFiniteNonNegative(snapshot.evidence.verifiedActiveSeconds) &&
+    Number.isInteger(snapshot.evidence.qualifiedPages) && snapshot.evidence.qualifiedPages >= 0 &&
+    isFiniteNonNegative(snapshot.evidence.updatedAtEpochMs)
+    ? {
+        dateKey: today,
+        providerAvailable: snapshot.evidence.providerAvailable,
+        protocolCompatible: snapshot.evidence.protocolCompatible,
+        verifiedActiveSeconds: snapshot.evidence.verifiedActiveSeconds,
+        qualifiedPages: snapshot.evidence.qualifiedPages,
+        readerUpdatedAtEpochMs: snapshot.evidence.updatedAtEpochMs,
+        syncedAtEpochMs: now,
+      }
+    : undefined;
+
+  return {
+    type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
+    dailyAttentionExchange: {
+      dateKey: today,
+      cooldownsTriggered: snapshot.cooldownsTriggered,
+      highestRequiredActiveSeconds: Math.floor(snapshot.highestRequiredActiveSeconds),
+      highestRequiredQualifiedPages: snapshot.highestRequiredQualifiedPages,
+      updatedAt: isFiniteNonNegative(snapshot.updatedAt) ? snapshot.updatedAt : now,
+    },
+    activeReadingGates,
+    activeCooldowns,
+    activeAccessLeases,
+    groupAllowanceUsage,
+    ...(typeof snapshot.foregroundGroupId === 'string' ? { foregroundGroupId: snapshot.foregroundGroupId } : {}),
+    ...(readingEvidence ? { readingEvidence } : {}),
+    timestamp: now,
+  };
+}
 
 export class RhythmCoordinator {
   private static instance: RhythmCoordinator | null = null;
@@ -31,6 +160,12 @@ export class RhythmCoordinator {
   private unsubscribeActivity?: () => void;
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private isInitialized = false;
+  private evidenceRefreshPromise?: Promise<void>;
+  private readonly dailyReadingEvidenceClient: DailyReadingEvidenceClient;
+
+  constructor(dailyReadingEvidenceClient: DailyReadingEvidenceClient = new NativeDailyReadingEvidenceClient()) {
+    this.dailyReadingEvidenceClient = dailyReadingEvidenceClient;
+  }
 
   public static getInstance(): RhythmCoordinator {
     if (!RhythmCoordinator.instance) {
@@ -163,6 +298,11 @@ export class RhythmCoordinator {
 
     await this.syncNativeState();
 
+    const runtime = this.engine.getRuntime();
+    if (runtime.readingEvidence?.dateKey !== getLocalDateKey(now)) {
+      await this.refreshDailyEvidence(now, false);
+    }
+
     this.notifyListeners();
     return this.engine.getRuntime();
   }
@@ -175,62 +315,97 @@ export class RhythmCoordinator {
       return;
     }
 
-    const snapshot = await getPlatformServices().nativeRhythm.getSnapshot?.();
-    if (!snapshot) return;
+    const services = getPlatformServices();
+    if (getPlatformOS() === 'android') {
+      let snapshot: NativeAttentionExchangeSnapshot | null = null;
+      try {
+        snapshot = await services.nativeRhythm.getAndroidSnapshot?.() ?? null;
+      } catch {
+        snapshot = null;
+      }
 
-    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
-      if (endsAt <= now) continue;
+      if (!snapshot) {
+        try {
+          // Android native authority is imported independently of the iOS App Group snapshot.
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+          snapshot = await RhythmDeviceModule?.getAttentionExchangeSnapshot?.() ?? null;
+        } catch {
+          snapshot = null;
+        }
+      }
 
-      const effects = this.engine.dispatch({
-        type: 'NATIVE_COOLDOWN_RESTORED',
-        groupId,
-        endsAt,
-        timestamp: now,
-      });
-
-      await this.executeEffects(effects);
-    }
-
-    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
-      if (endsAt <= now) continue;
-
-      const effects = this.engine.dispatch({
-        type: 'NATIVE_ACCESS_LEASE_RESTORED',
-        groupId,
-        endsAt,
-        timestamp: now,
-      });
-
-      await this.executeEffects(effects);
-    }
-
-    // Reconcile Android native daily usage snapshot if available
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
-      if (RhythmDeviceModule?.getDailyUsageSnapshot) {
-        const usageSnapshot = await RhythmDeviceModule.getDailyUsageSnapshot();
-        if (usageSnapshot?.apps?.length > 0) {
-          const currentDailyUsage = { ...this.engine.getDailyAppUsage() };
-          for (const app of usageSnapshot.apps) {
-            currentDailyUsage[app.packageName] = {
-              appId: app.packageName,
-              dateKey: usageSnapshot.dateKey,
-              usedSeconds: app.usedSeconds,
-              activeSegmentStartedAt: app.activeSegmentStartedAt,
-              exhaustedAt: app.exhausted ? now : undefined,
-            };
-          }
+      if (snapshot?.attentionStateInitialized) {
+        const event = createNativeAttentionImportEvent(snapshot, now);
+        if (event) {
+          const effects = this.engine.dispatch(event);
+          await this.executeEffects(effects);
+        } else if (!this.engine.getRuntime().nativeAttentionAuthority) {
+          const effects = this.engine.dispatch({ type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED', timestamp: now });
+          await this.executeEffects(effects);
+        }
+      } else if (snapshot) {
+        // Upgrade bridge for pre-v1.2 native cooldowns: restore existing timers
+        // without retroactive reading debt, while preserving usage and leases.
+        for (const cooldown of snapshot.cooldowns ?? []) {
+          if (cooldown.endsAt <= now) continue;
           const effects = this.engine.dispatch({
-            type: 'SYNC_DAILY_APP_USAGE',
-            dailyAppUsage: currentDailyUsage,
+            type: 'NATIVE_COOLDOWN_RESTORED',
+            groupId: cooldown.groupId,
+            endsAt: cooldown.endsAt,
+            legacy: true,
             timestamp: now,
           });
           await this.executeEffects(effects);
         }
+        for (const lease of snapshot.activeAccessLeases ?? []) {
+          if (lease.endsAt <= now) continue;
+          const effects = this.engine.dispatch({
+            type: 'NATIVE_ACCESS_LEASE_RESTORED',
+            groupId: lease.groupId,
+            endsAt: lease.endsAt,
+            timestamp: now,
+          });
+          await this.executeEffects(effects);
+        }
+        const groupAllowanceUsage = Object.fromEntries(
+          (snapshot.groupUsage ?? [])
+            .filter((usage) => usage.dateKey === getLocalDateKey(now) && isFiniteNonNegative(usage.usedSeconds))
+            .map((usage) => [usage.groupId, {
+              groupId: usage.groupId,
+              dateKey: usage.dateKey,
+              usedSeconds: Math.floor(usage.usedSeconds),
+              ...(usage.activePackageName ? { activePackageName: usage.activePackageName } : {}),
+              ...(isFiniteNonNegative(usage.activeSegmentStartedAt) ? { activeSegmentStartedAt: usage.activeSegmentStartedAt } : {}),
+              ...(isFiniteNonNegative(usage.exhaustedAt) ? { exhaustedAt: usage.exhaustedAt } : usage.exhausted ? { exhaustedAt: now } : {}),
+              cycleRevision: Math.max(0, Math.floor(usage.cycleRevision)),
+            }])
+        );
+        const effects = this.engine.dispatch({
+          type: 'SYNC_GROUP_ALLOWANCE_USAGE',
+          groupAllowanceUsage,
+          replaceExisting: true,
+          timestamp: now,
+        });
+        await this.executeEffects(effects);
       }
-    } catch {
-      // Native snapshot import boundary (non-fatal)
+
+      return;
+    }
+
+    // iOS keeps its existing App Group snapshot import path.
+    const snapshot = await services.nativeRhythm.getSnapshot?.();
+    if (!snapshot) return;
+
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeCooldownEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+      const effects = this.engine.dispatch({ type: 'NATIVE_COOLDOWN_RESTORED', groupId, endsAt, timestamp: now });
+      await this.executeEffects(effects);
+    }
+    for (const [groupId, endsAt] of Object.entries(snapshot.activeAccessLeaseEndsAt ?? {})) {
+      if (endsAt <= now) continue;
+      const effects = this.engine.dispatch({ type: 'NATIVE_ACCESS_LEASE_RESTORED', groupId, endsAt, timestamp: now });
+      await this.executeEffects(effects);
     }
   }
 
@@ -239,12 +414,19 @@ export class RhythmCoordinator {
    */
   public async reconcile(
     now: number = Date.now(),
-    options?: { syncNative?: boolean }
+    options?: { syncNative?: boolean; refreshEvidence?: boolean }
   ): Promise<RhythmRuntime> {
     if (!this.engine || !this.config) {
       return this.initialize();
     }
     await reconcileRhythm(this.engine, this.config, now);
+    const runtime = this.engine.getRuntime();
+    if (options?.refreshEvidence !== false && (
+      Object.keys(runtime.activeReadingGates ?? {}).length > 0 ||
+      runtime.readingEvidence?.dateKey !== getLocalDateKey(now)
+    )) {
+      await this.refreshDailyEvidence(now, false);
+    }
     if (options?.syncNative !== false) {
       await this.syncNativeState();
     }
@@ -281,7 +463,10 @@ export class RhythmCoordinator {
 
     await this.reconcile(now, {
       syncNative: false,
+      refreshEvidence: false,
     });
+    // Refresh on initialization/resume even when today's cached projection exists.
+    await this.refreshDailyEvidence(now, true);
 
     const desiredIds = this.engine.getEffectiveRestrictedAppIds();
     if (desiredIds.length > 0) {
@@ -311,6 +496,11 @@ export class RhythmCoordinator {
       return;
     }
 
+    const now = Date.now();
+    // Import native policy/gates before usage refresh can dispatch and sync JS
+    // projections; stale JavaScript state must never be written over Android authority.
+    await this.importNativeStateOnResume(now);
+
     // Explicitly trigger an immediate bounded activity events refresh to update
     // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
     const { usage } = getPlatformServices();
@@ -322,12 +512,59 @@ export class RhythmCoordinator {
       }
     }
 
-    await this.reconcilePlatformActivation(Date.now(), {
-      importNativeState: true,
+    await this.reconcilePlatformActivation(now, {
+      importNativeState: false,
       finalSync: true,
     });
 
     this.notifyListeners();
+  }
+
+  /** Refreshes Reader Protocol V2 evidence for the current local date on demand. */
+  public async refreshDailyReadingEvidence(now: number = Date.now()): Promise<void> {
+    await this.refreshDailyEvidence(now, true, true);
+  }
+
+  private async refreshDailyEvidence(now: number, force: boolean, reconcileNative: boolean = false): Promise<void> {
+    if (!this.engine || !this.config) return;
+    if (this.evidenceRefreshPromise) {
+      await this.evidenceRefreshPromise;
+      return;
+    }
+
+    const dateKey = getLocalDateKey(now);
+    const runtime = this.engine.getRuntime();
+    const hasActiveGate = Object.keys(runtime.activeReadingGates ?? {}).length > 0;
+    if (!force && !hasActiveGate && runtime.readingEvidence?.dateKey === dateKey) return;
+
+    const refresh = (async () => {
+      const evidence = await this.dailyReadingEvidenceClient.query(dateKey);
+      if (!this.engine || !this.config) return;
+      // Discard a response if another event already moved engine state into a new local day.
+      if (this.engine.getRuntime().dailyAttentionExchange?.dateKey !== dateKey) return;
+
+      const effects = this.engine.dispatch({
+        type: 'SYNC_DAILY_READING_EVIDENCE',
+        evidence,
+        preserveNativeGates: this.engine.getRuntime().nativeAttentionAuthority === true,
+        timestamp: now,
+      });
+      await this.executeEffects(effects);
+      if (reconcileNative && getPlatformOS() === 'android') {
+        // Native re-queries Reader through the shared Android client and imports
+        // its gate-clearing decision; the JS cache never deletes native gates.
+        await this.importNativeStateOnResume(now);
+      }
+      await getPlatformServices().storage.saveRuntime(this.engine.toPersistedRuntime(now));
+      if (reconcileNative) await this.syncNativeState();
+      this.notifyListeners();
+    })();
+    this.evidenceRefreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.evidenceRefreshPromise === refresh) this.evidenceRefreshPromise = undefined;
+    }
   }
 
   /**
@@ -339,31 +576,34 @@ export class RhythmCoordinator {
     }
     if (!this.config || !this.engine) return;
 
-    this.config = {
+    const candidateConfig: RhythmConfiguration = {
       ...this.config,
       ...nextConfig,
     };
 
     const { storage } = getPlatformServices();
-    const appClassifications = this.config.apps.reduce<Record<string, { classification: any; riskGroupId?: string; dailyRiskAllowance?: any }>>((acc, app) => {
+    const appClassifications = candidateConfig.apps.reduce<Record<string, { classification: any; riskGroupId?: string }>>((acc, app) => {
       acc[app.id] = {
         classification: app.classification,
         riskGroupId: app.riskGroupId,
-        dailyRiskAllowance: app.dailyRiskAllowance,
       };
       return acc;
     }, {});
 
     await storage.savePreferences({
-      routineWindows: this.config.routineWindows,
-      riskGroups: this.config.riskGroups,
+      routineWindows: candidateConfig.routineWindows,
+      riskGroups: candidateConfig.riskGroups,
       appClassifications,
-      sessionResetGapMs: this.config.sessionResetGapMs ?? 5 * 60 * 1000,
+      sessionResetGapMs: candidateConfig.sessionResetGapMs ?? 5 * 60 * 1000,
       onboardingCompleted: true,
+      accountability: candidateConfig.accountability ?? { enabled: false, partners: [] },
     });
 
+    // Commit in-memory config only after preference persistence succeeds.
+    this.config = candidateConfig;
+
     // Execute effects emitted directly from updateConfiguration
-    const effects = this.engine.updateConfiguration(this.config);
+    const effects = this.engine.updateConfiguration(candidateConfig);
     await this.executeEffects(effects);
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
@@ -371,89 +611,155 @@ export class RhythmCoordinator {
     this.notifyListeners();
   }
 
+  public getRuntimeSnapshot(): RhythmRuntime | null {
+    return this.engine?.getRuntime() ?? null;
+  }
+
   public getConfig(): RhythmConfiguration | null {
     return this.config ? { ...this.config } : null;
   }
 
   /**
-   * Validates and updates a Risk app's daily allowance.
-   * Enforces:
-   * - multiples of 15 min
-   * - max +15 min per day
-   * - reductions down to 0 allowed
-   * - at most once per local day
-   * - persists updated policy and emits history event
+   * v1.0.2: validates and updates a Risk Group's shared allowance.
+   * Enforces (per group per local day):
+   * - multiples of 15 min, minimum 0
+   * - max +15 min upward per successful daily edit
+   * - unrestricted valid downward steps (incl. 0)
+   * - no-op/cancel does not consume the guard
+   * - moving apps between groups never resets policy/guard/usage (this method
+   *   touches only allowanceMinutes + lastAllowanceEditedDateKey)
+   * Increasing preserves already-consumed usage (remaining time only changes);
+   * decreasing below current usage exhausts the group once sync applies.
+   * Usage itself is never reset here.
    */
-  public async updateDailyRiskAllowance(
-    appId: string,
+  public async updateRiskGroupAllowance(
+    groupId: string,
     nextMinutes: number,
     nowMs: number = Date.now()
-  ): Promise<AllowanceEditResult> {
+  ): Promise<GroupAllowanceEditResult & { groupId: string }> {
     if (!this.config || !this.engine) {
-      await this.initialize();
+      try {
+        await this.initialize();
+      } catch {
+        return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
+      }
     }
     if (!this.config || !this.engine) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
+      return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
     }
 
-    const app = this.config.apps.find((a) => a.id === appId);
-    if (!app) {
-      return {
-        allowed: false,
-        nextMinutes,
-        consumesDailyEdit: false,
-        reason: 'app-not-found',
-      };
+    const group = this.config.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      return { ok: false, nextMinutes, groupId, reason: 'group-not-found' };
     }
 
-    if (app.classification !== 'risk') {
-      return {
-        allowed: false,
-        nextMinutes:
-          app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES,
-        consumesDailyEdit: false,
-        reason: 'not-risk-app',
-      };
-    }
-
-    const result = validateDailyAllowanceEdit(app.dailyRiskAllowance, nextMinutes, nowMs, app);
-    if (!result.allowed) {
-      return result;
-    }
-
-    if (!result.consumesDailyEdit) {
-      return result;
-    }
-
+    const currentMinutes = resolveGroupAllowanceMinutes(group);
     const todayKey = getLocalDateKey(nowMs);
-    const previousMinutes =
-      app.dailyRiskAllowance?.allowanceMinutes ?? DEFAULT_DAILY_RISK_ALLOWANCE_MINUTES;
+    const result = validateGroupAllowanceEdit({
+      currentMinutes,
+      requestedMinutes: nextMinutes,
+      lastEditedDateKey: group.lastAllowanceEditedDateKey,
+      todayDateKey: todayKey,
+    });
+    if (!result.ok || !result.consumesDailyEdit) {
+      return { ...result, groupId };
+    }
 
-    const updatedPolicy: DailyRiskAllowancePolicy = {
-      allowanceMinutes: result.nextMinutes,
-      lastEditedDateKey: todayKey,
-    };
-
-    const updatedApps = this.config.apps.map((a) =>
-      a.id === appId ? { ...a, dailyRiskAllowance: updatedPolicy } : a
+    const updatedGroups = this.config.riskGroups.map((g) =>
+      g.id === groupId
+        ? { ...g, allowanceMinutes: result.nextMinutes, lastAllowanceEditedDateKey: todayKey }
+        : g
     );
 
     const { storage } = getPlatformServices();
     await storage.appendHistoryEvent({
-      type: 'daily-allowance-edited',
-      appId,
-      previousMinutes,
+      type: 'group-allowance-edited',
+      groupId,
+      previousMinutes: currentMinutes,
       nextMinutes: result.nextMinutes,
       timestamp: nowMs,
     });
 
-    await this.updateConfig({ apps: updatedApps });
-    return result;
+    await this.updateConfig({ riskGroups: updatedGroups });
+    return { ...result, groupId };
+  }
+
+  /**
+   * v1.0.2: updates a Risk Group's recovery activity reference. Validates
+   * against the local OfflineActivity catalog ids when available; unknown ids
+   * fall back to the 'walk' default at resolve time. Never touches allowance,
+   * edit guard, or usage.
+   */
+  public async updateRiskGroupRecoveryActivity(
+    groupId: string,
+    activityId: string,
+    nowMs: number = Date.now(),
+    validActivityIds?: readonly string[]
+  ): Promise<{ ok: boolean; groupId: string; activityId: string }> {
+    if (!this.config || !this.engine) {
+      await this.initialize();
+    }
+    if (!this.config || !this.engine) {
+      return { ok: false, groupId, activityId };
+    }
+
+    const group = this.config.riskGroups.find((g) => g.id === groupId);
+    if (!group) {
+      return { ok: false, groupId, activityId };
+    }
+
+    const catalogIds = validActivityIds ?? (await this.getKnownRecoveryActivityIds());
+    const nextActivityId =
+      catalogIds.length === 0 || catalogIds.includes(activityId)
+        ? activityId
+        : resolveGroupRecoveryActivityId(group);
+
+    if (nextActivityId === resolveGroupRecoveryActivityId(group) && group.recoveryActivityId !== undefined) {
+      return { ok: true, groupId, activityId: nextActivityId };
+    }
+
+    const updatedGroups = this.config.riskGroups.map((g) =>
+      g.id === groupId ? { ...g, recoveryActivityId: nextActivityId } : g
+    );
+
+    const { storage } = getPlatformServices();
+    await storage.appendHistoryEvent({
+      type: 'group-recovery-activity-changed',
+      groupId,
+      activityId: nextActivityId,
+      timestamp: nowMs,
+    });
+
+    await this.updateConfig({ riskGroups: updatedGroups });
+    return { ok: true, groupId, activityId: nextActivityId };
+  }
+
+  /**
+   * Dispatches RISK_GROUP_DELETED to engine, purges runtime cooldowns,
+   * leases, usage, and session, syncs native state, and persists.
+   */
+  public async deleteRiskGroup(groupId: string, nowMs: number = Date.now()): Promise<void> {
+    if (!this.engine || !this.config) {
+      await this.initialize();
+    }
+    if (!this.engine || !this.config) return;
+
+    await this.dispatch({
+      type: 'RISK_GROUP_DELETED',
+      groupId,
+      timestamp: nowMs,
+    });
+  }
+
+  private async getKnownRecoveryActivityIds(): Promise<string[]> {
+    try {
+      const mod = await import('../data/mockData').catch(() => null);
+      const list = (mod as { offlineActivities?: { id: string }[] } | null)?.offlineActivities;
+      if (Array.isArray(list)) return list.map((a) => a.id);
+    } catch {
+      // fall through
+    }
+    return [];
   }
 
   /**
@@ -479,11 +785,13 @@ export class RhythmCoordinator {
     const mergedApps: DeviceApp[] = discoveredApps.map((discovered) => {
       const existing = existingAppMap.get(discovered.id);
       if (existing) {
+        // v1.0.2: membership/classification merge only; per-app allowance is
+        // never carried (group owns policy, movement never resets it).
         return {
           ...discovered,
           classification: existing.classification,
           riskGroupId: existing.riskGroupId,
-          dailyRiskAllowance: existing.dailyRiskAllowance,
+          dailyRiskAllowance: undefined,
         };
       }
       return {
@@ -510,10 +818,13 @@ export class RhythmCoordinator {
     if (this.reconcileTimer) return;
 
     this.reconcileTimer = setInterval(() => {
+      const now = Date.now();
       this.dispatch({
         type: 'CLOCK_TICK',
-        timestamp: Date.now(),
-      }).catch(() => {});
+        timestamp: now,
+      })
+        .then(() => this.refreshDailyEvidence(now, false))
+        .catch(() => {});
     }, ENGINE_RECONCILE_INTERVAL_MS);
 
     if (this.reconcileTimer && typeof (this.reconcileTimer as any).unref === 'function') {
@@ -579,6 +890,7 @@ export class RhythmCoordinator {
     }
     this.listeners.clear();
     this.isInitialized = false;
+    this.evidenceRefreshPromise = undefined;
     this.engine = null;
     this.config = null;
   }

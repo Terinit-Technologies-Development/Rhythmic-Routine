@@ -6,12 +6,17 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { Check, X, ShieldAlert, CheckCircle2, Scale, HelpCircle, Plus, Minus } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Check, X, ShieldAlert, CheckCircle2, Scale, HelpCircle } from 'lucide-react-native';
 import { AppClassification, DeviceApp } from '../types/domain';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
-import { getLocalDateKey } from '../domain/insights';
+import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
+import { AppPolicyPayload } from '../domain/accountability/types';
+import { buildAppPolicySummary } from '../domain/accountability/policy';
 
 interface FormProps {
   selectedApp: DeviceApp;
@@ -20,73 +25,39 @@ interface FormProps {
 
 const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
-  const updateAppClassification = usePrototypeStore((s) => s.updateAppClassification);
-  const updateDailyRiskAllowance = usePrototypeStore((s) => s.updateDailyRiskAllowance);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const refreshDailyUsage = usePrototypeStore((s) => s.refreshDailyUsage);
-  const dailyUsageSnapshot = usePrototypeStore((s) => s.dailyUsageSnapshot);
-  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
 
+  const insets = useSafeAreaInsets();
   const [classification, setClassification] = useState<AppClassification>(
     selectedApp.classification
   );
-  const [selectedGroupId, setSelectedGroupId] = useState<string>(
-    selectedApp.riskGroupId || 'social'
+  const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(
+    selectedApp.riskGroupId
   );
 
-  const persistedMinutes = selectedApp.dailyRiskAllowance?.allowanceMinutes ?? 30;
-  const [draftMinutes, setDraftMinutes] = useState(persistedMinutes);
-  const [allowanceError, setAllowanceError] = useState<string | null>(null);
-
-  const isLocked = selectedApp.dailyRiskAllowance?.lastEditedDateKey === getLocalDateKey();
-
-  const snapshotApp = dailyUsageSnapshot?.apps.find((a) => a.packageName === selectedApp.id);
-  const isUsageUnavailable = !!dailyUsageError || !snapshotApp;
-  const usedTodayMinutes = snapshotApp
-    ? Math.floor(snapshotApp.usedSeconds / 60)
-    : (selectedApp.usageTodayMinutes || 0);
-  const remainingMinutes = snapshotApp
-    ? Math.ceil(snapshotApp.remainingSeconds / 60)
-    : Math.max(0, persistedMinutes - usedTodayMinutes);
-
-  const usedDisplay = isUsageUnavailable ? '—' : `${usedTodayMinutes} min`;
-  const remainingDisplay = isUsageUnavailable ? '—' : `${remainingMinutes} min`;
+  const selectedGroup = riskGroups.find((g) => g.id === selectedGroupId);
+  const canSave = classification !== 'risk' || Boolean(selectedGroup);
 
   const handleSave = async () => {
-    setAllowanceError(null);
+    if (!canSave) return;
 
-    if (
-      selectedApp.classification === 'risk' &&
-      classification === 'risk' &&
-      draftMinutes !== persistedMinutes
-    ) {
-      if (isLocked) {
-        setAllowanceError('Allowance already edited today. Editable again tomorrow.');
-        return;
-      }
-
-      const result = await updateDailyRiskAllowance(selectedApp.id, draftMinutes);
-      if (!result.allowed) {
-        const errorMessages: Record<string, string> = {
-          'already-edited-today': 'Allowance already edited today. Editable again tomorrow.',
-          'increase-too-large': 'Daily allowance increase cannot exceed 15 minutes at a time.',
-          'invalid-step': 'Daily allowance must be adjusted in 15-minute intervals.',
-          'below-minimum': 'Daily allowance cannot be negative.',
-          'not-risk-app': 'Only Risk apps can have a daily allowance.',
-          'app-not-found': 'Application not found.',
-        };
-        setAllowanceError(errorMessages[result.reason || ''] || 'Unable to update allowance.');
-        return;
-      }
-    }
-
-    await updateAppClassification(
-      selectedApp.id,
+    const payload: AppPolicyPayload = {
+      appId: selectedApp.id,
       classification,
-      classification === 'risk' ? selectedGroupId : undefined
-    );
+      riskGroupId: classification === 'risk' ? selectedGroupId : undefined,
+    };
+
+    const summary = buildAppPolicySummary(selectedApp, payload, riskGroups);
+
+    onClose();
+    await requestProtectedMutation({
+      operation: 'change-app-classification',
+      summary,
+      payload,
+    });
 
     await refreshDailyUsage();
-    onClose();
   };
 
   const classifications: {
@@ -116,7 +87,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
     {
       id: 'risk',
       title: 'Risk App',
-      description: 'Monitored with continuous session thresholds, morning buffers, and cooldowns',
+      description: 'Monitored with group allowances, morning buffers, and cooldowns',
       icon: ShieldAlert,
       color: colors.coralDark,
       bg: colors.coralLight,
@@ -132,7 +103,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   ];
 
   return (
-    <View style={styles.modalCard}>
+    <View
+      style={[
+        styles.modalCard,
+        { paddingBottom: Math.max(20, insets.bottom + 12) },
+      ]}
+    >
       {/* Top Header */}
       <View style={styles.header}>
         <View>
@@ -145,111 +121,20 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
       </View>
 
       <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
-        {/* Daily Allowance Section (for persisted Risk apps) */}
-        {selectedApp.classification === 'risk' && (
-          <View style={styles.allowanceSection}>
-            <Text style={styles.sectionTitle}>Daily allowance</Text>
-
-            {/* Metrics: Used today / Planned / Remaining */}
-            <View style={styles.allowanceStatsRow}>
-              <View style={styles.allowanceStatCol}>
-                <Text style={styles.allowanceStatLabel}>Used today</Text>
-                <Text style={styles.allowanceStatValue}>{usedDisplay}</Text>
-              </View>
-              <View style={styles.allowanceStatCol}>
-                <Text style={styles.allowanceStatLabel}>Planned</Text>
-                <Text style={styles.allowanceStatValue}>{persistedMinutes} min</Text>
-              </View>
-              <View style={styles.allowanceStatCol}>
-                <Text style={styles.allowanceStatLabel}>Remaining</Text>
-                <Text style={styles.allowanceStatValue}>{remainingDisplay}</Text>
-              </View>
-            </View>
-
-            {/* Stepper: [ −15 ]   {draftMinutes} min   [ +15 ] */}
-            <View style={styles.stepperContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.allowanceStepBtn,
-                  (isLocked || draftMinutes <= 0) && styles.stepBtnDisabled,
-                ]}
-                disabled={isLocked || draftMinutes <= 0}
-                onPress={() => setDraftMinutes((prev) => Math.max(0, prev - 15))}
-              >
-                <Minus
-                  size={16}
-                  color={isLocked || draftMinutes <= 0 ? colors.textMuted : colors.forest}
-                  strokeWidth={2.5}
-                />
-                <Text
-                  style={[
-                    styles.stepBtnText,
-                    (isLocked || draftMinutes <= 0) && styles.stepBtnTextDisabled,
-                  ]}
-                >
-                  −15
-                </Text>
-              </TouchableOpacity>
-
-              <View style={styles.allowanceValueBox}>
-                <Text style={styles.allowanceNumber}>{draftMinutes}</Text>
-                <Text style={styles.allowanceUnit}>min</Text>
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.allowanceStepBtn,
-                  (isLocked || draftMinutes >= persistedMinutes + 15) && styles.stepBtnDisabled,
-                ]}
-                disabled={isLocked || draftMinutes >= persistedMinutes + 15}
-                onPress={() =>
-                  setDraftMinutes((prev) => Math.min(persistedMinutes + 15, prev + 15))
-                }
-              >
-                <Plus
-                  size={16}
-                  color={
-                    isLocked || draftMinutes >= persistedMinutes + 15
-                      ? colors.textMuted
-                      : colors.forest
-                  }
-                  strokeWidth={2.5}
-                />
-                <Text
-                  style={[
-                    styles.stepBtnText,
-                    (isLocked || draftMinutes >= persistedMinutes + 15) && styles.stepBtnTextDisabled,
-                  ]}
-                >
-                  +15
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Lock notice */}
-            {isLocked && (
-              <View style={styles.lockNoticeBox}>
-                <Text style={styles.lockNoticeTitle}>Allowance set for today</Text>
-                <Text style={styles.lockNoticeSub}>Editable again tomorrow</Text>
-              </View>
-            )}
-
-            {/* Allowance Error Banner */}
-            {allowanceError && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>{allowanceError}</Text>
-              </View>
-            )}
+        {/* Risk group relationship notice */}
+        {classification === 'risk' && selectedGroup && (
+          <View style={styles.groupInfoBox}>
+            <Text style={styles.groupInfoTitle}>Group Allowance</Text>
+            <Text style={styles.groupInfoText}>
+              Uses the {selectedGroup.name} group allowance ({resolveGroupAllowanceMinutes(selectedGroup)} min/day).
+            </Text>
           </View>
         )}
 
-        {/* Note when user newly selects Risk in this modal session */}
-        {selectedApp.classification !== 'risk' && classification === 'risk' && (
-          <View style={styles.newRiskNoticeBox}>
-            <Text style={styles.newRiskNoticeText}>
-              Daily allowance starts at 30 min/day. Save the Risk classification first. You can then customize the allowance.
-            </Text>
-          </View>
+        {classification === 'risk' && !selectedGroup && (
+          <Text style={styles.groupRequiredText}>
+            Choose a Risk Group below. This app will use that group’s shared allowance and cooldown.
+          </Text>
         )}
 
         <Text style={styles.sectionTitle}>Select Classification</Text>
@@ -289,10 +174,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
           <View style={styles.groupSection}>
             <Text style={styles.sectionTitle}>Assign to Risk Group</Text>
             <Text style={styles.groupHelpText}>
-              Apps in the same Risk Group share session timers and cooldowns.
+              Choose where this app’s usage counts. Every app in a group shares its daily allowance and cooldown.
             </Text>
 
-            {riskGroups.map((group) => {
+            {riskGroups.length === 0 ? (
+              <Text style={styles.groupNoneText}>Create a Risk Group from the Routine tab before assigning this app.</Text>
+            ) : riskGroups.map((group) => {
               const isGroupSelected = selectedGroupId === group.id;
 
               return (
@@ -303,6 +190,9 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
                     isGroupSelected && styles.groupOptionSelected,
                   ]}
                   onPress={() => setSelectedGroupId(group.id)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isGroupSelected }}
+                  accessibilityLabel={`${group.name}, ${resolveGroupAllowanceMinutes(group)} minutes per day, ${group.cooldownMinutes} minute cooldown`}
                 >
                   <Text
                     style={[
@@ -313,7 +203,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
                     {group.name}
                   </Text>
                   <Text style={styles.groupLimitTag}>
-                    {group.sessionThresholdMinutes}m session → {group.cooldownMinutes}m rest
+                    {resolveGroupAllowanceMinutes(group)}m/day · {group.cooldownMinutes}m cooldown
                   </Text>
                 </TouchableOpacity>
               );
@@ -328,7 +218,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
           <Text style={styles.cancelBtnText}>Cancel</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+        <TouchableOpacity
+          style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
+          onPress={handleSave}
+          disabled={!canSave}
+          accessibilityState={{ disabled: !canSave }}
+        >
           <Text style={styles.saveBtnText}>Save</Text>
         </TouchableOpacity>
       </View>
@@ -346,17 +241,22 @@ export const AppEditModal: React.FC = () => {
   if (!appEdit.visible || !selectedApp) return null;
 
   return (
-    <View style={styles.overlay}>
-      <TouchableWithoutFeedback onPress={closeAppEdit}>
-        <View style={StyleSheet.absoluteFill} />
-      </TouchableWithoutFeedback>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={StyleSheet.absoluteFill}
+    >
+      <View style={styles.overlay}>
+        <TouchableWithoutFeedback onPress={closeAppEdit}>
+          <View style={StyleSheet.absoluteFill} />
+        </TouchableWithoutFeedback>
 
-      <AppEditForm
-        key={selectedApp.id}
-        selectedApp={selectedApp}
-        onClose={closeAppEdit}
-      />
-    </View>
+        <AppEditForm
+          key={selectedApp.id}
+          selectedApp={selectedApp}
+          onClose={closeAppEdit}
+        />
+      </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -377,7 +277,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xxl,
     paddingHorizontal: 22,
     paddingTop: 20,
-    paddingBottom: 28,
     zIndex: 10000,
     ...shadows.elevated,
   },
@@ -407,6 +306,7 @@ const styles = StyleSheet.create({
   },
   body: {
     maxHeight: 460,
+    flexShrink: 1,
   },
   sectionTitle: {
     fontSize: 14,
@@ -465,6 +365,19 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: 10,
   },
+  groupRequiredText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.coralDark,
+    marginBottom: 12,
+    lineHeight: 19,
+  },
+  groupNoneText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 8,
+    lineHeight: 19,
+  },
   groupOption: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -520,130 +433,31 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
     alignItems: 'center',
   },
+  saveBtnDisabled: {
+    backgroundColor: colors.textMuted,
+    opacity: 0.7,
+  },
   saveBtnText: {
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  allowanceSection: {
-    marginBottom: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EFEAE0',
-  },
-  allowanceStatsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  groupInfoBox: {
     backgroundColor: '#FAF8F4',
     borderRadius: radii.md,
-    padding: 12,
-    marginBottom: 14,
+    padding: 14,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: '#EFEAE0',
   },
-  allowanceStatCol: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  allowanceStatLabel: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    marginBottom: 4,
-    fontWeight: '500',
-  },
-  allowanceStatValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  stepperContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-    marginBottom: 12,
-  },
-  allowanceStepBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: radii.full,
-    backgroundColor: '#E8EFE5',
-    gap: 4,
-  },
-  stepBtnDisabled: {
-    backgroundColor: '#F3EFE6',
-    opacity: 0.6,
-  },
-  stepBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.forest,
-  },
-  stepBtnTextDisabled: {
-    color: colors.textMuted,
-  },
-  allowanceValueBox: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'center',
-    minWidth: 80,
-    gap: 4,
-  },
-  allowanceNumber: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: colors.text,
-  },
-  allowanceUnit: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-  lockNoticeBox: {
-    backgroundColor: '#E8EFE5',
-    borderRadius: radii.md,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  lockNoticeTitle: {
+  groupInfoTitle: {
     fontSize: 13,
     fontWeight: '700',
     color: colors.forestDark,
+    marginBottom: 4,
   },
-  lockNoticeSub: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  errorBox: {
-    backgroundColor: colors.coralLight,
-    borderRadius: radii.md,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  errorText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.coralDark,
-    textAlign: 'center',
-  },
-  newRiskNoticeBox: {
-    backgroundColor: '#FAF8F4',
-    borderRadius: radii.md,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#EFEAE0',
-  },
-  newRiskNoticeText: {
-    fontSize: 12,
+  groupInfoText: {
+    fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 18,
   },

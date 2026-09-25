@@ -48,14 +48,10 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
     : null;
 
   const isRisk = app.classification === 'risk';
-  const allowanceMinutes = app.dailyRiskAllowance?.allowanceMinutes ?? 30;
   const snapshotApp = dailyUsageSnapshot?.apps.find((a) => a.packageName === app.id);
   const usedTodayMinutes = snapshotApp
     ? Math.floor(snapshotApp.usedSeconds / 60)
     : (app.usageTodayMinutes || 0);
-  const isExhausted = snapshotApp
-    ? snapshotApp.exhausted
-    : (allowanceMinutes > 0 && usedTodayMinutes >= allowanceMinutes);
 
   const renderUsageSignal = () => {
     if (!isRisk) return null;
@@ -66,19 +62,9 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
         </Text>
       );
     }
-    if (allowanceMinutes === 0) {
-      return <Text style={styles.usageSignal}>0 min planned today</Text>;
-    }
-    if (isExhausted || usedTodayMinutes >= allowanceMinutes) {
-      return (
-        <Text style={[styles.usageSignal, styles.usageExhausted]}>
-          {usedTodayMinutes} / {allowanceMinutes} min · allowance complete
-        </Text>
-      );
-    }
     return (
       <Text style={styles.usageSignal}>
-        {usedTodayMinutes} / {allowanceMinutes} min today
+        {usedTodayMinutes} min used today
       </Text>
     );
   };
@@ -152,7 +138,9 @@ export const AppRow: React.FC<Props> = ({ app, showDivider = true }) => {
         {/* App Title & Subtitle */}
         <View style={styles.infoCol}>
           <Text style={styles.appName}>{app.name}</Text>
-          {groupName ? (
+          {isRisk && groupName ? (
+            <Text style={styles.groupSubtitle}>Uses the {groupName} group allowance</Text>
+          ) : groupName ? (
             <Text style={styles.groupSubtitle}>Group: {groupName}</Text>
           ) : (
             <Text style={styles.categorySubtitle}>{app.defaultCategory}</Text>

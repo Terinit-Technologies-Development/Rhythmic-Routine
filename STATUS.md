@@ -2,12 +2,12 @@
 
 | Attribute | Current Value |
 | :--- | :--- |
-| **Current Version** | `1.0.0` |
-| **Release Maturity** | **Experimental V1** |
+| **Current Version** | `1.2.0` |
+| **Release Maturity** | **Internal Stable Release (Private / Internal Android)** |
 | **Licensing Model** | **Source-Available** ([Rhythmic-Routine Personal Use License](LICENSE)) |
 | **Commercial Licensing** | Available through [Terinit Technologies](COMMERCIAL_LICENSE.md) |
 | **Primary Codebase** | React Native (Expo SDK 57 / React 19 / TypeScript) |
-| **Automated Test Suite** | 104 tests passing across 16 suites (`npm test`) |
+| **Automated Test Suite** | 355 tests passing across 67 suites (`npm test`) |
 
 ---
 
@@ -15,7 +15,7 @@
 
 | Platform | Readiness Classification | Physical Hardware Verification | Release Qualification |
 | :--- | :--- | :--- | :--- |
-| **Android** | **Experimental V1** | **VERIFIED** (Pass 04C / Pass 04D physical device testing confirmed by owner) | Qualified for manual compilation and self-hosted personal device installation via standalone QA APK (`app-qaStandalone.apk`). Store submission not yet conducted. |
+| **Android** | **Internal Stable Release** | **VERIFIED** (owner-accepted paired build on physical hardware; v1.2.0 acceptance) | Accepted for private/internal Android distribution via direct APK. Routine↔Reader signature-protected IPC verified on-device. Store submission not applicable. |
 | **iOS** | **Experimental Foundation** | **UNTESTED** | Source-implemented architecture (Config Plugins, ManagedSettings, DeviceActivity extension). Physical iPhone compilation and real-world Screen Time qualification remain pending Apple distribution entitlement assignment and macOS build validation. |
 | **Web** | **Development & Demo** | N/A | Static client bundle exportable via `expo export -p web`. Simulates all state machine transitions and engine clocks without native permissions. |
 
@@ -23,6 +23,7 @@
 
 ## Distribution Status
 
-- **GitHub Source Release:** Published as [`v1.0.0`](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/releases/tag/v1.0.0).
-- **Android Signed Production Binary:** Not yet distributed (source compilation supported via standalone QA profile; official release key signing pending future distribution pass).
-- **App Stores:** Google Play Console and Apple App Store submissions have **not** been published. Policy declarations, data safety inventories, and video scripts are documented in `docs/release/` for prospective future submission.
+- **GitHub Source Release:** Published as `v1.2.0` internal release record.
+- **Android Internal Binary:** Distributed directly as an internal APK (standalone QA variant and stable package); clean in-place updates preserve local application data.
+- **Public App Stores:** Not applicable — this release line is private/internal. Google Play and Apple App Store publication are not planned.
+- **Signing Requirement:** Rhythmic Routine and Rhythmic Reader must share the same stable signing identity to preserve signature-protected IPC.

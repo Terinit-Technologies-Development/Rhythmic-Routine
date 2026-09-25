@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,10 +9,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChevronRight, ShieldAlert } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { RhythmStateHeroCard } from '../../src/components/RhythmStateHeroCard';
+import { ReadingQuotaCard } from '../../src/components/ReadingQuotaCard';
 import { DayTimeline } from '../../src/components/DayTimeline';
 import { RiskGroupCard } from '../../src/components/RiskGroupCard';
 import { AndroidAccessibilityDisclosure } from '../../src/components/AndroidAccessibilityDisclosure';
@@ -27,11 +28,23 @@ export default function TodayScreen() {
   const insightMetrics = usePrototypeStore((s) => s.insightMetrics);
   const permissionState = usePrototypeStore((s) => s.permissionState);
   const checkPermissions = usePrototypeStore((s) => s.checkPermissions);
+  const refreshReadingEvidence = usePrototypeStore((s) => s.refreshReadingEvidence);
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
 
   useEffect(() => {
     checkPermissions();
   }, [checkPermissions]);
+
+  // Keep Reader evidence and cooldown quotas fresh while Today is visible.
+  useFocusEffect(
+    useCallback(() => {
+      refreshReadingEvidence().catch(() => {});
+      const interval = setInterval(() => {
+        refreshReadingEvidence().catch(() => {});
+      }, 30_000);
+      return () => clearInterval(interval);
+    }, [refreshReadingEvidence])
+  );
 
   const handleConfirmAndroidConsent = async () => {
     setShowDisclosureModal(false);
@@ -85,6 +98,9 @@ export default function TodayScreen() {
         {/* Centerpiece Hero Countdown Card */}
         <RhythmStateHeroCard />
 
+        {/* Reading quota: today's verified reading and cooldown targets */}
+        <ReadingQuotaCard />
+
         {/* 4-Phase Day Timeline Stepper */}
         <View style={styles.timelineSection}>
           <DayTimeline />
@@ -104,7 +120,7 @@ export default function TodayScreen() {
         </View>
 
         <View style={styles.riskGroupsGrid}>
-          {riskGroups.slice(0, 2).map((group) => (
+          {riskGroups.map((group) => (
             <RiskGroupCard key={group.id} group={group} />
           ))}
         </View>
@@ -306,6 +322,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 20,
     gap: 12,
+    flexWrap: 'wrap',
     marginBottom: 16,
   },
   protectedCard: {

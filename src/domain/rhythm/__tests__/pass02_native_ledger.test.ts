@@ -29,6 +29,10 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/java/expo/modules/rhythmdevice/RhythmNativePolicyKeys.kt'
   );
+  const iosModulePath = path.resolve(
+    __dirname,
+    '../../../../modules/rhythm-device/ios/RhythmDeviceModule.swift'
+  );
   const manifestPath = path.resolve(
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/AndroidManifest.xml'
@@ -38,41 +42,52 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     '../../../../modules/rhythm-device/android/src/main/res/xml/accessibility_service_config.xml'
   );
 
-  it('1. Source verification: Kotlin files declare native daily usage ledger, watermarks, and routine schedule keys', () => {
+  it('1. Source verification: Kotlin files declare native group policy, ledger, and lifecycle keys', () => {
     assert.ok(fs.existsSync(servicePath), 'RhythmEnforcementService.kt must exist');
     assert.ok(fs.existsSync(modulePath), 'RhythmDeviceModule.kt must exist');
     assert.ok(fs.existsSync(keysPath), 'RhythmNativePolicyKeys.kt must exist');
 
     const keysSrc = fs.readFileSync(keysPath, 'utf8');
-    assert.ok(keysSrc.includes('DAILY_ALLOWANCE_POLICIES_JSON'), 'Must define DAILY_ALLOWANCE_POLICIES_JSON');
-    assert.ok(keysSrc.includes('DAILY_USAGE_LEDGER_JSON'), 'Must define DAILY_USAGE_LEDGER_JSON');
+    assert.ok(keysSrc.includes('RISK_GROUP_POLICIES_JSON'), 'Must define RISK_GROUP_POLICIES_JSON');
+    assert.ok(keysSrc.includes('GROUP_USAGE_LEDGER_JSON'), 'Must define GROUP_USAGE_LEDGER_JSON');
     assert.ok(keysSrc.includes('LAST_USAGE_RECONCILED_AT'), 'Must define LAST_USAGE_RECONCILED_AT');
-    assert.ok(keysSrc.includes('LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON'), 'Must define LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON');
+    assert.ok(keysSrc.includes('LAST_USAGE_ACCOUNTED_BY_PACKAGE_JSON'), 'Must define reconciliation watermarks');
     assert.ok(keysSrc.includes('ROUTINE_SCHEDULE_JSON'), 'Must define ROUTINE_SCHEDULE_JSON');
     assert.ok(keysSrc.includes('COOLDOWN_POLICIES_JSON'), 'Must define COOLDOWN_POLICIES_JSON');
 
     const serviceSrc = fs.readFileSync(servicePath, 'utf8');
-    assert.ok(serviceSrc.includes('data class NativeDailyAllowancePolicy'), 'Must define NativeDailyAllowancePolicy');
-    assert.ok(serviceSrc.includes('data class NativeDailyUsage'), 'Must define NativeDailyUsage');
-    assert.ok(serviceSrc.includes('data class NativeDailyUsageSnapshot'), 'Must define NativeDailyUsageSnapshot');
+    assert.ok(serviceSrc.includes('data class NativeRiskGroupPolicy'), 'Must define NativeRiskGroupPolicy');
+    assert.ok(serviceSrc.includes('data class NativeGroupAllowanceUsage'), 'Must define NativeGroupAllowanceUsage');
+    assert.ok(serviceSrc.includes('data class NativeGroupAllowanceSnapshot'), 'Must define NativeGroupAllowanceSnapshot');
     assert.ok(serviceSrc.includes('data class NativeRoutineWindow'), 'Must define NativeRoutineWindow');
     assert.ok(serviceSrc.includes('data class NativeCooldownPolicy'), 'Must define NativeCooldownPolicy');
-    assert.ok(serviceSrc.includes('fun isDailyAllowanceExhausted'), 'Must define isDailyAllowanceExhausted');
+    assert.ok(serviceSrc.includes('fun findGroupPolicyForPackage'), 'Must define package-to-group resolution');
     assert.ok(serviceSrc.includes('fun isProtectedByRoutine'), 'Must define isProtectedByRoutine');
     assert.ok(serviceSrc.includes('fun isRestrictedByCooldown'), 'Must define isRestrictedByCooldown');
-    assert.ok(serviceSrc.includes('fun scheduleAllowanceDeadline'), 'Must define scheduleAllowanceDeadline');
+    assert.ok(serviceSrc.includes('fun scheduleGroupAllowanceDeadline'), 'Must define scheduleGroupAllowanceDeadline');
     assert.ok(serviceSrc.includes('fun scheduleMidnightRollover'), 'Must define scheduleMidnightRollover');
     assert.ok(serviceSrc.includes('fun scheduleNextRoutineBoundary'), 'Must define scheduleNextRoutineBoundary');
     assert.ok(serviceSrc.includes('fun scheduleNearestCooldownExpiry'), 'Must define scheduleNearestCooldownExpiry');
     assert.ok(serviceSrc.includes('fun resolveCurrentForegroundPackage'), 'Must define resolveCurrentForegroundPackage');
-    assert.ok(serviceSrc.includes('fun reconcileUsage'), 'Must define reconcileUsage');
+    assert.ok(serviceSrc.includes('fun reconcileUsage'), 'Must define bounded reconcileUsage');
+    assert.ok(serviceSrc.includes('fun onNativePolicyReset()'), 'Reset must clear native enforcement timers and ledgers');
 
     const moduleSrc = fs.readFileSync(modulePath, 'utf8');
-    assert.ok(moduleSrc.includes('setDailyAllowancePolicies'), 'Must expose setDailyAllowancePolicies');
+    assert.ok(moduleSrc.includes('setRiskGroupPolicies'), 'Must expose setRiskGroupPolicies');
     assert.ok(moduleSrc.includes('setRoutineSchedule'), 'Must expose setRoutineSchedule');
     assert.ok(moduleSrc.includes('setCooldownPolicies'), 'Must expose setCooldownPolicies');
-    assert.ok(moduleSrc.includes('getDailyUsageSnapshot'), 'Must expose getDailyUsageSnapshot');
-    assert.ok(moduleSrc.includes('reconcileDailyUsage'), 'Must expose reconcileDailyUsage');
+    assert.ok(moduleSrc.includes('getGroupAllowanceSnapshot'), 'Must expose getGroupAllowanceSnapshot');
+    assert.ok(moduleSrc.includes('reconcileGroupUsage'), 'Must expose reconcileGroupUsage');
+    assert.ok(moduleSrc.includes('AsyncFunction("resetEnforcementState")'), 'Must expose native enforcement reset');
+    assert.ok(moduleSrc.includes('.edit()') && moduleSrc.includes('.clear()'), 'Android reset must clear persisted native policy state');
+    assert.ok(moduleSrc.includes('onNativePolicyReset()'), 'Android reset must clear in-memory enforcement state');
+
+    const iosModuleSrc = fs.readFileSync(iosModulePath, 'utf8');
+    assert.ok(iosModuleSrc.includes('AsyncFunction("resetEnforcementState")'), 'iOS must expose native enforcement reset');
+    assert.ok(iosModuleSrc.includes('center.stopMonitoring(rhythmActivities)'), 'iOS reset must stop Rhythm monitoring activities');
+    assert.ok(iosModuleSrc.includes('key.hasPrefix("selection.")'), 'iOS reset must clear persisted Family Controls selections');
+    assert.ok(iosModuleSrc.includes('key.hasPrefix("selection_revision.")'), 'iOS reset must clear selection revisions');
+    assert.ok(iosModuleSrc.includes('store.shield.applications = nil'), 'iOS reset must clear applied shields');
   });
 
   it('2. Permission boundary audit: strict verification of non-invasive permissions', () => {
@@ -1216,9 +1231,9 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
   });
 
   describe('4. Platform Synchronization, Discovery Refresh & JS Cadence Invariants', () => {
-    it('FallbackModule provides safe implementations for new daily allowance methods', async () => {
-      const ok = await FallbackModule.setDailyAllowancePolicies([
-        { packageName: 'com.instagram.android', allowanceMinutes: 30 },
+    it('FallbackModule provides safe implementations for group allowance methods', async () => {
+      const ok = await FallbackModule.setRiskGroupPolicies([
+        { groupId: 'social', groupName: 'Social', packageNames: ['com.instagram.android'], allowanceMinutes: 30, cooldownMinutes: 15, recoveryActivity: { id: 'walk', title: 'Take a short walk', subtitle: 'Fresh air. Clear mind.', iconEmoji: 'walk' } },
       ]);
       assert.equal(ok, true);
 
@@ -1227,18 +1242,19 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       ]);
       assert.equal(okCd, true);
 
-      const snapshot = await FallbackModule.getDailyUsageSnapshot();
-      assert.ok(Array.isArray(snapshot.apps));
+      const snapshot = await FallbackModule.getGroupAllowanceSnapshot();
+      assert.ok(Array.isArray(snapshot));
 
       const diag = await FallbackModule.getEnforcementDiagnostics();
       assert.equal(diag.serviceRunning, false);
     });
 
-    it('PlatformNativeRhythmSyncProvider synchronizes daily allowance policies on Android', async () => {
+    it('PlatformNativeRhythmSyncProvider synchronizes one shared group policy on Android', async () => {
+      process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
       const syncProvider = new PlatformNativeRhythmSyncProvider();
       let policiesReceived: any = null;
 
-      (RhythmDeviceModule as any).setDailyAllowancePolicies = async (policies: any[]) => {
+      (RhythmDeviceModule as any).setRiskGroupPolicies = async (policies: any[]) => {
         policiesReceived = policies;
         return true;
       };
@@ -1254,7 +1270,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
             iconColor: '#235D43',
             iconBg: '#E8EFE5',
             appIds: ['com.instagram.android', 'com.twitter.android'],
-            sessionThresholdMinutes: 20,
+             allowanceMinutes: 20,
             cooldownMinutes: 15,
             currentSessionMinutes: 0,
           },
@@ -1270,9 +1286,6 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
             defaultCategory: 'Social',
             usageTodayMinutes: 0,
             sessionMinutes: 0,
-            dailyRiskAllowance: {
-              allowanceMinutes: 45,
-            },
           },
           {
             id: 'com.twitter.android',
@@ -1309,20 +1322,11 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       };
 
       await syncProvider.sync(dummyRuntime, dummyConfig);
-      assert.ok(typeof (RhythmDeviceModule as any).setDailyAllowancePolicies === 'function');
-
-      const riskPolicies = dummyConfig.apps
-        .filter((app) => app.classification === 'risk')
-        .map((app) => ({
-          packageName: app.id,
-          allowanceMinutes: app.dailyRiskAllowance?.allowanceMinutes ?? 30,
-        }));
-      await (RhythmDeviceModule as any).setDailyAllowancePolicies(riskPolicies);
-      assert.equal(policiesReceived?.length, 2);
-      assert.equal(policiesReceived?.[0]?.packageName, 'com.instagram.android');
-      assert.equal(policiesReceived?.[0]?.allowanceMinutes, 45);
-      assert.equal(policiesReceived?.[1]?.packageName, 'com.twitter.android');
-      assert.equal(policiesReceived?.[1]?.allowanceMinutes, 30);
+      assert.ok(typeof (RhythmDeviceModule as any).setRiskGroupPolicies === 'function');
+      assert.equal(policiesReceived?.length, 1);
+      assert.deepEqual(policiesReceived?.[0]?.packageNames, ['com.instagram.android', 'com.twitter.android']);
+      assert.equal(policiesReceived?.[0]?.allowanceMinutes, 20);
+      delete process.env.RHYTHM_PLATFORM_OVERRIDE;
     });
 
     it('Correction 6: PlatformNativeRhythmSyncProvider caches signatures to avoid redundant writes', async () => {
@@ -1333,7 +1337,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         setBaseCount++;
         return true;
       };
-      (RhythmDeviceModule as any).setDailyAllowancePolicies = async () => {
+      (RhythmDeviceModule as any).setRiskGroupPolicies = async () => {
         setPolicyCount++;
         return true;
       };
@@ -1348,15 +1352,15 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
           lastBaseSig = baseSig;
         }
 
-        const policySig = JSON.stringify([{ packageName: 'com.instagram.android', allowanceMinutes: 30 }]);
+        const policySig = JSON.stringify([{ groupId: 'social', packageNames: ['com.instagram.android'], allowanceMinutes: 30 }]);
         if (lastPolicySig !== policySig) {
-          await (RhythmDeviceModule as any).setDailyAllowancePolicies([{ packageName: 'com.instagram.android', allowanceMinutes: 30 }]);
+          await (RhythmDeviceModule as any).setRiskGroupPolicies([{ groupId: 'social', packageNames: ['com.instagram.android'], allowanceMinutes: 30 }]);
           lastPolicySig = policySig;
         }
       }
 
       assert.equal(setBaseCount, 1, 'Redundant setBaseRestrictions calls must be avoided via signature caching');
-      assert.equal(setPolicyCount, 1, 'Redundant setDailyAllowancePolicies calls must be avoided via signature caching');
+      assert.equal(setPolicyCount, 1, 'Redundant setRiskGroupPolicies calls must be avoided via signature caching');
     });
 
     it('Correction 7: NativeUsageProvider maintains bounded 60s query and emits to activityListeners', async () => {
@@ -1372,7 +1376,7 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       assert.equal((provider as any).pollingTimer, undefined, 'Timer cleaned up on unsubscribe');
     });
 
-    it('Correction 8: refreshInstalledApps preserves dailyRiskAllowance and edit guard', async () => {
+    it('Correction 8: refreshInstalledApps preserves classification and group allowance policy/guard', async () => {
       const storage = new MockStorageProvider();
       const permissions = new MockPermissionProvider();
       const restrictions = new MockRestrictionProvider();
@@ -1388,26 +1392,37 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       });
 
       const coordinator = RhythmCoordinator.getInstance();
+      coordinator.destroy();
       await coordinator.initialize();
 
+      // v1.0.2: allowance policy + edit guard live on the Risk Group, never on the app.
+      const baseGroups = coordinator.getConfiguration()?.riskGroups ?? [];
       await coordinator.updateConfig({
         apps: [
           {
             id: 'com.instagram.android',
             name: 'Instagram',
             classification: 'risk',
+            riskGroupId: 'social',
             iconName: 'smartphone',
             iconColor: '#235D43',
             iconBg: '#E8EFE5',
             defaultCategory: 'Social',
             usageTodayMinutes: 0,
             sessionMinutes: 0,
-            dailyRiskAllowance: {
-              allowanceMinutes: 45,
-              lastEditedDateKey: '2026-09-02',
-            },
           },
         ],
+        riskGroups: baseGroups.map((g) =>
+          g.id === 'social'
+            ? {
+                ...g,
+                appIds: ['com.instagram.android'],
+                allowanceMinutes: 45,
+                lastAllowanceEditedDateKey: '2026-09-02',
+                recoveryActivityId: 'stretch',
+              }
+            : g
+        ),
       });
 
       usage.getInstalledApps = async () => [
@@ -1429,11 +1444,18 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
       assert.ok(instagram, 'Instagram must be in refreshed apps');
       assert.equal(instagram?.classification, 'risk', 'Classification must be preserved');
-      assert.equal(instagram?.dailyRiskAllowance?.allowanceMinutes, 45, 'Allowance minutes must be preserved');
-      assert.equal(instagram?.dailyRiskAllowance?.lastEditedDateKey, '2026-09-02', 'lastEditedDateKey must be preserved');
+      assert.equal(instagram?.riskGroupId, 'social', 'Group membership must be preserved');
+      assert.equal(instagram?.dailyRiskAllowance, undefined, 'No per-app allowance policy may be recreated');
 
-      const editResult = await coordinator.updateDailyRiskAllowance('com.instagram.android', 60, Date.parse('2026-09-02T12:00:00Z'));
-      assert.equal(editResult.allowed, false);
+      const social = refreshed.riskGroups.find((g) => g.id === 'social')!;
+      assert.equal(social.allowanceMinutes, 45, 'Group allowance minutes must be preserved');
+      assert.equal(social.lastAllowanceEditedDateKey, '2026-09-02', 'Group edit guard must be preserved');
+      assert.equal(social.recoveryActivityId, 'stretch', 'Group recovery activity must be preserved');
+
+      // Same-local-day group edit is still locked by the preserved guard.
+      const localNoon = new Date(2026, 8, 2, 12, 0, 0).getTime();
+      const editResult = await coordinator.updateRiskGroupAllowance('social', 60, localNoon);
+      assert.equal(editResult.ok, false);
       assert.equal(editResult.reason, 'already-edited-today');
 
       coordinator.destroy();
@@ -1707,17 +1729,17 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
       // 1. Verifies that parseRoutineScheduleInput strictly filters by explicit supported types
       assert.ok(
-        serviceSource.includes('rawType == "morning-buffer" || rawType == "evening-wind-down"'),
+        serviceSource.includes('type != "morning-buffer" && type != "evening-wind-down"'),
         'Kotlin parser must explicitly require morning-buffer or evening-wind-down'
       );
 
       // 2. Verifies evaluator uses exact type matching
       assert.ok(
-        serviceSource.includes('windows.find { it.type == "morning-buffer" }'),
+        serviceSource.includes('w.type == "morning-buffer"'),
         'Evaluator must look up morning-buffer by exact type'
       );
       assert.ok(
-        serviceSource.includes('windows.find { it.type == "evening-wind-down" }'),
+        serviceSource.includes('it.type == "evening-wind-down"'),
         'Evaluator must look up evening-wind-down by exact type'
       );
 

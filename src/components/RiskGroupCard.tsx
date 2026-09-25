@@ -1,32 +1,120 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { MessageSquare, Film, ChevronRight, FolderHeart } from 'lucide-react-native';
+import { Film, ChevronRight, Smartphone, Flame } from 'lucide-react-native';
 import { RiskGroup } from '../types/domain';
 import { colors, radii, shadows } from '../theme/tokens';
 import { useRouter } from 'expo-router';
+import { usePrototypeStore } from '../store/usePrototypeStore';
+import { resolveGroupAllowanceMinutes, getRiskGroupStatus } from '../domain/rhythm/allowance';
+import { useNow } from '../domain/timer';
 
-interface Props {
+export interface RiskGroupCardProps {
   group: RiskGroup;
 }
 
-export const RiskGroupCard: React.FC<Props> = ({ group }) => {
+export const RiskGroupCard: React.FC<RiskGroupCardProps> = ({ group }) => {
   const router = useRouter();
+  const now = useNow(5000);
+  const rhythmState = usePrototypeStore((s) => s.rhythmState);
+  const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
+  const groupSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
+  const dailyUsageError = usePrototypeStore((s) => s.dailyUsageError);
 
   const getIcon = () => {
-    switch (group.iconName) {
-      case 'film':
+    switch (group.id) {
+      case 'social':
+        return <Smartphone size={22} color={colors.forest} />;
+      case 'entertainment':
         return <Film size={22} color={colors.amberDark} />;
-      case 'message-square':
-        return <MessageSquare size={22} color={colors.forest} />;
       default:
-        return <FolderHeart size={22} color={colors.forest} />;
+        return <Flame size={22} color={colors.forest} />;
     }
   };
 
-  const hasLimit = group.sessionThresholdMinutes > 0;
-  const progressRatio = hasLimit
-    ? Math.min(1, group.currentSessionMinutes / group.sessionThresholdMinutes)
-    : 0;
+  const allowanceMinutes = resolveGroupAllowanceMinutes(group);
+  const snapshot = groupSnapshots?.[group.id];
+  const cooldownEndsAt =
+    snapshot?.cooldownEndsAt ??
+    (activeRiskGroupId === group.id && rhythmState === 'cooldown' ? activeTimerEndsAt : undefined);
+
+  const status = getRiskGroupStatus({
+    snapshot,
+    cooldownEndsAt,
+    usageAvailable: !dailyUsageError,
+    now,
+  });
+
+  const renderUsageContent = () => {
+    switch (status.kind) {
+      case 'unavailable':
+        return (
+          <View style={styles.usageContainer}>
+            <Text style={[styles.usageText, styles.usageUnavailable]}>Usage unavailable</Text>
+            <Text style={styles.subtext}>{allowanceMinutes} min allowance</Text>
+          </View>
+        );
+      case 'cooldown': {
+        const cooldownMinsRemaining = Math.max(1, Math.ceil((status.endsAt - now) / 60000));
+        return (
+          <View style={styles.usageContainer}>
+            <Text style={styles.usageText}>
+              <Text style={[styles.usageBold, styles.usageCooldown]}>
+                {allowanceMinutes}
+              </Text>{' '}
+              / {allowanceMinutes} min used
+            </Text>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBarFill, { width: '100%', backgroundColor: colors.coralDark }]} />
+            </View>
+            <Text style={[styles.subtext, styles.usageCooldown]}>
+              Cooldown · {cooldownMinsRemaining} min remaining
+            </Text>
+          </View>
+        );
+      }
+      case 'fresh': {
+        const isZeroAllowance = allowanceMinutes <= 0;
+        return (
+          <View style={styles.usageContainer}>
+            <Text style={styles.usageText}>
+              <Text style={styles.usageBold}>0</Text> / {allowanceMinutes} min used
+            </Text>
+            <View style={styles.progressBarBg}>
+              <View
+                style={[
+                  styles.progressBarFill,
+                  {
+                    width: isZeroAllowance ? '100%' : '0%',
+                    backgroundColor: isZeroAllowance ? colors.coralDark : colors.forest,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={styles.subtext}>
+              {isZeroAllowance ? 'Allowance complete' : `${allowanceMinutes} min remaining in this cycle`}
+            </Text>
+          </View>
+        );
+      }
+      case 'active': {
+        const usedMinutes = Math.floor(status.snapshot.usedSeconds / 60);
+        const remainingMinutes = Math.ceil(status.snapshot.remainingSeconds / 60);
+        const progressRatio = allowanceMinutes > 0 ? Math.min(1, usedMinutes / allowanceMinutes) : 1;
+        return (
+          <View style={styles.usageContainer}>
+            <Text style={styles.usageText}>
+              <Text style={styles.usageBold}>{usedMinutes}</Text> / {allowanceMinutes} min used
+            </Text>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBarFill, { width: `${progressRatio * 100}%` }]} />
+            </View>
+            <Text style={styles.subtext}>{remainingMinutes} min remaining in this cycle</Text>
+          </View>
+        );
+      }
+    }
+  };
 
   return (
     <TouchableOpacity
@@ -48,30 +136,16 @@ export const RiskGroupCard: React.FC<Props> = ({ group }) => {
       <Text style={styles.groupName}>{group.name}</Text>
 
       {/* Usage Info & Progress */}
-      {hasLimit ? (
-        <View style={styles.usageContainer}>
-          <Text style={styles.usageText}>
-            <Text style={styles.usageBold}>{group.currentSessionMinutes}</Text> / {group.sessionThresholdMinutes} min
-          </Text>
-          {/* Progress Bar */}
-          <View style={styles.progressBarBg}>
-            <View style={[styles.progressBarFill, { width: `${progressRatio * 100}%` }]} />
-          </View>
-          <Text style={styles.subtext}>Today</Text>
-        </View>
-      ) : (
-        <View style={styles.usageContainer}>
-          <Text style={[styles.statusAvailable, { color: group.iconColor }]}>Available</Text>
-          <Text style={styles.subtext}>No limit set</Text>
-        </View>
-      )}
+      {renderUsageContent()}
     </TouchableOpacity>
   );
 };
 
 const styles = StyleSheet.create({
   card: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: '47%',
     backgroundColor: '#FFFFFF',
     borderRadius: radii.xl,
     padding: 16,
@@ -132,5 +206,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     marginBottom: 2,
+  },
+  usageUnavailable: {
+    color: colors.textMuted,
+    fontStyle: 'italic',
+  },
+  usageCooldown: {
+    color: colors.coralDark,
+    fontWeight: '700',
   },
 });

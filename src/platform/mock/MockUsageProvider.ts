@@ -8,6 +8,7 @@ export class MockUsageProvider implements UsageProvider {
   private foregroundListeners: ((appId: string) => void)[] = [];
 
   public dailyUsageSnapshot?: DailyUsageSnapshot;
+  public groupUsageSnapshots?: import('../../types/domain').GroupAllowanceSnapshot[];
   public usageActivityEvents: UsageActivityEvent[] = [];
 
   constructor(initialAppsList?: DeviceApp[]) {
@@ -30,6 +31,14 @@ export class MockUsageProvider implements UsageProvider {
         sessionActive: app.sessionMinutes > 0,
       }))
     );
+  }
+
+  async getGroupUsageSnapshot(): Promise<import('../../types/domain').GroupAllowanceSnapshot[]> {
+    return Promise.resolve(this.groupUsageSnapshots ?? []);
+  }
+
+  async reconcileGroupUsage(): Promise<import('../../types/domain').GroupAllowanceSnapshot[]> {
+    return this.getGroupUsageSnapshot();
   }
 
   async getDailyUsageSnapshot(): Promise<DailyUsageSnapshot> {

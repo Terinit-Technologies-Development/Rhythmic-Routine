@@ -28,6 +28,7 @@ import {
   getRoutineTargetTime,
   getRoutineWindow,
 } from '../domain/selectors';
+import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
 
 export const DemoStateSwitcher: React.FC = () => {
   const router = useRouter();
@@ -37,7 +38,7 @@ export const DemoStateSwitcher: React.FC = () => {
   const setRhythmState = usePrototypeStore((s) => s.setRhythmState);
   const simulateCooldown = usePrototypeStore((s) => s.simulateCooldown);
   const simulateRiskSession = usePrototypeStore((s) => s.simulateRiskSession);
-  const resetDemo = usePrototypeStore((s) => s.resetDemo);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
@@ -48,7 +49,7 @@ export const DemoStateSwitcher: React.FC = () => {
 
   const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
   const eveningStart = evening?.startTime ?? '21:30';
-  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
+  const allowance = activeGroup ? resolveGroupAllowanceMinutes(activeGroup) : 30;
   const cooldown = activeGroup?.cooldownMinutes ?? 90;
 
   if (!visible) return null;
@@ -83,7 +84,7 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'risk-session',
       label: 'Active Risk Session',
-      description: `18 min elapsed of ${threshold} min session limit in ${activeGroup.name}`,
+      description: `18 min elapsed of ${allowance} min allowance in ${activeGroup.name}`,
       icon: Flame,
       color: colors.coralDark,
       bg: colors.coralLight,
@@ -92,7 +93,7 @@ export const DemoStateSwitcher: React.FC = () => {
     {
       id: 'cooldown',
       label: 'Touch Grass Cooldown',
-      description: `${threshold} min threshold reached, ${cooldown} min recovery countdown`,
+      description: `${allowance} min allowance reached, ${cooldown} min recovery countdown`,
       icon: Waves,
       color: colors.skyDark,
       bg: colors.skyLight,
@@ -216,9 +217,13 @@ export const DemoStateSwitcher: React.FC = () => {
 
           <TouchableOpacity
             style={[styles.actionBtn, styles.resetBtn]}
-            onPress={() => {
-              resetDemo();
+            onPress={async () => {
               setVisible(false);
+              await requestProtectedMutation({
+                operation: 'reset-local-state',
+                summary: 'Reset all Rhythmic Routine local settings and Accountability protection',
+                payload: {},
+              });
             }}
           >
             <RotateCcw size={18} color={colors.coralDark} />

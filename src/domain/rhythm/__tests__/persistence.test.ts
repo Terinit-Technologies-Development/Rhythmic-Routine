@@ -28,6 +28,33 @@ describe('Rhythm Engine — Local Persistence Adapter & Migration', () => {
     },
     activeAccessLeases: {},
     activeRoutineWindowIds: [],
+    dailyAttentionExchange: {
+      dateKey: '2023-11-14',
+      cooldownsTriggered: 2,
+      highestRequiredActiveSeconds: 3600,
+      highestRequiredQualifiedPages: 36,
+      updatedAt: 1700000000000,
+    },
+    activeReadingGates: {
+      social: {
+        groupId: 'social',
+        attentionDateKey: '2023-11-14',
+        dailyCooldownOrdinal: 3,
+        createdAt: 1700000000000,
+        cooldownEndsAt: 1700005400000,
+        requiredReadingSeconds: 3600,
+        requiredQualifiedPages: 36,
+      },
+    },
+    readingEvidence: {
+      dateKey: '2023-11-14',
+      providerAvailable: true,
+      protocolCompatible: true,
+      verifiedActiveSeconds: 120,
+      qualifiedPages: 2,
+      readerUpdatedAtEpochMs: 1700000000000,
+      syncedAtEpochMs: 1700000000000,
+    },
     lastReconciledAt: 1700000000000,
   };
 

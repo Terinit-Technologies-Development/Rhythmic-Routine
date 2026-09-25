@@ -11,12 +11,16 @@ import { mockRestrictionProvider } from './mock/MockRestrictionProvider';
 import { WebStorageProvider } from './storage/WebStorageProvider';
 import { MockPermissionProvider } from './permissions/MockPermissionProvider';
 
+import { SecureCredentialProvider } from './SecureCredentialProvider';
+import { NativeSecureCredentialProvider } from './credentials/NativeSecureCredentialProvider';
+
 export interface PlatformServices {
   usage: UsageProvider;
   restrictions: RestrictionProvider;
   storage: StorageProvider;
   permissions: PermissionProvider;
   nativeRhythm: NativeRhythmSyncProvider;
+  credentials: SecureCredentialProvider;
 }
 
 let services: PlatformServices = {
@@ -25,6 +29,7 @@ let services: PlatformServices = {
   storage: new WebStorageProvider(),
   permissions: new MockPermissionProvider(),
   nativeRhythm: new NoopNativeRhythmSyncProvider(),
+  credentials: new NativeSecureCredentialProvider(),
 };
 
 /**

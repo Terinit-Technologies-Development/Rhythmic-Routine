@@ -12,11 +12,11 @@ import { getPlatformServices } from '../../platform/PlatformServices';
 import { RhythmCoordinator } from '../../application/RhythmCoordinator';
 
 describe('Zustand Store Reconciliation Integration Tests', () => {
-  test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', () => {
+  test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', async () => {
     const store = usePrototypeStore.getState();
 
     // Change Morning Buffer unlock time to 08:30
-    store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
+    await store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const morning = getRoutineWindow(updatedWindows, 'morning-buffer');
@@ -26,11 +26,11 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(getRoutineTargetTime(morning!), '08:30');
   });
 
-  test('Routine Propagation: Evening Wind-Down editing propagates dynamically', () => {
+  test('Routine Propagation: Evening Wind-Down editing propagates dynamically', async () => {
     const store = usePrototypeStore.getState();
 
     // Change Evening Wind-Down time to 22:00
-    store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
+    await store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const evening = getRoutineWindow(updatedWindows, 'evening-wind-down');
@@ -40,12 +40,12 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(getRoutineTargetTime(evening!), '22:00');
   });
 
-  test('Open Day Boundary Adjacency: Open Day range is cleanly derived from adjacent boundaries', () => {
+  test('Open Day Boundary Adjacency: Open Day range is cleanly derived from adjacent boundaries', async () => {
     const store = usePrototypeStore.getState();
 
     // Set Morning Buffer unlock to 08:30 and Evening Wind-Down to 22:00
-    store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
-    store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
+    await store.updateRoutineWindow('morning-buffer', { endTime: '08:30' });
+    await store.updateRoutineWindow('evening-wind-down', { startTime: '22:00' });
 
     const updatedWindows = usePrototypeStore.getState().routineWindows;
     const openRange = getOpenDayRange(updatedWindows);
@@ -56,10 +56,10 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     });
   });
 
-  test('Risk Group threshold and cooldown propagation', () => {
+  test('Risk Group threshold and cooldown propagation', async () => {
     const store = usePrototypeStore.getState();
 
-    store.updateRiskGroup('social', {
+    await store.updateRiskGroup('social', {
       sessionThresholdMinutes: 45,
       cooldownMinutes: 120,
     });
@@ -70,13 +70,13 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(social?.cooldownMinutes, 120);
   });
 
-  test('Custom Risk Group creation with unique ID', () => {
+  test('Custom Risk Group creation with unique ID', async () => {
     const store = usePrototypeStore.getState();
 
-    const id1 = store.addNewRiskGroup('News Feeds', 'Daily news feeds');
+    const id1 = await store.addNewRiskGroup('News Feeds', 'Daily news feeds');
     assert.equal(id1, 'news-feeds');
 
-    const id2 = store.addNewRiskGroup('News Feeds', 'Duplicate name test');
+    const id2 = await store.addNewRiskGroup('News Feeds', 'Duplicate name test');
     assert.equal(id2, 'news-feeds-2');
 
     const createdGroup = usePrototypeStore.getState().riskGroups.find((g) => g.id === 'news-feeds');
@@ -84,17 +84,17 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     assert.equal(createdGroup?.name, 'News Feeds');
   });
 
-  test('Relationship Integrity: toggleGroupProtection syncs canonically', () => {
+  test('Relationship Integrity: toggleGroupProtection syncs canonically', async () => {
     const store = usePrototypeStore.getState();
 
     // Protect 'news-feeds' in 'morning-buffer'
-    store.toggleGroupProtection('morning-buffer', 'news-feeds', true);
+    await store.toggleGroupProtection('morning-buffer', 'news-feeds', true);
     let windows = usePrototypeStore.getState().routineWindows;
     let protectedIds = getProtectedWindowIdsForGroup(windows, 'news-feeds');
     assert.equal(protectedIds.includes('morning-buffer'), true);
 
     // Unprotect 'news-feeds' from 'morning-buffer'
-    store.toggleGroupProtection('morning-buffer', 'news-feeds', false);
+    await store.toggleGroupProtection('morning-buffer', 'news-feeds', false);
     windows = usePrototypeStore.getState().routineWindows;
     protectedIds = getProtectedWindowIdsForGroup(windows, 'news-feeds');
     assert.equal(protectedIds.includes('morning-buffer'), false);

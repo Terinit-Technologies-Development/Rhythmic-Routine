@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Sprout, Lock, Sun, Waves, Moon, Flame } from 'lucide-react-native';
+import { Sprout, Lock, Sun, Waves, Moon, Flame, BookOpen } from 'lucide-react-native';
 import {
   MorningSunriseLandscape,
   OpenDayLandscape,
@@ -15,8 +15,10 @@ import {
   getRiskGroup,
   getRoutineTargetTime,
   getRoutineWindow,
+  resolveCooldownInfo,
 } from '../domain/selectors';
 import { useRemainingSeconds } from '../domain/timer';
+import { resolveGroupAllowanceMinutes } from '../domain/rhythm/allowance';
 
 export const RhythmStateHeroCard: React.FC = () => {
   const router = useRouter();
@@ -24,7 +26,9 @@ export const RhythmStateHeroCard: React.FC = () => {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
+  const groupUsageSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const attentionStatus = usePrototypeStore((s) => s.activeAttentionGateStatus);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
 
   const remainingSeconds = useRemainingSeconds(activeTimerEndsAt);
@@ -33,15 +37,16 @@ export const RhythmStateHeroCard: React.FC = () => {
   const activeGroup = getRiskGroup(riskGroups, activeRiskGroupId) || riskGroups[0];
 
   const morningUnlock = morning ? getRoutineTargetTime(morning) : '08:00';
-  const threshold = activeGroup?.sessionThresholdMinutes ?? 30;
-  const currentUsage = activeGroup?.currentSessionMinutes ?? 18;
+  const allowanceMinutes = resolveGroupAllowanceMinutes(activeGroup);
+  const snap = activeGroup ? groupUsageSnapshots?.[activeGroup.id] : undefined;
+  const currentUsage = snap ? Math.floor(snap.usedSeconds / 60) : (activeGroup?.currentSessionMinutes ?? 0);
 
   const getCardContent = () => {
     switch (rhythmState) {
       case 'morning-buffer':
         return {
           title: 'Morning Buffer',
-          subtitle: `Social apps unlock at ${morningUnlock}`,
+          subtitle: `Protected apps unlock at ${morningUnlock}`,
           badgeText: 'Buffering',
           badgeIcon: Lock,
           badgeBg: '#E8EFE5',
@@ -68,8 +73,8 @@ export const RhythmStateHeroCard: React.FC = () => {
         };
       case 'risk-session':
         return {
-          title: `${activeGroup.name} Active`,
-          subtitle: `${currentUsage} min used of ${threshold} min limit`,
+          title: `${activeGroup?.name ?? 'Risk Group'} Active`,
+          subtitle: `${currentUsage} min used of ${allowanceMinutes} min allowance`,
           badgeText: 'Session Active',
           badgeIcon: Flame,
           badgeBg: colors.coralLight,
@@ -78,12 +83,27 @@ export const RhythmStateHeroCard: React.FC = () => {
           timerDisplay: formatSecondsToHHMMSS(remainingSeconds),
           icon: Flame,
           ArtworkComponent: OpenDayLandscape,
-          onPress: () => router.push(`/risk-groups/${activeGroup.id}` as any),
+          onPress: () => router.push(`/risk-groups/${activeGroup?.id}` as any),
         };
-      case 'cooldown':
+      case 'cooldown': {
+        const cooldownInfo = resolveCooldownInfo(riskGroups, activeRiskGroupId);
+        const hasReadingRequirement = Boolean(
+          attentionStatus?.phase === 'cooldown-active' &&
+          (attentionStatus.requiredReadingSeconds > 0 || attentionStatus.requiredQualifiedPages > 0)
+        );
+        const readingProgress = [
+          attentionStatus?.remainingReadingSeconds
+            ? `${formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)} reading remaining`
+            : undefined,
+          attentionStatus?.remainingQualifiedPages
+            ? `${attentionStatus.remainingQualifiedPages} qualified pages remaining`
+            : undefined,
+        ].filter(Boolean).join(' · ');
         return {
-          title: 'Touch Grass 🌱',
-          subtitle: `${threshold} min threshold reached`,
+          title: cooldownInfo.title,
+          subtitle: hasReadingRequirement
+            ? `${cooldownInfo.subtitle}\nAfter the timer: ${readingProgress || 'reading requirements verified'}.`
+            : cooldownInfo.subtitle,
           badgeText: 'Cooldown in progress',
           badgeIcon: Lock,
           badgeBg: colors.skyLight,
@@ -94,6 +114,7 @@ export const RhythmStateHeroCard: React.FC = () => {
           ArtworkComponent: TouchGrassMeadowLandscape,
           onPress: () => router.push('/touch-grass'),
         };
+      }
       case 'evening-wind-down':
         return {
           title: 'Evening Wind-Down',
@@ -126,7 +147,38 @@ export const RhythmStateHeroCard: React.FC = () => {
     }
   };
 
-  const config = getCardContent();
+  const isPostCooldownAttention = Boolean(
+    attentionStatus &&
+    attentionStatus.phase !== 'none' &&
+    attentionStatus.phase !== 'cooldown-active'
+  );
+  const remainingPages = attentionStatus?.remainingQualifiedPages ?? 0;
+  const attentionSubtitle = attentionStatus?.phase === 'reader-unavailable'
+    ? 'Rhythmic Reader evidence is unavailable. Your reading progress cannot be verified yet.'
+    : attentionStatus?.phase === 'reader-incompatible'
+      ? 'Reader data is incompatible with the required evidence protocol. Update Reader to continue.'
+      : attentionStatus?.phase === 'satisfied'
+        ? 'Both reading requirements are verified. Rhythm is updating your access.'
+        : `Complete ${Math.ceil((attentionStatus?.remainingReadingSeconds ?? 0) / 60)} min of verified reading${remainingPages > 0 ? ` and ${remainingPages} qualified pages` : ''}.`;
+  const config = isPostCooldownAttention
+    ? {
+        title: 'Productive attention',
+        subtitle: attentionSubtitle,
+        badgeText: attentionStatus?.phase === 'satisfied' ? 'Verified' : 'Reading required',
+        badgeIcon: BookOpen,
+        badgeBg: colors.sageLight,
+        badgeTextCol: colors.forest,
+        footerText: remainingPages > 0
+          ? `${remainingPages} qualified pages remaining`
+          : 'Continue in Rhythmic Reader',
+        timerDisplay: attentionStatus?.remainingReadingSeconds
+          ? formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)
+          : remainingPages > 0 ? `${remainingPages} pages` : 'Verified',
+        icon: BookOpen,
+        ArtworkComponent: TouchGrassMeadowLandscape,
+        onPress: () => router.push('/touch-grass'),
+      }
+    : getCardContent();
   const IconComp = config.icon;
   const BadgeIcon = config.badgeIcon;
   const Artwork = config.ArtworkComponent;

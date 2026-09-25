@@ -1,16 +1,21 @@
 import {
+  CommitSelectionResult,
   IOSSelectionReference,
   MonitoringDiagnostics,
   MonitoringSyncResult,
   NativeAppInfo,
-  NativeDailyAllowancePolicyInput,
-  NativeDailyUsageSnapshot,
   NativeEnforcementDiagnostics,
+  NativeGroupAllowanceSnapshot,
   NativePermissionStatus,
+  NativeRiskGroupPolicyInput,
   NativeRoutineWindowInput,
   NativeRoutineScheduleInput,
   NativeCooldownPolicyInput,
+  NativeReadingAttentionPolicyInput,
+  NativeAttentionExchangeSnapshot,
   NativeUsageEvent,
+  NativeRecoveryStatus,
+  NativeDailyReadingEvidence,
 } from './RhythmDevice.types';
 
 // Fallback behavior:
@@ -20,6 +25,22 @@ import {
 const isWeb =
   typeof window !== 'undefined' &&
   typeof (window as any).document !== 'undefined';
+
+const fallbackGroupRevisions: Record<string, number> = {};
+const fallbackRollbacks: Record<string, { previousRevision: number; hasSelection: boolean }> = {};
+
+export function __resetFallbackRevisionsForTests(): void {
+  for (const k of Object.keys(fallbackGroupRevisions)) {
+    delete fallbackGroupRevisions[k];
+  }
+  for (const k of Object.keys(fallbackRollbacks)) {
+    delete fallbackRollbacks[k];
+  }
+}
+
+export function __getFallbackGroupRevisionForTests(groupId: string): number {
+  return fallbackGroupRevisions[groupId] ?? 0;
+}
 
 export const FallbackModule = {
   checkPermissions: async (): Promise<NativePermissionStatus> => ({
@@ -41,26 +62,64 @@ export const FallbackModule = {
     revision: 1,
     kind: 'mixed',
   }),
-  hasGroupSelection: async (_groupId: string): Promise<boolean> => false,
-  clearGroupSelection: async (_groupId: string): Promise<{ success: boolean; revision: number }> => ({
-    success: true,
-    revision: 1,
+  stageFamilyActivityPicker: async (
+    _groupId: string
+  ): Promise<{ stagedSelectionRef: string; tokenCount: number }> => ({
+    stagedSelectionRef: `pending_selection.${Date.now()}`,
+    tokenCount: isWeb ? 1 : 0,
   }),
+  commitStagedFamilyActivitySelection: async (
+    groupId: string,
+    _stagedSelectionRef: string
+  ): Promise<CommitSelectionResult> => {
+    const prevRev = fallbackGroupRevisions[groupId] ?? 0;
+    const nextRev = prevRev + 1;
+    fallbackGroupRevisions[groupId] = nextRev;
+    const rollbackRef = `rollback_selection.${Date.now()}`;
+    fallbackRollbacks[rollbackRef] = {
+      previousRevision: prevRev,
+      hasSelection: prevRev > 0,
+    };
+    return {
+      success: true,
+      revision: nextRev,
+      localSelectionId: `selection.${groupId}`,
+      rollbackRef,
+      previousRevision: prevRev,
+    };
+  },
+  rollbackCommittedFamilyActivitySelection: async (
+    groupId: string,
+    rollbackRef: string,
+    previousRevision: number
+  ): Promise<boolean> => {
+    fallbackGroupRevisions[groupId] = previousRevision;
+    delete fallbackRollbacks[rollbackRef];
+    return true;
+  },
+  discardStagedFamilyActivitySelection: async (_stagedSelectionRef: string): Promise<boolean> => true,
+  hasGroupSelection: async (groupId: string): Promise<boolean> => (fallbackGroupRevisions[groupId] ?? 0) > 0,
+  clearGroupSelection: async (groupId: string): Promise<{ success: boolean; revision: number }> => {
+    delete fallbackGroupRevisions[groupId];
+    return {
+      success: true,
+      revision: 1,
+    };
+  },
   revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
   setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
-  setDailyAllowancePolicies: async (_policies: NativeDailyAllowancePolicyInput[]): Promise<boolean> => true,
+  setRiskGroupPolicies: async (_policies: NativeRiskGroupPolicyInput[]): Promise<boolean> => true,
+  getGroupUsageSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
+  getGroupAllowanceSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
+  reconcileGroupUsage: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => true,
   setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => true,
-  getDailyUsageSnapshot: async (): Promise<NativeDailyUsageSnapshot> => ({
-    dateKey: '',
-    apps: [],
-  }),
-  reconcileDailyUsage: async (): Promise<NativeDailyUsageSnapshot> => ({
-    dateKey: '',
-    apps: [],
-  }),
+  setAttentionExchangePolicy: async (_policy: NativeReadingAttentionPolicyInput): Promise<boolean> => true,
+  setAttentionExchangeState: async (_snapshot: Record<string, unknown>): Promise<boolean> => true,
+  getAttentionExchangeSnapshot: async (): Promise<NativeAttentionExchangeSnapshot | null> => null,
+  reconcileAttentionExchange: async (): Promise<boolean> => false,
   getEnforcementDiagnostics: async (): Promise<NativeEnforcementDiagnostics> => ({
     serviceRunning: false,
     baseRestrictedPackageCount: 0,
@@ -71,6 +130,7 @@ export const FallbackModule = {
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   startAccessLease: async (_groupId: string, _packageNames: string[], _endsAt: number): Promise<boolean> => isWeb,
   endAccessLease: async (_groupId: string): Promise<boolean> => isWeb,
+  resetEnforcementState: async (): Promise<boolean> => true,
   setSharedRhythmState: async (_stateJson: string): Promise<boolean> => true,
   getSharedRhythmState: async (): Promise<string | null> => null,
   synchronizeMonitoringConfiguration: async (
@@ -90,6 +150,24 @@ export const FallbackModule = {
     configSignature: isWeb ? 'fallback' : '',
     lastError: isWeb ? '' : 'Native module unavailable',
   }),
+  isReaderAvailable: async (): Promise<boolean> => false,
+  startRecoverySession: async (
+    _sessionId: string,
+    _requiredSeconds: number,
+    _requiredPages: number,
+    _createdAt: number,
+    _expiresAt: number
+  ): Promise<boolean> => false,
+  queryRecoveryStatus: async (_sessionId: string): Promise<NativeRecoveryStatus | null> => null,
+  queryDailyReadingEvidence: async (dateKey: string): Promise<NativeDailyReadingEvidence> => ({
+    providerAvailable: false,
+    protocolCompatible: false,
+    dateKey,
+    verifiedActiveSeconds: 0,
+    qualifiedPages: 0,
+    updatedAtEpochMs: 0,
+  }),
+  openRhythmicReader: async (): Promise<boolean> => false,
 };
 
 let nativeModuleAvailable = false;
@@ -112,4 +190,3 @@ try {
 
 export const isRhythmNativeModuleAvailable = nativeModuleAvailable;
 export default NativeModule;
-

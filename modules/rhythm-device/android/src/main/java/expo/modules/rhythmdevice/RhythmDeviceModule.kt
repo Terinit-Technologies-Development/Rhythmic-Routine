@@ -14,6 +14,12 @@ import android.view.accessibility.AccessibilityManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
+internal fun finishNativePolicyReset(cleared: Boolean, resetRuntime: () -> Unit): Boolean {
+  if (!cleared) return false
+  resetRuntime()
+  return true
+}
+
 class RhythmDeviceModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("RhythmDevice")
@@ -147,73 +153,85 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction checkAccessibilityPermission(context)
     }
 
-    AsyncFunction("setDailyAllowancePolicies") { policiesList: List<Map<String, Any>> ->
+    AsyncFunction("resetEnforcementState") {
       val context = appContext.reactContext ?: return@AsyncFunction false
-      val parsedPolicies = policiesList.mapNotNull {
-        val pkg = it["packageName"] as? String ?: return@mapNotNull null
-        val mins = (it["allowanceMinutes"] as? Number)?.toInt() ?: 30
-        NativeDailyAllowancePolicy(pkg, mins)
+      val cleared = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .clear()
+        .commit()
+      return@AsyncFunction finishNativePolicyReset(cleared) {
+        RhythmEnforcementService.instance?.onNativePolicyReset()
       }
-      RhythmEnforcementService.saveDailyAllowancePolicies(context, parsedPolicies)
-      RhythmEnforcementService.instance?.onDailyAllowancePoliciesChanged()
+    }
+
+    AsyncFunction("setRiskGroupPolicies") { policiesList: List<Map<String, Any>> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val parsedPolicies = policiesList.mapNotNull { item ->
+        val groupId = item["groupId"] as? String ?: return@mapNotNull null
+        val activity = item["recoveryActivity"] as? Map<*, *>
+        NativeRiskGroupPolicy(
+          groupId,
+          item["groupName"] as? String ?: groupId,
+          (item["packageNames"] as? List<*>)?.mapNotNull { it as? String }?.toSet() ?: emptySet(),
+          maxOf(0, (item["allowanceMinutes"] as? Number)?.toInt() ?: 30),
+          maxOf(0, (item["cooldownMinutes"] as? Number)?.toInt() ?: 0),
+          NativeRecoveryActivity(
+            activity?.get("id") as? String ?: "walk",
+            activity?.get("title") as? String ?: "Take a short walk",
+            activity?.get("subtitle") as? String ?: "Fresh air. Clear mind.",
+            activity?.get("iconEmoji") as? String ?: "walk",
+            activity?.get("durationSuggestion") as? String
+          )
+        )
+      }
+      RhythmEnforcementService.saveRiskGroupPolicies(context, parsedPolicies)
+      RhythmEnforcementService.instance?.onRiskGroupPoliciesChanged()
       return@AsyncFunction true
     }
 
-    AsyncFunction("getDailyUsageSnapshot") {
-      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
-        "dateKey" to "",
-        "apps" to emptyList<Map<String, Any>>()
+    AsyncFunction("setAttentionExchangePolicy") { input: Map<String, Any> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val policy = NativeReadingAttentionPolicy(
+        freeCooldownCount = (input["freeCooldownCount"] as? Number)?.toInt() ?: 2,
+        baselineActiveSeconds = (input["baselineActiveSeconds"] as? Number)?.toLong() ?: 3600L,
+        baselineQualifiedPages = (input["baselineQualifiedPages"] as? Number)?.toInt() ?: 36,
+        incrementalActiveSeconds = (input["incrementalActiveSeconds"] as? Number)?.toLong() ?: 1800L,
+        incrementalQualifiedPages = (input["incrementalQualifiedPages"] as? Number)?.toInt() ?: 11,
       )
-      val snapshot = RhythmEnforcementService.getDailyUsageSnapshot(context)
-      val result = mutableMapOf<String, Any?>(
-        "dateKey" to snapshot.dateKey,
-        "apps" to snapshot.apps.map { app ->
-          val appMap = mutableMapOf<String, Any?>(
-            "packageName" to app.packageName,
-            "usedSeconds" to app.usedSeconds,
-            "allowanceMinutes" to app.allowanceMinutes,
-            "remainingSeconds" to app.remainingSeconds,
-            "exhausted" to app.exhausted
-          )
-          if (app.activeSegmentStartedAt != null) {
-            appMap["activeSegmentStartedAt"] = app.activeSegmentStartedAt.toDouble()
-          }
-          appMap
-        }
-      )
-      if (snapshot.lastReconciledAt != null) {
-        result["lastReconciledAt"] = snapshot.lastReconciledAt.toDouble()
-      }
-      return@AsyncFunction result
+      return@AsyncFunction RhythmEnforcementService.saveAttentionPolicy(context, policy)
     }
 
-    AsyncFunction("reconcileDailyUsage") {
-      val context = appContext.reactContext ?: return@AsyncFunction mapOf(
-        "dateKey" to "",
-        "apps" to emptyList<Map<String, Any>>()
-      )
+    AsyncFunction("setAttentionExchangeState") { snapshot: Map<String, Any?> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      return@AsyncFunction RhythmEnforcementService.syncAttentionExchangeState(context, snapshot, System.currentTimeMillis())
+    }
+
+    AsyncFunction("getAttentionExchangeSnapshot") {
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      val now = System.currentTimeMillis()
+      RhythmEnforcementService.reconcileAttentionExchangeInContext(context, now)
+      return@AsyncFunction attentionExchangeSnapshot(context, now)
+    }
+
+    AsyncFunction("reconcileAttentionExchange") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      return@AsyncFunction RhythmEnforcementService.reconcileAttentionExchangeInContext(context, System.currentTimeMillis())
+    }
+
+    AsyncFunction("getGroupUsageSnapshot") {
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
+      return@AsyncFunction groupSnapshots(context)
+    }
+
+    AsyncFunction("getGroupAllowanceSnapshot") {
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
+      return@AsyncFunction groupSnapshots(context)
+    }
+
+    AsyncFunction("reconcileGroupUsage") {
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any?>>()
       RhythmEnforcementService.instance?.reconcileUsage()
-      val snapshot = RhythmEnforcementService.getDailyUsageSnapshot(context)
-      val result = mutableMapOf<String, Any?>(
-        "dateKey" to snapshot.dateKey,
-        "apps" to snapshot.apps.map { app ->
-          val appMap = mutableMapOf<String, Any?>(
-            "packageName" to app.packageName,
-            "usedSeconds" to app.usedSeconds,
-            "allowanceMinutes" to app.allowanceMinutes,
-            "remainingSeconds" to app.remainingSeconds,
-            "exhausted" to app.exhausted
-          )
-          if (app.activeSegmentStartedAt != null) {
-            appMap["activeSegmentStartedAt"] = app.activeSegmentStartedAt.toDouble()
-          }
-          appMap
-        }
-      )
-      if (snapshot.lastReconciledAt != null) {
-        result["lastReconciledAt"] = snapshot.lastReconciledAt.toDouble()
-      }
-      return@AsyncFunction result
+      return@AsyncFunction groupSnapshots(context)
     }
 
     AsyncFunction("setRoutineSchedule") { scheduleInput: Any ->
@@ -230,11 +248,27 @@ class RhythmDeviceModule : Module() {
         val gid = it["groupId"] as? String ?: return@mapNotNull null
         val endsAt = (it["endsAt"] as? Number)?.toLong() ?: return@mapNotNull null
         val pkgsList = (it["packageNames"] as? List<*>)?.mapNotNull { p -> p as? String }?.toSet() ?: emptySet()
-        NativeCooldownPolicy(gid, pkgsList, endsAt)
+        NativeCooldownPolicy(
+          groupId = gid,
+          packageNames = pkgsList,
+          startedAt = (it["startedAt"] as? Number)?.toLong() ?: 0L,
+          endsAt = endsAt,
+          attentionDateKey = it["attentionDateKey"] as? String,
+          dailyCooldownOrdinal = (it["dailyCooldownOrdinal"] as? Number)?.toInt(),
+          requiredReadingSeconds = (it["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
+          requiredQualifiedPages = (it["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
+        )
       }
-      RhythmEnforcementService.saveCooldownPolicies(context, parsed)
-      RhythmEnforcementService.instance?.onCooldownPoliciesChanged()
-      return@AsyncFunction true
+      val normalized = parsed.groupBy { it.groupId }.values.map { values ->
+        val latest = values.maxBy { it.endsAt }
+        latest.copy(
+          packageNames = values.flatMap { it.packageNames }.toSet(),
+          endsAt = values.maxOf { it.endsAt },
+        )
+      }
+      val now = System.currentTimeMillis()
+      RhythmEnforcementService.instance?.pruneExpiredCooldowns(now)
+      return@AsyncFunction RhythmEnforcementService.mergeCooldownPoliciesFromJs(context, normalized, now)
     }
 
     AsyncFunction("getEnforcementDiagnostics") {
@@ -250,9 +284,14 @@ class RhythmDeviceModule : Module() {
       val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
       val schedule = RhythmEnforcementService.loadRoutineSchedule(context)
       val service = RhythmEnforcementService.instance
-      val ledger = RhythmEnforcementService.loadDailyUsageLedger(context)
+      val ledger = RhythmEnforcementService.loadGroupUsageLedger(context)
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
       val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
+      val attentionState = RhythmEnforcementService.loadAttentionExchangeState(context)
+      val gates = RhythmEnforcementService.loadReadingGates(context).values
+        .filter { it.attentionDateKey == RhythmEnforcementService.getLocalDateKey() }
+      val evidence = RhythmEnforcementService.loadDailyReadingEvidence(context)
+        ?.takeIf { it.dateKey == RhythmEnforcementService.getLocalDateKey() }
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
@@ -261,8 +300,24 @@ class RhythmDeviceModule : Module() {
         "cooldownCount" to cooldowns.size,
         "routineWindowCount" to schedule.windows.size,
         "overlayVisible" to RhythmOverlayActivity.isVisible,
-        "dailyUsageAppCount" to ledger.size
+        "groupUsageLedgerCount" to ledger.size,
+        "attentionDateKey" to attentionState.dateKey,
+        "dailyCooldownOrdinal" to attentionState.cooldownsTriggered,
+        "readingGateCount" to gates.size,
+        "readerProviderAvailable" to evidence?.providerAvailable,
+        "readerProtocolCompatible" to evidence?.protocolCompatible,
       )
+      val foregroundPolicy = service?.lastForegroundPackage?.let { pkg ->
+        RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }
+      }
+      val primaryGate = foregroundPolicy?.let { policy -> gates.firstOrNull { it.groupId == policy.groupId } }
+        ?: gates.maxByOrNull { it.dailyCooldownOrdinal }
+      if (primaryGate != null) {
+        result["activeReadingGateGroupId"] = primaryGate.groupId
+        result["activeReadingGateOrdinal"] = primaryGate.dailyCooldownOrdinal
+        result["activeReadingRequiredSeconds"] = primaryGate.requiredReadingSeconds
+        result["activeReadingRequiredPages"] = primaryGate.requiredQualifiedPages
+      }
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
       }
@@ -275,14 +330,23 @@ class RhythmDeviceModule : Module() {
       if (service?.activeUsagePackage != null) {
         result["activeUsagePackage"] = service.activeUsagePackage
       }
+      if (service?.activeUsageGroup != null) {
+        result["activeGroupId"] = service.activeUsageGroup
+      }
       if (service?.activeUsageStartedAt != null && service.activeUsageStartedAt!! > 0L) {
         result["activeUsageStartedAt"] = service.activeUsageStartedAt!!.toDouble()
       }
       if (service?.allowanceDeadlineAt != null && service.allowanceDeadlineAt!! > 0L) {
         result["allowanceDeadlineAt"] = service.allowanceDeadlineAt!!.toDouble()
       }
+      if (service?.activeUsageStartedAt != null && service.activeUsageStartedAt!! > 0L) {
+        result["activeGroupUsageStartedAt"] = service.activeUsageStartedAt!!.toDouble()
+      }
       if (service?.nextRoutineBoundaryAt != null && service.nextRoutineBoundaryAt!! > 0L) {
         result["nextRoutineBoundaryAt"] = service.nextRoutineBoundaryAt!!.toDouble()
+      }
+      if (service?.nextMidnightRolloverAt != null && service.nextMidnightRolloverAt!! > 0L) {
+        result["nextMidnightRolloverAt"] = service.nextMidnightRolloverAt!!.toDouble()
       }
       if (service?.nearestCooldownExpiryAt != null && service.nearestCooldownExpiryAt!! > 0L) {
         result["nearestCooldownExpiryAt"] = service.nearestCooldownExpiryAt!!.toDouble()
@@ -334,6 +398,183 @@ class RhythmDeviceModule : Module() {
       RhythmEnforcementService.saveLeases(context, updatedList)
       RhythmEnforcementService.instance?.cancelLeaseExpiry(groupId)
       return@AsyncFunction true
+    }
+
+    AsyncFunction("isReaderAvailable") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val pm = context.packageManager
+      try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+          pm.getPackageInfo("com.terinit.rhythmicreader", PackageManager.PackageInfoFlags.of(0L))
+        } else {
+          @Suppress("DEPRECATION")
+          pm.getPackageInfo("com.terinit.rhythmicreader", 0)
+        }
+        true
+      } catch (_: PackageManager.NameNotFoundException) {
+        false
+      }
+    }
+
+    AsyncFunction("startRecoverySession") { sessionId: String, requiredSeconds: Int, requiredPages: Int, createdAt: Double, expiresAt: Double ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      try {
+        val intent = Intent("com.terinit.rhythmicreader.action.START_RECOVERY").apply {
+          setClassName("com.terinit.rhythmicreader", "com.terinit.rhythmicreader.integration.rhythmic.RecoveryEntryActivity")
+          putExtra("recovery.session_id", sessionId)
+          putExtra("recovery.protocol_version", 1)
+          putExtra("recovery.required_seconds", requiredSeconds)
+          putExtra("recovery.required_pages", requiredPages)
+          putExtra("recovery.created_at", createdAt.toLong())
+          putExtra("recovery.expires_at", expiresAt.toLong())
+          flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(intent)
+        true
+      } catch (e: Exception) {
+        false
+      }
+    }
+
+    AsyncFunction("queryRecoveryStatus") { sessionId: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      val uri = android.net.Uri.parse("content://com.terinit.rhythmicreader.recovery/sessions/$sessionId")
+      try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+          if (cursor.moveToFirst()) {
+            val sid = cursor.getString(cursor.getColumnIndexOrThrow("sessionId"))
+            val proto = cursor.getInt(cursor.getColumnIndexOrThrow("protocolVersion"))
+            val status = cursor.getString(cursor.getColumnIndexOrThrow("status"))
+            val activeSec = cursor.getInt(cursor.getColumnIndexOrThrow("activeSeconds"))
+            val qualifiedPages = cursor.getInt(cursor.getColumnIndexOrThrow("qualifiedPages"))
+            val completedAt = cursor.getLong(cursor.getColumnIndexOrThrow("completedAtEpochMs"))
+
+            mapOf(
+              "sessionId" to sid,
+              "protocolVersion" to proto,
+              "status" to status,
+              "activeSeconds" to activeSec,
+              "qualifiedPages" to qualifiedPages,
+              "completedAtEpochMs" to completedAt.toDouble()
+            )
+          } else {
+            null
+          }
+        }
+      } catch (e: Exception) {
+        null
+      }
+    }
+
+    AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
+      return@AsyncFunction evidenceMap(RhythmEnforcementService.queryDailyReadingEvidence(context, dateKey))
+    }
+
+    AsyncFunction("openRhythmicReader") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      try {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage("com.terinit.rhythmicreader")
+          ?: return@AsyncFunction false
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(launchIntent)
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+  }
+
+  private fun unavailableDailyEvidence(dateKey: String): Map<String, Any> =
+    evidenceMap(DailyReadingEvidenceProviderClient.unavailable(dateKey))
+
+  private fun evidenceMap(evidence: NativeDailyReadingEvidenceResult): Map<String, Any> = buildMap {
+    put("providerAvailable", evidence.providerAvailable)
+    put("protocolCompatible", evidence.protocolCompatible)
+    evidence.protocolVersion?.let { put("protocolVersion", it) }
+    put("dateKey", evidence.dateKey)
+    put("verifiedActiveSeconds", evidence.verifiedActiveSeconds.toDouble())
+    put("qualifiedPages", evidence.qualifiedPages)
+    put("updatedAtEpochMs", evidence.updatedAtEpochMs.toDouble())
+  }
+
+  private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {
+    val dateKey = RhythmEnforcementService.getLocalDateKey(now)
+    val state = RhythmEnforcementService.loadAttentionExchangeState(context, now)
+    val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
+      .filter { it.endsAt > now }
+      .map { cooldown ->
+        buildMap<String, Any> {
+          put("groupId", cooldown.groupId)
+          put("packageNames", cooldown.packageNames.sorted())
+          put("startedAt", cooldown.startedAt.toDouble())
+          put("endsAt", cooldown.endsAt.toDouble())
+          cooldown.attentionDateKey?.let { put("attentionDateKey", it) }
+          cooldown.dailyCooldownOrdinal?.let { put("dailyCooldownOrdinal", it) }
+          put("requiredReadingSeconds", cooldown.requiredReadingSeconds.toDouble())
+          put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
+        }
+      }
+    val gates = RhythmEnforcementService.loadReadingGates(context).values
+      .filter { it.attentionDateKey == dateKey }
+      .map { gate ->
+        mapOf(
+          "groupId" to gate.groupId,
+          "attentionDateKey" to gate.attentionDateKey,
+          "dailyCooldownOrdinal" to gate.dailyCooldownOrdinal,
+          "createdAt" to gate.createdAt.toDouble(),
+          "cooldownEndsAt" to gate.cooldownEndsAt.toDouble(),
+          "requiredReadingSeconds" to gate.requiredReadingSeconds.toDouble(),
+          "requiredQualifiedPages" to gate.requiredQualifiedPages,
+        )
+      }
+    val result = mutableMapOf<String, Any?>(
+      "attentionStateInitialized" to context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+        .contains(RhythmNativePolicyKeys.ATTENTION_EXCHANGE_STATE_JSON),
+      "dateKey" to state.dateKey,
+      "cooldownsTriggered" to state.cooldownsTriggered,
+      "highestRequiredActiveSeconds" to state.highestRequiredActiveSeconds.toDouble(),
+      "highestRequiredQualifiedPages" to state.highestRequiredQualifiedPages,
+      "cooldowns" to cooldowns,
+      "readingGates" to gates,
+      "groupUsage" to groupSnapshots(context),
+      "activeAccessLeases" to RhythmEnforcementService.loadActiveLeases(context, now).map { lease ->
+        mapOf("groupId" to lease.groupId, "packageNames" to lease.packageNames.sorted(), "endsAt" to lease.endsAt.toDouble())
+      },
+      "updatedAt" to now.toDouble(),
+    )
+    val foregroundPackage = RhythmEnforcementService.instance?.lastForegroundPackage
+    val foregroundGroup = foregroundPackage?.let { pkg ->
+      RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }?.groupId
+    }
+    if (foregroundGroup != null) result["foregroundGroupId"] = foregroundGroup
+    RhythmEnforcementService.loadDailyReadingEvidence(context)
+      ?.takeIf { it.dateKey == dateKey }
+      ?.let { result["evidence"] = evidenceMap(it) }
+    return result
+  }
+
+  private fun groupSnapshots(context: Context): List<Map<String, Any?>> {
+    val now = System.currentTimeMillis()
+    val ledger = RhythmEnforcementService.loadGroupUsageLedger(context)
+    val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
+    return RhythmEnforcementService.loadRiskGroupPolicies(context).map { policy ->
+      val usage = ledger[policy.groupId]
+      val usedMillis = if (usage?.dateKey == RhythmEnforcementService.getLocalDateKey(now)) {
+        usage.usedMillis + if (usage.activeSegmentStartedAt != null) maxOf(0L, now - usage.activeSegmentStartedAt) else 0L
+      } else 0L
+      val allowanceSeconds = policy.allowanceMinutes * 60
+      mutableMapOf<String, Any?>(
+        "groupId" to policy.groupId,
+        "dateKey" to RhythmEnforcementService.getLocalDateKey(now),
+        "usedSeconds" to (usedMillis / 1000L).toInt(),
+        "allowanceMinutes" to policy.allowanceMinutes,
+        "remainingSeconds" to maxOf(0, allowanceSeconds - (usedMillis / 1000L).toInt()),
+        "exhausted" to (usage?.exhaustedAt != null || policy.allowanceMinutes == 0 || usedMillis >= policy.allowanceMinutes * 60_000L),
+        "cooldownEndsAt" to cooldowns.firstOrNull { it.groupId == policy.groupId && it.endsAt > now }?.endsAt,
+        "cycleRevision" to (usage?.cycleRevision ?: 0L)
+      )
     }
   }
 

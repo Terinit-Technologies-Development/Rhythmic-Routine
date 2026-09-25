@@ -1,16 +1,33 @@
 import {
   AccessLease,
+  AccountabilitySettings,
   AppClassification,
   DailyAppUsage,
   DailyRiskAllowancePolicy,
   DeviceApp,
   EMERGENCY_ACCESS_MINUTES,
+  GroupAllowanceUsage,
   RhythmState,
   RiskGroup,
   RoutineWindow,
 } from '../../types/domain';
+import {
+  migrateDailyAttentionExchange,
+  isValidLocalDateKey,
+  type ActiveReadingGate,
+  type DailyAttentionExchangeState,
+} from './attentionExchange';
+import type { ReadingEvidenceSnapshot } from './readingEvidence';
 
-export { AccessLease, EMERGENCY_ACCESS_MINUTES, DailyAppUsage, DailyRiskAllowancePolicy };
+export {
+  AccessLease,
+  AccountabilitySettings,
+  EMERGENCY_ACCESS_MINUTES,
+  DailyAppUsage,
+  DailyRiskAllowancePolicy,
+  GroupAllowanceUsage,
+};
+export type { ActiveReadingGate, DailyAttentionExchangeState } from './attentionExchange';
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -26,6 +43,13 @@ export interface ActiveCooldown {
   groupId: string;
   startedAt: number;
   endsAt: number;
+  dailyCooldownOrdinal?: number;
+  attentionDateKey?: string;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
+  recoverySessionId?: string;
+  recoveryRequired?: boolean;
+  cycleNumber?: number;
 }
 
 export type RestrictionReasonType =
@@ -34,7 +58,8 @@ export type RestrictionReasonType =
   | 'routine-evening'
   | 'routine-overnight'
   | 'daily-allowance'
-  | 'cooldown';
+  | 'cooldown'
+  | 'reading-quota';
 
 export interface RestrictionReason {
   type: RestrictionReasonType;
@@ -53,7 +78,19 @@ export interface RhythmRuntime {
   activeAccessLeases: Record<string, AccessLease>; // Multi-group temporary override leases
   activeRoutineWindowIds: string[];
   activeRestrictions: AppRestriction[]; // Desired restrictions
+  /** @deprecated v1.0.2: legacy per-app ledger. Group ledger (groupAllowanceUsage) is authoritative. */
   dailyAppUsage?: Record<string, DailyAppUsage>;
+  /** v1.0.2: one shared allowance ledger per Risk Group. */
+  groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** v1.2 daily global ordinal and highest productive-attention requirement. */
+  dailyAttentionExchange?: DailyAttentionExchangeState;
+  /** v1.2 reading obligations survive expiration of their cooldown timer. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  /** Cached Reader Protocol V2 projection; Reader remains the evidence authority. */
+  readingEvidence?: ReadingEvidenceSnapshot;
+  /** Android native state owns gate clearing while AccessibilityService enforcement is active. */
+  nativeAttentionAuthority?: boolean;
+  nativeForegroundGroupId?: string;
 }
 
 export interface PersistedRuntime {
@@ -62,7 +99,18 @@ export interface PersistedRuntime {
   activeAccessLeases?: Record<string, AccessLease>;
   activeSession?: ActiveRiskSession;
   activeRoutineWindowIds: string[];
+  /** @deprecated v1.0.2: legacy per-app ledger (migration clears stale exhaustion). */
   dailyAppUsage?: Record<string, DailyAppUsage>;
+  /** v1.0.2: per-group allowance ledgers. */
+  groupAllowanceUsage?: Record<string, GroupAllowanceUsage>;
+  /** v1.2 daily global ordinal and highest productive-attention requirement. */
+  dailyAttentionExchange?: DailyAttentionExchangeState;
+  /** v1.2 reading obligations survive expiration of their cooldown timer. */
+  activeReadingGates?: Record<string, ActiveReadingGate>;
+  /** Cached Reader Protocol V2 projection; always refresh from Reader when available. */
+  readingEvidence?: ReadingEvidenceSnapshot;
+  nativeAttentionAuthority?: boolean;
+  nativeForegroundGroupId?: string;
   lastReconciledAt: number;
 }
 
@@ -71,6 +119,7 @@ export interface RhythmConfiguration {
   riskGroups: RiskGroup[];
   apps: DeviceApp[];
   sessionResetGapMs?: number;
+  accountability?: AccountabilitySettings;
 }
 
 export interface RhythmPreferences {
@@ -81,11 +130,13 @@ export interface RhythmPreferences {
     {
       classification: AppClassification;
       riskGroupId?: string;
+      /** @deprecated v1.0.2: migration read only; never a policy source. */
       dailyRiskAllowance?: DailyRiskAllowancePolicy;
     }
   >;
   sessionResetGapMs: number;
   onboardingCompleted: boolean;
+  accountability?: AccountabilitySettings;
 }
 
 export type RhythmHistoryEvent =
@@ -99,6 +150,9 @@ export type RhythmHistoryEvent =
   | { type: 'routine-ended'; windowId: string; timestamp: number }
   | { type: 'group-protection-started'; groupId: string; timestamp: number }
   | { type: 'group-protection-ended'; groupId: string; timestamp: number }
+  | { type: 'group-allowance-edited'; groupId: string; previousMinutes: number; nextMinutes: number; timestamp: number }
+  | { type: 'group-allowance-exhausted'; groupId: string; timestamp: number }
+  | { type: 'group-recovery-activity-changed'; groupId: string; activityId: string; timestamp: number }
   | { type: 'daily-allowance-edited'; appId: string; previousMinutes: number; nextMinutes: number; timestamp: number }
   | { type: 'daily-allowance-exhausted'; appId: string; timestamp: number }
   | { type: 'emergency-bypass'; timestamp: number };
@@ -114,10 +168,27 @@ export type RhythmEvent =
   | { type: 'START_ACCESS_LEASE'; groupId: string; durationMinutes?: number; reason?: 'emergency' | 'intentional'; timestamp: number }
   | { type: 'END_ACCESS_LEASE'; groupId: string; timestamp: number }
   | { type: 'UPDATE_DAILY_ALLOWANCE'; appId: string; allowanceMinutes: number; timestamp: number }
+  | { type: 'UPDATE_GROUP_ALLOWANCE'; groupId: string; allowanceMinutes: number; timestamp: number }
+  | { type: 'UPDATE_GROUP_RECOVERY_ACTIVITY'; groupId: string; activityId: string; timestamp: number }
   | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
+  | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; replaceExisting?: boolean; timestamp: number }
+  | { type: 'SYNC_DAILY_READING_EVIDENCE'; evidence: ReadingEvidenceSnapshot; timestamp: number; preserveNativeGates?: boolean }
+  | {
+      type: 'SYNC_NATIVE_ATTENTION_EXCHANGE';
+      dailyAttentionExchange: DailyAttentionExchangeState;
+      activeReadingGates: Record<string, ActiveReadingGate>;
+      activeCooldowns: Record<string, ActiveCooldown>;
+      activeAccessLeases: Record<string, AccessLease>;
+      groupAllowanceUsage: Record<string, GroupAllowanceUsage>;
+      foregroundGroupId?: string;
+      readingEvidence?: ReadingEvidenceSnapshot;
+      timestamp: number;
+    }
+  | { type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED'; timestamp: number }
   | { type: 'RECONCILE'; timestamp: number }
-  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; timestamp: number }
-  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number };
+  | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; legacy?: boolean; timestamp: number }
+  | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
+  | { type: 'RISK_GROUP_DELETED'; groupId: string; timestamp: number };
 
 export type RhythmEffect =
   | { type: 'APPLY_RESTRICTIONS'; appIds: string[] }
@@ -170,37 +241,124 @@ export function getPrimaryCooldown(
 /**
  * Normalizes legacy persisted objects to multi-cooldown and multi-lease map.
  */
-export function normalizePersistedRuntime(raw: any): PersistedRuntime | null {
+export function normalizePersistedRuntime(raw: any, now: number = Date.now()): PersistedRuntime | null {
   if (!raw || typeof raw !== 'object') return null;
 
   let activeCooldowns: Record<string, ActiveCooldown> = {};
 
   if (raw.activeCooldowns && typeof raw.activeCooldowns === 'object') {
-    activeCooldowns = { ...raw.activeCooldowns };
+    activeCooldowns = Object.fromEntries(
+      Object.entries(raw.activeCooldowns)
+        .filter(([, cooldown]) => cooldown && typeof cooldown === 'object')
+        .map(([groupId, cooldown]) => [groupId, { ...(cooldown as ActiveCooldown) }])
+    );
   } else if (raw.activeCooldown && typeof raw.activeCooldown === 'object' && raw.activeCooldown.groupId) {
-    activeCooldowns[raw.activeCooldown.groupId] = raw.activeCooldown;
+    activeCooldowns[raw.activeCooldown.groupId] = { ...raw.activeCooldown };
   }
 
   let activeAccessLeases: Record<string, AccessLease> = {};
   if (raw.activeAccessLeases && typeof raw.activeAccessLeases === 'object') {
-    activeAccessLeases = { ...raw.activeAccessLeases };
+    activeAccessLeases = Object.fromEntries(
+      Object.entries(raw.activeAccessLeases)
+        .filter(([, lease]) => lease && typeof lease === 'object')
+        .map(([groupId, lease]) => [groupId, { ...(lease as AccessLease) }])
+    );
   }
 
   const res: PersistedRuntime = {
     state: raw.state || 'available',
     activeCooldowns,
     activeAccessLeases,
-    activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? raw.activeRoutineWindowIds : [],
-    lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : Date.now(),
+    activeRoutineWindowIds: Array.isArray(raw.activeRoutineWindowIds) ? [...raw.activeRoutineWindowIds] : [],
+    lastReconciledAt: typeof raw.lastReconciledAt === 'number' ? raw.lastReconciledAt : now,
   };
 
+  if (raw.dailyAttentionExchange && typeof raw.dailyAttentionExchange === 'object') {
+    res.dailyAttentionExchange = { ...raw.dailyAttentionExchange };
+  }
+
+  if (raw.activeReadingGates && typeof raw.activeReadingGates === 'object') {
+    res.activeReadingGates = Object.fromEntries(
+      Object.entries(raw.activeReadingGates)
+        .filter(([groupId, gate]) =>
+          isValidPersistedGate(groupId, gate)
+        )
+        .map(([groupId, gate]) => [groupId, { ...(gate as ActiveReadingGate) }])
+    ) as Record<string, ActiveReadingGate>;
+  }
+
+  if (isValidPersistedReadingEvidence(raw.readingEvidence)) {
+    res.readingEvidence = { ...raw.readingEvidence };
+  }
+  if (raw.nativeAttentionAuthority === true) res.nativeAttentionAuthority = true;
+  if (typeof raw.nativeForegroundGroupId === 'string') res.nativeForegroundGroupId = raw.nativeForegroundGroupId;
+
+  res.dailyAttentionExchange = raw.dailyAttentionExchange &&
+    typeof raw.dailyAttentionExchange === 'object' &&
+    isValidLocalDateKey(raw.dailyAttentionExchange.dateKey) &&
+    Number.isFinite(raw.dailyAttentionExchange.cooldownsTriggered)
+    ? {
+        dateKey: raw.dailyAttentionExchange.dateKey,
+        cooldownsTriggered: Math.max(0, Math.floor(raw.dailyAttentionExchange.cooldownsTriggered)),
+        highestRequiredActiveSeconds: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredActiveSeconds),
+        highestRequiredQualifiedPages: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredQualifiedPages),
+        updatedAt: Number.isFinite(raw.dailyAttentionExchange.updatedAt) ? raw.dailyAttentionExchange.updatedAt : now,
+      }
+    : migrateDailyAttentionExchange(activeCooldowns, now, res.activeReadingGates);
+
   if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
-    res.dailyAppUsage = { ...raw.dailyAppUsage };
+    res.dailyAppUsage = cloneObjectValues(raw.dailyAppUsage);
+  }
+
+  if (raw.groupAllowanceUsage && typeof raw.groupAllowanceUsage === 'object') {
+    res.groupAllowanceUsage = cloneObjectValues(raw.groupAllowanceUsage);
   }
 
   if (raw.activeSession) {
-    res.activeSession = raw.activeSession;
+    res.activeSession = { ...raw.activeSession };
   }
 
   return res;
+}
+
+function isValidPersistedGate(groupId: string, value: unknown): value is ActiveReadingGate {
+  if (!value || typeof value !== 'object') return false;
+  const gate = value as Partial<ActiveReadingGate>;
+  return gate.groupId === groupId &&
+    typeof gate.attentionDateKey === 'string' && isValidLocalDateKey(gate.attentionDateKey) &&
+    Number.isInteger(gate.dailyCooldownOrdinal) && (gate.dailyCooldownOrdinal ?? 0) > 0 &&
+    isFiniteNonNegativeNumber(gate.createdAt) &&
+    isFiniteNonNegativeNumber(gate.cooldownEndsAt) &&
+    isFiniteNonNegativeNumber(gate.requiredReadingSeconds) &&
+    isFiniteNonNegativeNumber(gate.requiredQualifiedPages) &&
+    Number.isInteger(gate.requiredReadingSeconds) &&
+    Number.isInteger(gate.requiredQualifiedPages);
+}
+
+function isValidPersistedReadingEvidence(value: unknown): value is ReadingEvidenceSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const evidence = value as Partial<ReadingEvidenceSnapshot>;
+  return typeof evidence.dateKey === 'string' && isValidLocalDateKey(evidence.dateKey) &&
+    typeof evidence.providerAvailable === 'boolean' &&
+    typeof evidence.protocolCompatible === 'boolean' &&
+    isFiniteNonNegativeNumber(evidence.verifiedActiveSeconds) &&
+    isFiniteNonNegativeNumber(evidence.qualifiedPages) &&
+    Number.isInteger(evidence.qualifiedPages) &&
+    isFiniteNonNegativeNumber(evidence.syncedAtEpochMs);
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function finiteNonNegativeInteger(value: unknown): number {
+  return isFiniteNonNegativeNumber(value) ? Math.floor(value) : 0;
+}
+
+function cloneObjectValues<T extends object>(value: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item && typeof item === 'object')
+      .map(([key, item]) => [key, { ...item }])
+  );
 }

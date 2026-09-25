@@ -5,25 +5,70 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Sprout, Lock, Sparkles } from 'lucide-react-native';
+import { Sprout, Lock, Sparkles, BookOpen } from 'lucide-react-native';
 import { colors, radii, shadows } from '../src/theme/tokens';
 import { ScreenHeader } from '../src/components/ScreenHeader';
 import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
+import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
+import { formatSecondsToHHMMSS } from '../src/domain/selectors';
 
 export default function TouchGrassScreen() {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
+  const attentionStatus = usePrototypeStore((s) => s.activeAttentionGateStatus);
+  const refreshReadingEvidence = usePrototypeStore((s) => s.refreshReadingEvidence);
+  const openRhythmicReader = usePrototypeStore((s) => s.openRhythmicReader);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const group = activeRiskGroupId
+    ? riskGroups.find((g) => g.id === activeRiskGroupId)
+    : undefined;
+  const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
+  const recovery = group?.cooldownMinutes;
 
-  const group = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
+  const configuredActivity = group?.recoveryActivityId
+    ? offlineActivities.find((a) => a.id === group.recoveryActivityId)
+    : undefined;
+  const displayActivities = configuredActivity
+    ? [configuredActivity, ...offlineActivities.filter((a) => a.id !== configuredActivity.id)].slice(0, 4)
+    : offlineActivities.slice(0, 4);
   const countdownSeconds = useRemainingSeconds(activeTimerEndsAt);
+  const isPostCooldownAttention = Boolean(
+    attentionStatus && attentionStatus.phase !== 'none' && attentionStatus.phase !== 'cooldown-active'
+  );
+  const isReaderEvidenceUnavailable = attentionStatus?.phase === 'reader-unavailable';
+  const isReaderEvidenceIncompatible = attentionStatus?.phase === 'reader-incompatible';
+  const hasReadingRequirement = Boolean(
+    attentionStatus &&
+    (attentionStatus.requiredReadingSeconds > 0 || attentionStatus.requiredQualifiedPages > 0)
+  );
+  const afterCooldownProgress = [
+    attentionStatus?.remainingReadingSeconds
+      ? `${formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)} reading remaining`
+      : undefined,
+    attentionStatus?.remainingQualifiedPages
+      ? `${attentionStatus.remainingQualifiedPages} qualified pages remaining`
+      : undefined,
+  ].filter(Boolean).join(' · ');
+
+  const continueReading = async () => {
+    try {
+      await refreshReadingEvidence();
+    } catch {
+      // Reader launch should remain available even when the evidence refresh fails.
+    }
+    const opened = await openRhythmicReader();
+    if (!opened) {
+      Alert.alert('Reader unavailable', 'Rhythmic Reader could not be opened on this device.');
+    }
+  };
 
   const hrs = Math.floor(countdownSeconds / 3600);
   const mins = Math.floor((countdownSeconds % 3600) / 60);
@@ -43,10 +88,23 @@ export default function TouchGrassScreen() {
             <Sprout size={24} color={colors.forest} strokeWidth={2.3} />
           </View>
 
-          <Text style={styles.title}>Touch grass 🌱</Text>
+          <Text style={styles.title}>
+            {isPostCooldownAttention
+              ? 'Productive attention 🌱'
+              : group ? `${group.name} Cooldown 🌱` : 'Touch grass 🌱'}
+          </Text>
           <Text style={styles.subtitle}>
-            You’ve been in {group.name} for {group.sessionThresholdMinutes} minutes.{'\n'}
-            Come back in {hrs > 0 ? `${hrs}h ` : ''}{mins}m.
+            {isPostCooldownAttention
+              ? isReaderEvidenceUnavailable
+                ? 'The cooldown has ended. Reader evidence is unavailable, so productive attention cannot be verified yet.'
+                : isReaderEvidenceIncompatible
+                  ? 'The cooldown has ended. Reader evidence is incompatible with the required protocol.'
+                  : attentionStatus?.phase === 'satisfied'
+                    ? 'Both reading requirements are verified. Rhythm is updating your access.'
+                    : 'The cooldown has ended. Complete both reading requirements to regain access.'
+              : group
+                ? `${threshold} min group allowance reached · ${recovery} min recovery break.${hasReadingRequirement ? `\nAfter the timer: ${afterCooldownProgress || 'reading requirements verified'}.` : ''}\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
+                : `Recovery break active.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`}
           </Text>
         </View>
 
@@ -60,31 +118,55 @@ export default function TouchGrassScreen() {
           {/* Floating Frosted Glass Card */}
           <View style={styles.timerCard}>
             <View style={styles.cooldownBadge}>
-              <Lock size={12} color={colors.forestDark} strokeWidth={2.5} />
-              <Text style={styles.cooldownBadgeText}>Cooldown in progress</Text>
+              {isPostCooldownAttention
+                ? <BookOpen size={12} color={colors.forestDark} strokeWidth={2.5} />
+                : <Lock size={12} color={colors.forestDark} strokeWidth={2.5} />}
+              <Text style={styles.cooldownBadgeText}>
+                {isPostCooldownAttention ? 'Productive attention' : 'Cooldown in progress'}
+              </Text>
             </View>
 
-            {/* Giant Countdown Digits */}
-            <View style={styles.digitsRow}>
-              <View style={styles.digitCol}>
-                <Text style={styles.digitNumber}>{hrs.toString().padStart(2, '0')}</Text>
-                <Text style={styles.digitUnit}>HRS</Text>
+            {isPostCooldownAttention ? (
+              <View style={styles.attentionRequirements}>
+                <Text style={styles.attentionRequirementPrimary}>
+                  {attentionStatus?.remainingReadingSeconds
+                    ? `${formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)} reading`
+                    : attentionStatus?.phase === 'satisfied' ? 'Reading verified' : 'Reading time verified'}
+                </Text>
+                <Text style={styles.attentionRequirementSecondary}>
+                  {attentionStatus?.remainingQualifiedPages
+                    ? `${attentionStatus.remainingQualifiedPages} qualified pages remaining`
+                    : 'Qualified pages verified'}
+                </Text>
+                {attentionStatus?.phase !== 'satisfied' && (
+                  <TouchableOpacity
+                    style={styles.continueReadingButton}
+                    onPress={() => { void continueReading(); }}
+                    activeOpacity={0.85}
+                  >
+                    <BookOpen size={16} color="#FFFFFF" strokeWidth={2.3} />
+                    <Text style={styles.continueReadingButtonText}>Continue Reading</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-
-              <Text style={styles.digitColon}>:</Text>
-
-              <View style={styles.digitCol}>
-                <Text style={styles.digitNumber}>{mins.toString().padStart(2, '0')}</Text>
-                <Text style={styles.digitUnit}>MIN</Text>
+            ) : (
+              <View style={styles.digitsRow}>
+                <View style={styles.digitCol}>
+                  <Text style={styles.digitNumber}>{hrs.toString().padStart(2, '0')}</Text>
+                  <Text style={styles.digitUnit}>HRS</Text>
+                </View>
+                <Text style={styles.digitColon}>:</Text>
+                <View style={styles.digitCol}>
+                  <Text style={styles.digitNumber}>{mins.toString().padStart(2, '0')}</Text>
+                  <Text style={styles.digitUnit}>MIN</Text>
+                </View>
+                <Text style={styles.digitColon}>:</Text>
+                <View style={styles.digitCol}>
+                  <Text style={styles.digitNumber}>{secs.toString().padStart(2, '0')}</Text>
+                  <Text style={styles.digitUnit}>SEC</Text>
+                </View>
               </View>
-
-              <Text style={styles.digitColon}>:</Text>
-
-              <View style={styles.digitCol}>
-                <Text style={styles.digitNumber}>{secs.toString().padStart(2, '0')}</Text>
-                <Text style={styles.digitUnit}>SEC</Text>
-              </View>
-            </View>
+            )}
           </View>
         </View>
 
@@ -97,7 +179,7 @@ export default function TouchGrassScreen() {
           <Text style={styles.awaySubtitle}>Try one of these feel-good things.</Text>
 
           <View style={styles.activitiesList}>
-            {offlineActivities.slice(0, 4).map((activity) => (
+            {displayActivities.map((activity) => (
               <OfflineActivityCard
                 key={activity.id}
                 activity={activity}
@@ -244,6 +326,39 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.forest,
     marginBottom: 14,
+  },
+  attentionRequirements: {
+    alignItems: 'center',
+    paddingTop: 2,
+    gap: 4,
+  },
+  attentionRequirementPrimary: {
+    fontSize: 25,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    color: colors.forestDark,
+  },
+  attentionRequirementSecondary: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  continueReadingButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 46,
+    alignSelf: 'stretch',
+    backgroundColor: colors.forest,
+    borderRadius: radii.full,
+    paddingHorizontal: 20,
+    marginTop: 10,
+  },
+  continueReadingButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   awaySection: {
     marginBottom: 16,

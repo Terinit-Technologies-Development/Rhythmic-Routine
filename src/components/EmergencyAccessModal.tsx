@@ -15,7 +15,7 @@ import { getPlatformAccessLeasePolicy } from '../types/domain';
 export const EmergencyAccessModal: React.FC = () => {
   const visible = usePrototypeStore((s) => s.emergencyModalVisible);
   const setVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
-  const startAccessLease = usePrototypeStore((s) => s.startAccessLease);
+  const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
 
@@ -27,7 +27,12 @@ export const EmergencyAccessModal: React.FC = () => {
 
   const handleGrantOverride = async () => {
     const groupId = targetGroup?.id || 'social';
-    await startAccessLease(groupId, durationMinutes);
+    setVisible(false);
+    await requestProtectedMutation({
+      operation: 'start-access-lease',
+      summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
+      payload: { groupId, durationMinutes },
+    });
   };
 
   return (

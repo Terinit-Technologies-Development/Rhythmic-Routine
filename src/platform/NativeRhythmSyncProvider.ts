@@ -1,11 +1,37 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
 import RhythmDeviceModule from '../../modules/rhythm-device';
+import { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import { offlineActivities } from '../data/mockData';
+import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
+import { getLocalDateKey } from '../domain/rhythm/allowance';
 
 export interface IOSNativeGroupPolicy {
   groupId: string;
   selectionRef?: string;
-  sessionThresholdMinutes: number;
+  /** Legacy iOS projection field; Android uses allowanceMinutes only. */
+  sessionThresholdMinutes?: number;
+  /** v1.0.2: shared group allowance (sole policy owner). */
+  allowanceMinutes?: number;
   cooldownMinutes: number;
+  recoveryActivityId?: string;
+}
+
+/** Native group policy carries all background-safe enforcement context. */
+export interface NativeRecoveryActivity {
+  id: string;
+  title: string;
+  subtitle: string;
+  iconEmoji: string;
+  durationSuggestion?: string;
+}
+
+export interface NativeRiskGroupPolicy {
+  groupId: string;
+  groupName: string;
+  packageNames: string[];
+  allowanceMinutes: number;
+  cooldownMinutes: number;
+  recoveryActivity: NativeRecoveryActivity;
 }
 
 export interface IOSNativeRoutinePolicy {
@@ -30,6 +56,7 @@ export interface IOSSharedRhythmSnapshot {
 export interface NativeRhythmSyncProvider {
   sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void>;
   getSnapshot?(): Promise<IOSSharedRhythmSnapshot | null>;
+  getAndroidSnapshot?(): Promise<NativeAttentionExchangeSnapshot | null>;
 }
 
 export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
@@ -38,6 +65,10 @@ export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
   }
 
   async getSnapshot(): Promise<IOSSharedRhythmSnapshot | null> {
+    return null;
+  }
+
+  async getAndroidSnapshot(): Promise<NativeAttentionExchangeSnapshot | null> {
     return null;
   }
 }
@@ -62,7 +93,9 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
       nativeSelectionRef: group.nativeSelectionRef,
       nativeSelectionRevision: group.nativeSelectionRevision,
       sessionThresholdMinutes: group.sessionThresholdMinutes,
+      allowanceMinutes: group.allowanceMinutes,
       cooldownMinutes: group.cooldownMinutes,
+      recoveryActivityId: group.recoveryActivityId,
     })),
     routines: config.routineWindows.map((routine) => ({
       id: routine.id,
@@ -83,6 +116,8 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   private lastAndroidRiskPoliciesSignature?: string;
   private lastAndroidRoutineScheduleSignature?: string;
   private lastAndroidCooldownsSignature?: string;
+  private lastAndroidAttentionPolicySignature?: string;
+  private lastAndroidAttentionStateSignature?: string;
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
     try {
@@ -91,8 +126,9 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         const groups: IOSNativeGroupPolicy[] = config.riskGroups.map((g) => ({
           groupId: g.id,
           selectionRef: g.nativeSelectionRef,
-          sessionThresholdMinutes: g.sessionThresholdMinutes,
+           allowanceMinutes: g.allowanceMinutes ?? 30,
           cooldownMinutes: g.cooldownMinutes,
+          recoveryActivityId: g.recoveryActivityId,
         }));
 
         const routines: IOSNativeRoutinePolicy[] = config.routineWindows.map((w) => ({
@@ -161,24 +197,83 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           }
         }
       } else if (os === 'android') {
+        // Seed native defaults and an empty native store before any group-policy
+        // update can cause the AccessibilityService to evaluate an exhausted ledger.
+        const attentionPolicy = { ...DEFAULT_READING_ATTENTION_POLICY };
+        const attentionPolicySignature = JSON.stringify(attentionPolicy);
+        if (
+          RhythmDeviceModule.setAttentionExchangePolicy &&
+          this.lastAndroidAttentionPolicySignature !== attentionPolicySignature
+        ) {
+          const saved = await RhythmDeviceModule.setAttentionExchangePolicy(attentionPolicy);
+          if (saved !== false) this.lastAndroidAttentionPolicySignature = attentionPolicySignature;
+        }
+
+        if (RhythmDeviceModule.setAttentionExchangeState) {
+          const activeCooldowns = Object.entries(runtime.activeCooldowns || {})
+            .filter(([, cooldown]) => cooldown.endsAt > Date.now())
+            .map(([groupId, cooldown]) => {
+              const group = config.riskGroups.find((item) => item.id === groupId);
+              return {
+                groupId,
+                packageNames: (group?.appIds || [])
+                  .filter((id) => config.apps.some((app) => app.id === id && app.classification === 'risk'))
+                  .sort(),
+                startedAt: cooldown.startedAt,
+                endsAt: cooldown.endsAt,
+                attentionDateKey: cooldown.attentionDateKey,
+                dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal,
+                requiredReadingSeconds: cooldown.requiredReadingSeconds,
+                requiredQualifiedPages: cooldown.requiredQualifiedPages,
+              };
+            });
+          const attentionState = {
+            dailyAttentionExchange: runtime.dailyAttentionExchange ?? {
+              dateKey: getLocalDateKey(),
+              cooldownsTriggered: 0,
+              highestRequiredActiveSeconds: 0,
+              highestRequiredQualifiedPages: 0,
+              updatedAt: Date.now(),
+            },
+            activeReadingGates: Object.values(runtime.activeReadingGates || {}),
+            activeCooldowns,
+          };
+          const attentionStateSignature = JSON.stringify(attentionState);
+          if (this.lastAndroidAttentionStateSignature !== attentionStateSignature) {
+            const saved = await RhythmDeviceModule.setAttentionExchangeState(attentionState);
+            if (saved !== false) this.lastAndroidAttentionStateSignature = attentionStateSignature;
+          }
+        }
+
         // Clear opaque base restrictions so native solely evaluates routines, cooldowns, and allowances
         if (this.lastAndroidBaseRestrictionsSignature !== '[]') {
           await RhythmDeviceModule.setBaseRestrictions([]);
           this.lastAndroidBaseRestrictionsSignature = '[]';
         }
 
-        // 1. Sync daily allowance policies
-        if (RhythmDeviceModule.setDailyAllowancePolicies) {
-          const riskPolicies = config.apps
-            .filter((app) => app.classification === 'risk')
-            .map((app) => ({
-              packageName: app.id,
-              allowanceMinutes: app.dailyRiskAllowance?.allowanceMinutes ?? 30,
-            }))
-            .sort((a, b) => a.packageName.localeCompare(b.packageName));
+        // 1. Sync one shared policy per configured Risk Group.
+        if (RhythmDeviceModule.setRiskGroupPolicies) {
+          const riskPolicies = config.riskGroups.map((group) => {
+            const activity = offlineActivities.find((item) => item.id === (group.recoveryActivityId ?? 'walk')) ?? offlineActivities.find((item) => item.id === 'walk');
+            return {
+            groupId: group.id,
+            groupName: group.name,
+            packageNames: group.appIds.filter((id) => config.apps.some((app) => app.id === id && app.classification === 'risk')).sort(),
+            allowanceMinutes: group.allowanceMinutes ?? 30,
+            cooldownMinutes: group.cooldownMinutes,
+            recoveryActivity: {
+              id: activity?.id ?? 'walk',
+              title: activity?.title ?? 'Take a short walk',
+              subtitle: activity?.subtitle ?? 'Fresh air. Clear mind.',
+              iconEmoji: activity?.iconEmoji ?? 'walk',
+              durationSuggestion: activity?.durationSuggestion,
+            },
+          };
+          }).filter((policy) => policy.packageNames.length > 0)
+            .sort((a, b) => a.groupId.localeCompare(b.groupId));
           const policySig = JSON.stringify(riskPolicies);
           if (this.lastAndroidRiskPoliciesSignature !== policySig) {
-            await RhythmDeviceModule.setDailyAllowancePolicies(riskPolicies);
+            await RhythmDeviceModule.setRiskGroupPolicies(riskPolicies);
             this.lastAndroidRiskPoliciesSignature = policySig;
           }
         }
@@ -191,8 +286,15 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               const grp = config.riskGroups.find((g) => g.id === gid);
               return {
                 groupId: gid,
-                packageNames: (grp?.appIds || []).slice().sort(),
+                packageNames: (grp?.appIds || [])
+                  .filter((id) => config.apps.some((app) => app.id === id && app.classification === 'risk'))
+                  .sort(),
+                startedAt: cd.startedAt,
                 endsAt: cd.endsAt,
+                attentionDateKey: cd.attentionDateKey,
+                dailyCooldownOrdinal: cd.dailyCooldownOrdinal,
+                requiredReadingSeconds: cd.requiredReadingSeconds,
+                requiredQualifiedPages: cd.requiredQualifiedPages,
               };
             })
             .filter((p) => p.packageNames.length > 0)
@@ -274,5 +376,14 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
       }
     }
     return this.lastSnapshot || null;
+  }
+
+  async getAndroidSnapshot(): Promise<NativeAttentionExchangeSnapshot | null> {
+    if (getPlatformOS() !== 'android') return null;
+    try {
+      return await RhythmDeviceModule.getAttentionExchangeSnapshot();
+    } catch {
+      return null;
+    }
   }
 }

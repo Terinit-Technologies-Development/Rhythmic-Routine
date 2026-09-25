@@ -1,5 +1,6 @@
 import {
   DailyAppUsage,
+  GroupAllowanceUsage,
   PersistedRuntime,
   RhythmConfiguration,
   RhythmEffect,
@@ -9,6 +10,12 @@ import {
 } from './types';
 import { processRhythmEvent } from './events';
 import { restoreCooldowns } from './cooldowns';
+import {
+  createDailyAttentionExchangeState,
+  deriveAttentionGateStatus,
+  reconcileAttentionExchangeDate,
+} from './attentionExchange';
+import { getLocalDateKey } from './allowance';
 
 export class RhythmEngine {
   private runtime: RhythmRuntime;
@@ -21,12 +28,14 @@ export class RhythmEngine {
   ) {
     this.config = { ...config };
 
-    const normalized = normalizePersistedRuntime(persistedState);
+    const normalized = normalizePersistedRuntime(persistedState, now);
+    const todayKey = getLocalDateKey(now);
 
     if (normalized) {
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
       const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
       const restoredDailyUsage = normalized.dailyAppUsage ? { ...normalized.dailyAppUsage } : {};
+      const restoredGroupUsage = normalized.groupAllowanceUsage ? { ...normalized.groupAllowanceUsage } : {};
       this.runtime = {
         state: normalized.state,
         activeSession: normalized.activeSession,
@@ -34,6 +43,21 @@ export class RhythmEngine {
         activeAccessLeases: restoredLeases,
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
         dailyAppUsage: restoredDailyUsage,
+        groupAllowanceUsage: restoredGroupUsage,
+        dailyAttentionExchange: reconcileAttentionExchangeDate(
+          normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
+          now
+        ),
+        activeReadingGates: Object.fromEntries(
+          Object.entries(normalized.activeReadingGates ?? {})
+            .filter(([, gate]) => gate.attentionDateKey === todayKey)
+            .map(([groupId, gate]) => [groupId, { ...gate }])
+        ),
+        ...(normalized.readingEvidence?.dateKey === todayKey
+          ? { readingEvidence: { ...normalized.readingEvidence } }
+          : {}),
+        nativeAttentionAuthority: normalized.nativeAttentionAuthority === true,
+        nativeForegroundGroupId: normalized.nativeForegroundGroupId,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
     } else {
@@ -43,6 +67,10 @@ export class RhythmEngine {
         activeAccessLeases: {},
         activeRoutineWindowIds: [],
         dailyAppUsage: {},
+        groupAllowanceUsage: {},
+        dailyAttentionExchange: createDailyAttentionExchangeState(todayKey, now),
+        activeReadingGates: {},
+        nativeAttentionAuthority: false,
         activeRestrictions: [], // Start with empty baseline
       };
     }
@@ -97,10 +125,29 @@ export class RhythmEngine {
   public getRuntime(): RhythmRuntime {
     return {
       ...this.runtime,
-      activeCooldowns: { ...this.runtime.activeCooldowns },
-      activeAccessLeases: { ...this.runtime.activeAccessLeases },
+      activeSession: this.runtime.activeSession ? { ...this.runtime.activeSession } : undefined,
+      activeCooldowns: Object.fromEntries(
+        Object.entries(this.runtime.activeCooldowns).map(([id, cooldown]) => [id, { ...cooldown }])
+      ),
+      activeAccessLeases: Object.fromEntries(
+        Object.entries(this.runtime.activeAccessLeases).map(([id, lease]) => [id, { ...lease }])
+      ),
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
-      dailyAppUsage: this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {},
+      dailyAppUsage: this.runtime.dailyAppUsage
+        ? Object.fromEntries(Object.entries(this.runtime.dailyAppUsage).map(([id, usage]) => [id, { ...usage }]))
+        : {},
+      groupAllowanceUsage: this.runtime.groupAllowanceUsage
+        ? Object.fromEntries(Object.entries(this.runtime.groupAllowanceUsage).map(([id, usage]) => [id, { ...usage }]))
+        : {},
+      dailyAttentionExchange: this.runtime.dailyAttentionExchange
+        ? { ...this.runtime.dailyAttentionExchange }
+        : undefined,
+      activeReadingGates: Object.fromEntries(
+        Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
+      nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
+      nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
+      readingEvidence: this.runtime.readingEvidence ? { ...this.runtime.readingEvidence } : undefined,
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
         reasons: [...r.reasons],
@@ -110,6 +157,23 @@ export class RhythmEngine {
 
   public getDailyAppUsage(): Record<string, DailyAppUsage> {
     return this.runtime.dailyAppUsage ? { ...this.runtime.dailyAppUsage } : {};
+  }
+
+  public getGroupAllowanceUsage(): Record<string, GroupAllowanceUsage> {
+    return this.runtime.groupAllowanceUsage
+      ? Object.fromEntries(Object.entries(this.runtime.groupAllowanceUsage).map(([id, usage]) => [id, { ...usage }]))
+      : {};
+  }
+
+  public getAttentionGateStatus(groupId: string, now: number = Date.now()) {
+    return deriveAttentionGateStatus({
+      groupId,
+      gate: this.runtime.activeReadingGates?.[groupId],
+      cooldown: this.runtime.activeCooldowns[groupId],
+      evidence: this.runtime.readingEvidence,
+      now,
+      currentDateKey: getLocalDateKey(now),
+    });
   }
 
   public getConfiguration(): RhythmConfiguration {
@@ -128,16 +192,38 @@ export class RhythmEngine {
   public toPersistedRuntime(now: number = Date.now()): PersistedRuntime {
     const res: PersistedRuntime = {
       state: this.runtime.state,
-      activeCooldowns: { ...this.runtime.activeCooldowns },
-      activeAccessLeases: { ...this.runtime.activeAccessLeases },
+      activeCooldowns: Object.fromEntries(
+        Object.entries(this.runtime.activeCooldowns).map(([id, cooldown]) => [id, { ...cooldown }])
+      ),
+      activeAccessLeases: Object.fromEntries(
+        Object.entries(this.runtime.activeAccessLeases).map(([id, lease]) => [id, { ...lease }])
+      ),
       activeRoutineWindowIds: [...this.runtime.activeRoutineWindowIds],
       lastReconciledAt: now,
+      dailyAttentionExchange: this.runtime.dailyAttentionExchange
+        ? { ...this.runtime.dailyAttentionExchange }
+        : createDailyAttentionExchangeState(getLocalDateKey(now), now),
+      activeReadingGates: Object.fromEntries(
+        Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
+      nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
+      nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
     };
+    if (this.runtime.readingEvidence) {
+      res.readingEvidence = { ...this.runtime.readingEvidence };
+    }
     if (this.runtime.activeSession) {
       res.activeSession = { ...this.runtime.activeSession };
     }
     if (this.runtime.dailyAppUsage) {
-      res.dailyAppUsage = { ...this.runtime.dailyAppUsage };
+      res.dailyAppUsage = Object.fromEntries(
+        Object.entries(this.runtime.dailyAppUsage).map(([id, usage]) => [id, { ...usage }])
+      );
+    }
+    if (this.runtime.groupAllowanceUsage) {
+      res.groupAllowanceUsage = Object.fromEntries(
+        Object.entries(this.runtime.groupAllowanceUsage).map(([id, usage]) => [id, { ...usage }])
+      );
     }
     return res;
   }

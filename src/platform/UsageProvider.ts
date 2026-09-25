@@ -1,6 +1,6 @@
-import { DeviceApp, AppUsageSnapshot, DailyUsageSnapshot, DailyUsageAppSnapshot } from '../types/domain';
+import { DeviceApp, AppUsageSnapshot, GroupAllowanceSnapshot } from '../types/domain';
 
-export type { DailyUsageSnapshot, DailyUsageAppSnapshot };
+export type { GroupAllowanceSnapshot };
 
 export type UsageActivityEvent = {
   appId: string;
@@ -38,12 +38,16 @@ export interface UsageProvider {
   /**
    * Retrieves live daily usage snapshot from native ledger.
    */
-  getDailyUsageSnapshot?(): Promise<DailyUsageSnapshot>;
+  getGroupUsageSnapshot?(): Promise<GroupAllowanceSnapshot[]>;
 
   /**
    * Reconciles daily usage from native UsageEvents and returns updated snapshot.
    */
-  reconcileDailyUsage?(): Promise<DailyUsageSnapshot>;
+  reconcileGroupUsage?(): Promise<GroupAllowanceSnapshot[]>;
+
+  /** Legacy display projection retained for Insights fixtures; native policy is group-owned. */
+  getDailyUsageSnapshot?(): Promise<import('../types/domain').DailyUsageSnapshot>;
+  reconcileDailyUsage?(): Promise<import('../types/domain').DailyUsageSnapshot>;
 
   /**
    * Queries activity events in the specified timestamp range [from, to].

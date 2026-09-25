@@ -42,3 +42,7 @@ Rhythmic-Routine is architected with strict unidirectional data flow and clean s
 4. **Independent Multi-Group Cooldowns:** Reaching a session threshold on Group A (e.g. Social Feeds) triggers a cooldown on Group A only, without interfering with ongoing sessions or cooldowns on Group B (e.g. Entertainment).
 5. **Restriction-Reason Union:** An application remains restricted if at least one active reason (`routine` or `cooldown`) applies to its group, and no active `AccessLease` suppresses it.
 6. **Intentional Access Leases:** Emergency or intentional overrides grant a temporary 5-minute window (`EMERGENCY_ACCESS_MINUTES = 5`) suppressing restrictions for the targeted group only. Active cooldowns continue running and automatically restore restrictions when the lease expires.
+
+## v1.2 Productive Attention Exchange
+
+Reader Daily Evidence Protocol V2 supplies verified seconds and qualified pages; Routine owns the global daily cooldown ordinal, policy requirements, cached evidence projection, and durable `activeReadingGates`. The persisted policy and import/midnight behavior are documented in [Productive Attention Exchange v1.2](docs/protocol/PRODUCTIVE_ATTENTION_EXCHANGE_V1_2.md). Pass 02 establishes this domain layer only; the native enforcement boundary and reading-gate product experience belong to Pass 03.

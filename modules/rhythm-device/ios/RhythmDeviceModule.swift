@@ -336,6 +336,127 @@ public class RhythmDeviceModule: Module {
       promise.reject("ERR_UNSUPPORTED", "FamilyActivityPicker requires iOS 16.0+")
     }
 
+    AsyncFunction("stageFamilyActivityPicker") { (groupId: String, promise: Promise) in
+      #if canImport(FamilyControls) && canImport(SwiftUI)
+      if #available(iOS 16.0, *) {
+        DispatchQueue.main.async {
+          guard let rootVc = self.appContext.utilities?.currentViewController() else {
+            promise.reject("ERR_NO_ROOT_VC", "Cannot present FamilyActivityPicker: Root view controller unavailable")
+            return
+          }
+
+          let defaults = UserDefaults(suiteName: self.appGroupIdentifier)
+          var initialSelection = FamilyActivitySelection()
+          let key = self.selectionKey(groupId: groupId)
+
+          if let data = defaults?.data(forKey: key),
+             let saved = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
+            initialSelection = saved
+          }
+
+          var currentSelection = initialSelection
+          var hostingController: UIHostingController<FamilyActivityPickerContainer>? = nil
+
+          let containerView = FamilyActivityPickerContainer(
+            selection: Binding(
+              get: { currentSelection },
+              set: { currentSelection = $0 }
+            ),
+            onDone: {
+              hostingController?.dismiss(animated: true) {
+                guard let data = try? JSONEncoder().encode(currentSelection) else {
+                  promise.reject("ERR_SELECTION_ENCODING", "Unable to stage FamilyActivitySelection")
+                  return
+                }
+
+                let stagedId = UUID().uuidString
+                let stagedKey = "pending_selection.\(stagedId)"
+                defaults?.set(data, forKey: stagedKey)
+
+                let tokenCount = currentSelection.applicationTokens.count + currentSelection.categoryTokens.count + currentSelection.webDomainTokens.count
+                promise.resolve([
+                  "stagedSelectionRef": stagedKey,
+                  "tokenCount": tokenCount
+                ])
+              }
+            },
+            onCancel: {
+              hostingController?.dismiss(animated: true) {
+                promise.reject("ERR_CANCELLED", "User cancelled application selection")
+              }
+            }
+          )
+
+          hostingController = UIHostingController(rootView: containerView)
+          if let hc = hostingController {
+            rootVc.present(hc, animated: true)
+          }
+        }
+        return
+      }
+      #endif
+      promise.reject("ERR_UNSUPPORTED", "FamilyActivityPicker requires iOS 16.0+")
+    }
+
+    AsyncFunction("commitStagedFamilyActivitySelection") { (groupId: String, stagedSelectionRef: String) -> [String: Any] in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else {
+        return ["success": false, "revision": 0]
+      }
+      guard let data = defaults.data(forKey: stagedSelectionRef) else {
+        return ["success": false, "revision": 0]
+      }
+
+      let key = self.selectionKey(groupId: groupId)
+      let revKey = self.selectionRevisionKey(groupId: groupId)
+      let previousRevision = defaults.integer(forKey: revKey)
+
+      let rollbackId = UUID().uuidString
+      let rollbackKey = "rollback_selection.\(rollbackId)"
+      if let previousData = defaults.data(forKey: key) {
+        defaults.set(previousData, forKey: rollbackKey)
+      } else {
+        defaults.set("__EMPTY_SELECTION__", forKey: rollbackKey)
+      }
+
+      defaults.set(data, forKey: key)
+      defaults.removeObject(forKey: stagedSelectionRef)
+
+      let nextRevision = previousRevision + 1
+      defaults.set(nextRevision, forKey: revKey)
+
+      self.recomputeAndApplyShieldsInternal()
+      return [
+        "success": true,
+        "revision": nextRevision,
+        "localSelectionId": key,
+        "rollbackRef": rollbackKey,
+        "previousRevision": previousRevision
+      ]
+    }
+
+    AsyncFunction("rollbackCommittedFamilyActivitySelection") { (groupId: String, rollbackRef: String, previousRevision: Int) -> Bool in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+      let key = self.selectionKey(groupId: groupId)
+      let revKey = self.selectionRevisionKey(groupId: groupId)
+
+      if let rollbackString = defaults.string(forKey: rollbackRef), rollbackString == "__EMPTY_SELECTION__" {
+        defaults.removeObject(forKey: key)
+      } else if let rollbackData = defaults.data(forKey: rollbackRef) {
+        defaults.set(rollbackData, forKey: key)
+      }
+      defaults.removeObject(forKey: rollbackRef)
+      defaults.set(previousRevision, forKey: revKey)
+
+      self.recomputeAndApplyShieldsInternal()
+      return true
+    }
+
+    AsyncFunction("discardStagedFamilyActivitySelection") { (stagedSelectionRef: String) -> Bool in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+      defaults.removeObject(forKey: stagedSelectionRef)
+      return true
+    }
+
     AsyncFunction("hasGroupSelection") { (groupId: String) -> Bool in
       guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
       return defaults.data(forKey: self.selectionKey(groupId: groupId)) != nil
@@ -356,6 +477,41 @@ public class RhythmDeviceModule: Module {
 
     AsyncFunction("revokeAuthorization") { () -> Void in
       self.cleanupAfterAuthorizationLoss()
+    }
+
+    AsyncFunction("resetEnforcementState") { () -> Bool in
+      guard let defaults = UserDefaults(suiteName: self.appGroupIdentifier) else { return false }
+
+      #if canImport(DeviceActivity)
+      if #available(iOS 16.0, *) {
+        let center = DeviceActivityCenter()
+        let rhythmActivities = center.activities.filter {
+          self.isRhythmRoutineActivity($0) || self.isRhythmRiskActivity($0) || self.isRhythmExpiryActivity($0)
+        }
+        if !rhythmActivities.isEmpty {
+          center.stopMonitoring(rhythmActivities)
+        }
+      }
+      #endif
+
+      for key in defaults.dictionaryRepresentation().keys where
+        key == self.sharedStateKey || key == self.monitoringOperationalKey ||
+        key == self.persistentMonitoringOperationalKey || key == self.expiryMonitoringOperationalKey ||
+        key == self.monitoringLastErrorKey || key == self.monitoringConfigSignatureKey ||
+        key.hasPrefix("selection.") || key.hasPrefix("selection_revision.") ||
+        key.hasPrefix("pending_selection.") || key.hasPrefix("rollback_selection.") {
+        defaults.removeObject(forKey: key)
+      }
+
+      #if canImport(ManagedSettings)
+      if #available(iOS 16.0, *) {
+        let store = ManagedSettingsStore(named: .init(self.storeName))
+        store.shield.applications = nil
+        store.shield.applicationCategories = nil
+      }
+      #endif
+
+      return true
     }
 
     AsyncFunction("getInstalledApps") { () -> [[String: Any]] in

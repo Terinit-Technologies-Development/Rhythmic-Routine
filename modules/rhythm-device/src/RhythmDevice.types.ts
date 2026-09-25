@@ -33,6 +33,19 @@ export interface IOSSelectionReference {
   kind: 'applications' | 'categories' | 'mixed';
 }
 
+export interface StagedSelectionResult {
+  stagedSelectionRef: string;
+  tokenCount: number;
+}
+
+export interface CommitSelectionResult {
+  success: boolean;
+  revision: number;
+  localSelectionId?: string;
+  rollbackRef?: string;
+  previousRevision?: number;
+}
+
 export interface MonitoringSyncResult {
   success: boolean;
   persistentActivityCount: number;
@@ -51,30 +64,87 @@ export interface MonitoringDiagnostics {
   lastError: string;
 }
 
-export interface NativeDailyAppSnapshot {
-  packageName: string;
+export interface NativeRecoveryActivity {
+  id: string;
+  title: string;
+  subtitle: string;
+  iconEmoji: string;
+  durationSuggestion?: string;
+}
+
+export interface NativeRiskGroupPolicyInput {
+  groupId: string;
+  groupName: string;
+  packageNames: string[];
+  allowanceMinutes: number;
+  cooldownMinutes: number;
+  recoveryActivity: NativeRecoveryActivity;
+}
+
+export interface NativeGroupAllowanceSnapshot {
+  groupId: string;
+  dateKey: string;
   usedSeconds: number;
   allowanceMinutes: number;
   remainingSeconds: number;
   exhausted: boolean;
+  activePackageName?: string;
   activeSegmentStartedAt?: number;
+  exhaustedAt?: number;
+  cooldownEndsAt?: number;
+  cycleRevision: number;
 }
 
-export interface NativeDailyUsageSnapshot {
+export interface NativeReadingAttentionPolicyInput {
+  freeCooldownCount: number;
+  baselineActiveSeconds: number;
+  baselineQualifiedPages: number;
+  incrementalActiveSeconds: number;
+  incrementalQualifiedPages: number;
+}
+
+export interface NativeDailyAttentionExchangeState {
   dateKey: string;
-  apps: NativeDailyAppSnapshot[];
-  lastReconciledAt?: number;
+  cooldownsTriggered: number;
+  highestRequiredActiveSeconds: number;
+  highestRequiredQualifiedPages: number;
+  updatedAt: number;
 }
 
-export interface NativeDailyAllowancePolicyInput {
-  packageName: string;
-  allowanceMinutes: number;
+export interface NativeReadingGateInput {
+  groupId: string;
+  attentionDateKey: string;
+  dailyCooldownOrdinal: number;
+  createdAt: number;
+  cooldownEndsAt: number;
+  requiredReadingSeconds: number;
+  requiredQualifiedPages: number;
 }
 
 export interface NativeCooldownPolicyInput {
   groupId: string;
   packageNames: string[];
+  startedAt?: number;
   endsAt: number;
+  attentionDateKey?: string;
+  dailyCooldownOrdinal?: number;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
+}
+
+export interface NativeAttentionExchangeSnapshot {
+  attentionStateInitialized: boolean;
+  dateKey: string;
+  cooldownsTriggered: number;
+  highestRequiredActiveSeconds: number;
+  highestRequiredQualifiedPages: number;
+  cooldowns: NativeCooldownPolicyInput[];
+  readingGates: NativeReadingGateInput[];
+  groupUsage: NativeGroupAllowanceSnapshot[];
+  activeAccessLeases: { groupId: string; packageNames: string[]; endsAt: number }[];
+  foregroundGroupId?: string;
+  evidence?: NativeDailyReadingEvidence;
+  updatedAt: number;
 }
 
 export interface NativeRoutineWindowInput {
@@ -103,11 +173,43 @@ export interface NativeEnforcementDiagnostics {
   lastInterventionPackage?: string;
   lastInterventionAt?: number;
   overlayVisible: boolean;
+  activeGroupId?: string;
+  activeGroupUsageStartedAt?: number;
   activeUsagePackage?: string;
   activeUsageStartedAt?: number;
   allowanceDeadlineAt?: number;
   nextRoutineBoundaryAt?: number;
+  nextMidnightRolloverAt?: number;
   dailyUsageAppCount?: number;
   lastUsageReconciledAt?: number;
   lastUsageAccountedAt?: number;
+  attentionDateKey?: string;
+  dailyCooldownOrdinal?: number;
+  readingGateCount?: number;
+  activeReadingGateGroupId?: string;
+  activeReadingGateOrdinal?: number;
+  activeReadingRequiredSeconds?: number;
+  activeReadingRequiredPages?: number;
+  readerProviderAvailable?: boolean;
+  readerProtocolCompatible?: boolean;
 }
+
+export interface NativeRecoveryStatus {
+  sessionId: string;
+  protocolVersion: number;
+  status: 'ACTIVE' | 'COMPLETE' | 'ABANDONED' | 'EXPIRED' | string;
+  activeSeconds: number;
+  qualifiedPages: number;
+  completedAtEpochMs: number;
+}
+
+export interface NativeDailyReadingEvidence {
+  providerAvailable: boolean;
+  protocolCompatible: boolean;
+  protocolVersion?: number;
+  dateKey: string;
+  verifiedActiveSeconds: number;
+  qualifiedPages: number;
+  updatedAtEpochMs: number;
+}
+
