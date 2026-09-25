@@ -45,6 +45,7 @@ export default function RootLayout() {
           await store.checkPermissions();
           await store.refreshDailyUsage();
           await store.refreshInsights();
+          await store.refreshReadingEvidence();
         };
 
         resume().catch(() => {});
