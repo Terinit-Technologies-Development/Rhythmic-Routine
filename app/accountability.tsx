@@ -109,6 +109,8 @@ export default function AccountabilityScreen() {
   };
 
   const handleSaveAddPartner = async () => {
+    if (isSubmittingAdd) return;
+
     const trimmedName = addName.trim();
     if (!trimmedName) {
       setAddError('Please enter a partner name.');
@@ -138,7 +140,7 @@ export default function AccountabilityScreen() {
       });
       setShowAddModal(false);
     } catch (err: any) {
-      setAddError(err.message || 'Failed to add partner.');
+      setAddError(err instanceof Error ? err.message : 'Failed to add partner.');
     } finally {
       setIsSubmittingAdd(false);
     }
@@ -549,7 +551,7 @@ export default function AccountabilityScreen() {
             activeOpacity={1}
             onPress={() => setActionPartner(null)}
           >
-            <View style={styles.sheetContent}>
+            <View style={[styles.sheetContent, { paddingBottom: Math.max(34, insets.bottom + 20) }]}>
               <View style={styles.sheetHeader}>
                 <Text style={styles.sheetTitle}>{actionPartner.name}</Text>
                 <TouchableOpacity onPress={() => setActionPartner(null)}>
@@ -598,15 +600,24 @@ export default function AccountabilityScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalBackdrop}
         >
-          <View style={styles.formModal}>
+          <View style={[styles.formModal, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.formModalHeader}>
               <Text style={styles.formModalTitle}>Add Accountability Partner</Text>
-              <TouchableOpacity onPress={() => setShowAddModal(false)}>
+              <TouchableOpacity
+                disabled={isSubmittingAdd}
+                onPress={() => setShowAddModal(false)}
+                hitSlop={8}
+              >
                 <X size={20} color={colors.forestDark} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.formScrollView}
+              contentContainerStyle={styles.formScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <Text style={styles.fieldLabel}>Partner Name *</Text>
               <TextInput
                 style={styles.input}
@@ -662,35 +673,48 @@ export default function AccountabilityScreen() {
                 Have your partner enter a secure password that only they know. You will need them
                 to enter this password whenever you want to change protected routine settings.
               </Text>
-
-              {addError && (
-                <View style={styles.errorBanner}>
-                  <AlertCircle size={16} color={colors.coralDark} />
-                  <Text style={styles.errorBannerText}>{addError}</Text>
-                </View>
-              )}
-
-              <View style={styles.formBtnRow}>
-                <TouchableOpacity
-                  style={styles.formCancelBtn}
-                  onPress={() => setShowAddModal(false)}
-                >
-                  <Text style={styles.formCancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.formSaveBtn, isSubmittingAdd && styles.btnDisabled]}
-                  disabled={isSubmittingAdd}
-                  onPress={handleSaveAddPartner}
-                >
-                  {isSubmittingAdd ? (
-                    <ActivityIndicator size="small" color={cream} />
-                  ) : (
-                    <Text style={styles.formSaveBtnText}>Save Partner</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
             </ScrollView>
+
+            {addError && (
+              <View style={styles.errorBanner}>
+                <AlertCircle size={16} color={colors.coralDark} />
+                <Text style={styles.errorBannerText}>{addError}</Text>
+              </View>
+            )}
+
+            {isSubmittingAdd && (
+              <View style={styles.savingStatus} accessibilityLiveRegion="polite">
+                <ActivityIndicator size="small" color={colors.forest} />
+                <Text style={styles.savingStatusText}>
+                  Creating a secure partner credential. Keep Routine open while this finishes.
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.formBtnRow}>
+              <TouchableOpacity
+                style={styles.formCancelBtn}
+                disabled={isSubmittingAdd}
+                onPress={() => setShowAddModal(false)}
+              >
+                <Text style={styles.formCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.formSaveBtn, isSubmittingAdd && styles.btnDisabled]}
+                disabled={isSubmittingAdd}
+                onPress={handleSaveAddPartner}
+              >
+                {isSubmittingAdd ? (
+                  <View style={styles.savingButtonContent}>
+                    <ActivityIndicator size="small" color={cream} />
+                    <Text style={styles.formSaveBtnText}>Saving…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.formSaveBtnText}>Save Partner</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -706,7 +730,7 @@ export default function AccountabilityScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalBackdrop}
         >
-          <View style={styles.formModal}>
+          <View style={[styles.formModal, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.formModalHeader}>
               <Text style={styles.formModalTitle}>Edit Partner</Text>
               <TouchableOpacity onPress={() => setShowEditModal(false)}>
@@ -791,7 +815,7 @@ export default function AccountabilityScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalBackdrop}
         >
-          <View style={styles.formModal}>
+          <View style={[styles.formModal, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.formModalHeader}>
               <Text style={styles.formModalTitle}>
                 Change Password for {selectedPartner?.name}
@@ -877,7 +901,7 @@ export default function AccountabilityScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalBackdrop}
         >
-          <View style={styles.formModal}>
+          <View style={[styles.formModal, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.formModalHeader}>
               <Text style={styles.formModalTitle}>Enable Accountability Mode</Text>
               <TouchableOpacity onPress={() => setShowEnableModal(false)}>
@@ -1287,6 +1311,13 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     padding: 20,
     maxHeight: '90%',
+    flexShrink: 1,
+  },
+  formScrollView: {
+    flexShrink: 1,
+  },
+  formScrollContent: {
+    paddingBottom: 4,
   },
   formModalHeader: {
     flexDirection: 'row',
@@ -1377,6 +1408,19 @@ const styles = StyleSheet.create({
     color: colors.coralDark,
     fontWeight: '600',
   },
+  savingStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+    paddingHorizontal: 2,
+  },
+  savingStatusText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textMuted,
+  },
   formBtnRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1404,6 +1448,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.forest,
+  },
+  savingButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   btnDisabled: {
     opacity: 0.6,

@@ -76,6 +76,23 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     assert.equal(found, true);
   });
 
+  test('3a. Risk classification requires an explicit group instead of defaulting to Social', async () => {
+    const store = usePrototypeStore.getState();
+    const appBefore = usePrototypeStore.getState().apps.find((app) => app.id === 'notes')!;
+
+    await assert.rejects(
+      store.updateAppClassification('notes', 'risk'),
+      /choose a risk group/i
+    );
+
+    const nextState = usePrototypeStore.getState();
+    const appAfter = nextState.apps.find((app) => app.id === 'notes')!;
+    const socialGroup = nextState.riskGroups.find((group) => group.id === 'social')!;
+    assert.equal(appAfter.classification, appBefore.classification);
+    assert.equal(appAfter.riskGroupId, appBefore.riskGroupId);
+    assert.equal(socialGroup.appIds.includes('notes'), false);
+  });
+
   test('4. rename retains stable ID', async () => {
     const store = usePrototypeStore.getState();
     const groupId = await store.createRiskGroup({
@@ -325,6 +342,7 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     const coordinator = RhythmCoordinator.getInstance();
     const groupId = await store.createRiskGroup({
       name: 'Focus Writing',
+      allowanceMinutes: 45,
       cooldownMinutes: 45,
     });
 
@@ -333,6 +351,10 @@ describe('Pass 01 — Custom Risk Groups & Cooldown Clarity', () => {
     assert.equal(
       usePrototypeStore.getState().apps.find((a) => a.id === 'notes')?.riskGroupId,
       groupId
+    );
+    assert.equal(
+      usePrototypeStore.getState().riskGroups.find((group) => group.id === groupId)?.allowanceMinutes,
+      45
     );
 
     // Start a cooldown on this group

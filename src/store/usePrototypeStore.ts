@@ -751,8 +751,11 @@ function registerDefaultMutationExecutors(
       throw new Error('App not found');
     }
 
-    const targetGroupId = classification === 'risk' ? (riskGroupId || 'social') : undefined;
-    if (classification === 'risk' && targetGroupId) {
+    const targetGroupId = classification === 'risk' ? riskGroupId : undefined;
+    if (classification === 'risk') {
+      if (!targetGroupId) {
+        throw new Error('Choose a Risk Group before classifying an app as Risk.');
+      }
       const groupExists = state.riskGroups.some((g) => g.id === targetGroupId);
       if (!groupExists) {
         throw new Error('Risk group not found');
@@ -1595,10 +1598,18 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   updateAppClassification: async (appId, classification, riskGroupId) => {
     const state = get();
     const app = state.apps.find((item) => item.id === appId);
+    if (classification === 'risk') {
+      if (!riskGroupId) {
+        throw new Error('Choose a Risk Group before classifying an app as Risk.');
+      }
+      if (!state.riskGroups.some((group) => group.id === riskGroupId)) {
+        throw new Error('Risk group not found');
+      }
+    }
     const payload: AppPolicyPayload = {
       appId,
       classification,
-      riskGroupId: classification === 'risk' ? (riskGroupId || 'social') : undefined,
+      riskGroupId: classification === 'risk' ? riskGroupId : undefined,
     };
     await get().requestProtectedMutation({
       operation: 'change-app-classification',

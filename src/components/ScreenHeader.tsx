@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Sun, ChevronLeft, MoreHorizontal } from 'lucide-react-native';
+import { Sun, ChevronLeft, MoreHorizontal, Settings } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { colors } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
@@ -55,6 +55,17 @@ export const ScreenHeader: React.FC<Props> = ({
         )}
 
         <View style={styles.actionsRow}>
+          <TouchableOpacity
+            style={styles.circleBtn}
+            onPress={() => router.push('/settings')}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+            accessibilityHint="Open app settings"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Settings size={19} color={colors.forestDark} strokeWidth={2} />
+          </TouchableOpacity>
+
           {showMore && (
             <TouchableOpacity
               style={styles.circleBtn}

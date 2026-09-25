@@ -32,14 +32,16 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
   const [classification, setClassification] = useState<AppClassification>(
     selectedApp.classification
   );
-  const [selectedGroupId, setSelectedGroupId] = useState<string>(
-    selectedApp.riskGroupId || riskGroups[0]?.id || 'social'
+  const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(
+    selectedApp.riskGroupId
   );
 
-  const selectedGroup =
-    riskGroups.find((g) => g.id === selectedGroupId) || riskGroups[0];
+  const selectedGroup = riskGroups.find((g) => g.id === selectedGroupId);
+  const canSave = classification !== 'risk' || Boolean(selectedGroup);
 
   const handleSave = async () => {
+    if (!canSave) return;
+
     const payload: AppPolicyPayload = {
       appId: selectedApp.id,
       classification,
@@ -120,13 +122,19 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
 
       <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
         {/* Risk group relationship notice */}
-        {classification === 'risk' && (
+        {classification === 'risk' && selectedGroup && (
           <View style={styles.groupInfoBox}>
             <Text style={styles.groupInfoTitle}>Group Allowance</Text>
             <Text style={styles.groupInfoText}>
-              Uses the {selectedGroup?.name || 'Risk'} group allowance ({resolveGroupAllowanceMinutes(selectedGroup)} min/day).
+              Uses the {selectedGroup.name} group allowance ({resolveGroupAllowanceMinutes(selectedGroup)} min/day).
             </Text>
           </View>
+        )}
+
+        {classification === 'risk' && !selectedGroup && (
+          <Text style={styles.groupRequiredText}>
+            Choose a Risk Group below. This app will use that group’s shared allowance and cooldown.
+          </Text>
         )}
 
         <Text style={styles.sectionTitle}>Select Classification</Text>
@@ -166,10 +174,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
           <View style={styles.groupSection}>
             <Text style={styles.sectionTitle}>Assign to Risk Group</Text>
             <Text style={styles.groupHelpText}>
-              Apps in the same Risk Group share session timers and cooldowns.
+              Choose where this app’s usage counts. Every app in a group shares its daily allowance and cooldown.
             </Text>
 
-            {riskGroups.map((group) => {
+            {riskGroups.length === 0 ? (
+              <Text style={styles.groupNoneText}>Create a Risk Group from the Routine tab before assigning this app.</Text>
+            ) : riskGroups.map((group) => {
               const isGroupSelected = selectedGroupId === group.id;
 
               return (
@@ -180,6 +190,9 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
                     isGroupSelected && styles.groupOptionSelected,
                   ]}
                   onPress={() => setSelectedGroupId(group.id)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isGroupSelected }}
+                  accessibilityLabel={`${group.name}, ${resolveGroupAllowanceMinutes(group)} minutes per day, ${group.cooldownMinutes} minute cooldown`}
                 >
                   <Text
                     style={[
@@ -190,7 +203,7 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
                     {group.name}
                   </Text>
                   <Text style={styles.groupLimitTag}>
-                    {resolveGroupAllowanceMinutes(group)}m allowance → {group.cooldownMinutes}m rest
+                    {resolveGroupAllowanceMinutes(group)}m/day · {group.cooldownMinutes}m cooldown
                   </Text>
                 </TouchableOpacity>
               );
@@ -205,7 +218,12 @@ const AppEditForm: React.FC<FormProps> = ({ selectedApp, onClose }) => {
           <Text style={styles.cancelBtnText}>Cancel</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+        <TouchableOpacity
+          style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
+          onPress={handleSave}
+          disabled={!canSave}
+          accessibilityState={{ disabled: !canSave }}
+        >
           <Text style={styles.saveBtnText}>Save</Text>
         </TouchableOpacity>
       </View>
@@ -347,6 +365,19 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: 10,
   },
+  groupRequiredText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.coralDark,
+    marginBottom: 12,
+    lineHeight: 19,
+  },
+  groupNoneText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 8,
+    lineHeight: 19,
+  },
   groupOption: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -401,6 +432,10 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
     backgroundColor: colors.forest,
     alignItems: 'center',
+  },
+  saveBtnDisabled: {
+    backgroundColor: colors.textMuted,
+    opacity: 0.7,
   },
   saveBtnText: {
     fontSize: 14,
