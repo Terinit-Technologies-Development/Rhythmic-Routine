@@ -17,8 +17,13 @@ import {
   RATE_LIMIT_LOCKOUT_MS,
 } from '../../application/AccountabilityService';
 import { getPlatformServices } from '../../platform/PlatformServices';
-import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
+import {
+  createCredentialRecord,
+  InMemorySecureCredentialProvider,
+  verifyCredentialRecord,
+} from '../../platform/SecureCredentialProvider';
 import { RhythmCoordinator } from '../../application/RhythmCoordinator';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 describe('Pass 02 — Accountability Core & Secure Authorization', () => {
   beforeEach(async () => {
@@ -31,6 +36,17 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     usePrototypeStore.getState().cancelPendingApproval();
     usePrototypeStore.setState({ accountability: { enabled: false, partners: [] } });
     await usePrototypeStore.getState().resetDemo();
+  });
+
+  test('native credential records accept platform-generated secure salts', async () => {
+    const password = 'credential-regression-password';
+    const platformSalt = Uint8Array.from({ length: 16 }, (_, index) => index + 1);
+    const record = await createCredentialRecord(password, platformSalt);
+
+    assert.equal(record.saltHex, bytesToHex(platformSalt));
+    assert.equal(record.iterations, 150_000);
+    assert.equal(await verifyCredentialRecord(password, record), true);
+    assert.equal(await verifyCredentialRecord('incorrect-password', record), false);
   });
 
   test('1. mode defaults OFF after initialization/migration', () => {

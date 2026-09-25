@@ -58,10 +58,9 @@ export async function deriveVerifier(
 }
 
 /**
- * Generates a fresh random salt and computes verifier record for candidate password.
+ * Computes a verifier record for a password and its caller-provided secure random salt.
  */
-export async function createCredentialRecord(password: string): Promise<CredentialRecord> {
-  const salt = randomBytes(16);
+export async function createCredentialRecord(password: string, salt: Uint8Array): Promise<CredentialRecord> {
   const verifier = await deriveVerifier(password, salt, PBKDF2_ITERATIONS);
   return {
     saltHex: bytesToHex(salt),
@@ -100,7 +99,7 @@ export class InMemorySecureCredentialProvider implements SecureCredentialProvide
   private approvalAttempts = new Map<string, AttemptState>();
 
   async create(ref: string, password: string): Promise<void> {
-    const record = await createCredentialRecord(password);
+    const record = await createCredentialRecord(password, randomBytes(16));
     this.store.set(ref, JSON.stringify(record));
   }
 

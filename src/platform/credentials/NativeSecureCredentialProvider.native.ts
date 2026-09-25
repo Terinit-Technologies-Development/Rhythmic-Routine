@@ -4,6 +4,7 @@
  */
 
 import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
 import type { AttemptState } from '../../domain/accountability/types';
 import {
   SecureCredentialProvider,
@@ -16,7 +17,8 @@ const APPROVAL_ATTEMPT_KEY_PREFIX = 'rr_accountability_attempt_';
 
 export class NativeSecureCredentialProvider implements SecureCredentialProvider {
   async create(ref: string, password: string): Promise<void> {
-    const record = await createCredentialRecord(password);
+    const salt = await Crypto.getRandomBytesAsync(16);
+    const record = await createCredentialRecord(password, salt);
     await SecureStore.setItemAsync(
       `${CREDENTIAL_KEY_PREFIX}${ref}`,
       JSON.stringify(record)

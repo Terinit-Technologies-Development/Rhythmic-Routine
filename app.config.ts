@@ -5,7 +5,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: 'Rhythmic-Routine',
   slug: 'Rhythmic-Routine',
   scheme: 'rhythmic-routine',
-  version: '1.1.0',
+  version: '1.2.0',
   runtimeVersion: {
     policy: 'appVersion',
   },
@@ -32,7 +32,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: 'com.terinit.rhythmicroutine',
-    versionCode: 3,
+    versionCode: 4,
     adaptiveIcon: {
       foregroundImage: './assets/rhythmic_routine_logo.png',
       backgroundColor: '#F8F4E8',
