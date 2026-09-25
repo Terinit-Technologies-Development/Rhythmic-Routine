@@ -5,6 +5,36 @@ All notable changes to Rhythmic-Routine are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-09-26
+
+### Added
+- **Productive Attention Exchange:** the first two daily cooldowns remain timer-only. Cooldown #3 requires 60 verified reading minutes + 36 dwell-qualified pages; each subsequent cooldown adds +30 minutes and +11 pages. Daily cumulative evidence is not spent, and both reading time and qualified pages are mandatory for every gated cooldown.
+- **Rhythmic Reader V2 evidence:** daily verified active reading and dwell-qualified pages for the device-local calendar day, exposed through a signature-protected cross-app provider. Gated re-entry fails closed when Reader evidence is absent or incompatible.
+- **Reading quota surfaces:** Routine Today "Reading quota" card with daily verified totals, active cooldown quota progress, and the next cooldown target; Reader Today quota preview refreshed every 15 seconds; focused Routine evidence refresh every 30 seconds.
+- **Routine → Reader quota preview:** a signature-protected read-only provider publishes the next daily cooldown requirement to the signed Reader client. Reader now requests `com.terinit.rhythmicreader.permission.RECOVERY`; unauthorized callers remain denied.
+- **Settings access:** gear entry from the main Routine headers; Accountability continues to be managed from Settings.
+- **Explicit Risk Group assignment:** classifying an app as Risk requires an explicit group selection with no silent Social fallback, and custom Risk Groups remain visible on Today.
+- **Daily allowance/cycle presentation:** every Risk Group card shows used/allowance counters, remaining cycle time, and the zero-allowance state.
+- **Accountability partner save feedback:** add-partner saves show explicit progress and error state, block duplicate submits, and keep actions above the keyboard and navigation area.
+
+### Changed
+- **Internal channel alignment:** `eas.json` uses local source-controlled versioning (`appVersionSource: local`) and internal APK profiles for QA and stable distribution; store submission configuration was removed.
+
+### Fixed
+- **Reader quota sync:** Reader now holds the signature permission required to read Routine's next-quota preview provider, restoring quota synchronization.
+- **Routine evidence freshness:** Reader evidence refreshes when Today is focused, every 30 seconds, and on app resume.
+- **Accountability hardening:** a central protected mutation boundary with immutable approval payloads and execution-time stale-state checks; persistent per-partner lockout; SecureStore-backed credentials; protected reset and protected Emergency Access; last-enabled-partner invariant.
+
+### Platform Status
+- **Android:** Owner-accepted private/internal release. Routine↔Reader signature-protected IPC verified on-device. Productive Attention, Accountability, quota sync, and core application behaviour accepted by owner.
+- **iOS:** Source implementation remains experimental/unverified for this internal Android release.
+- **Web:** Development/testing environment only.
+
+### Validation
+- 355 unit/integration tests passing across 67 suites.
+- `npm run typecheck` (0 errors), `npm run lint` (0 errors / 0 warnings), and `npx expo export --platform web` complete cleanly.
+- Native Android: `:rhythm-device:testDebugUnitTest`, `:rhythm-device:compileDebugKotlin`, `:app:assembleDebug`, the stable internal release APK, and the standalone QA APK all build successfully; the QA APK verification script passes.
+
 ## [1.1.0] — 2026-09-19
 
 ### Added
