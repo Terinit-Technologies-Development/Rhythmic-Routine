@@ -14,6 +14,7 @@ import {
 import {
   getAccountabilityService,
   resetAccountabilityService,
+  RATE_LIMIT_LOCKOUT_MS,
 } from '../../application/AccountabilityService';
 import { getPlatformServices } from '../../platform/PlatformServices';
 import { InMemorySecureCredentialProvider } from '../../platform/SecureCredentialProvider';
@@ -242,6 +243,74 @@ describe('Pass 02 — Accountability Core & Secure Authorization', () => {
     if (!afterRestart.ok) {
       assert.equal(afterRestart.reason, 'rate-limited');
       assert.ok(afterRestart.lockoutEndsAt && afterRestart.lockoutEndsAt > Date.now());
+    }
+  });
+
+  test('7b. safe attempt state is partner-specific, survives restart, and permits retry after expiry', async () => {
+    const service = getAccountabilityService();
+    const lockedPartner = await service.createPartner({
+      name: 'Locked partner',
+      password: 'locked-partner-pass',
+    });
+    const otherPartner = await service.createPartner({
+      name: 'Other partner',
+      password: 'other-partner-pass',
+    });
+
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.verifyApproval(
+          { operation: 'disable-accountability', summary: 'Disable', partnerId: lockedPartner.id },
+          'incorrect-password',
+          lockedPartner
+        );
+      }
+
+      const credentials = getPlatformServices().credentials;
+      assert.ok(credentials instanceof InMemorySecureCredentialProvider);
+      assert.deepEqual(
+        await credentials.loadApprovalAttemptState(lockedPartner.id),
+        { failures: 5, lockedUntil: now + RATE_LIMIT_LOCKOUT_MS }
+      );
+
+      resetAccountabilityService();
+      const restartedService = getAccountabilityService();
+      const lockedState = await usePrototypeStore
+        .getState()
+        .getAccountabilityAttemptState(lockedPartner.id);
+      const otherState = await usePrototypeStore
+        .getState()
+        .getAccountabilityAttemptState(otherPartner.id);
+
+      assert.deepEqual(lockedState, { failures: 5, lockedUntil: now + RATE_LIMIT_LOCKOUT_MS });
+      assert.deepEqual(otherState, { failures: 0 });
+      assert.equal('credentialRef' in lockedState, false);
+
+      const blockedRetry = await restartedService.verifyApproval(
+        { operation: 'disable-accountability', summary: 'Disable', partnerId: lockedPartner.id },
+        'locked-partner-pass',
+        lockedPartner
+      );
+      assert.equal(blockedRetry.ok, false);
+      if (!blockedRetry.ok) assert.equal(blockedRetry.reason, 'rate-limited');
+
+      now += RATE_LIMIT_LOCKOUT_MS + 1;
+      assert.deepEqual(
+        await usePrototypeStore.getState().getAccountabilityAttemptState(lockedPartner.id),
+        { failures: 0 }
+      );
+
+      const permittedRetry = await restartedService.verifyApproval(
+        { operation: 'disable-accountability', summary: 'Disable', partnerId: lockedPartner.id },
+        'locked-partner-pass',
+        lockedPartner
+      );
+      assert.equal(permittedRetry.ok, true);
+    } finally {
+      Date.now = realNow;
     }
   });
 

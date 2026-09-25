@@ -555,7 +555,7 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
       allowanceMinutes: 20,
       cooldownMinutes: 120,
       recoveryActivityId: 'stretch',
-      morningProtected: true,
+      morningProtected: false,
       eveningProtected: false,
     };
 
@@ -567,9 +567,11 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     );
 
     assert.ok(summary.includes('rename “Social Feeds” to “Calm Feeds”'));
+    assert.ok(summary.includes('update description'));
     assert.ok(summary.includes('allowance 30 → 20 min'));
     assert.ok(summary.includes('cooldown 90 → 120 min'));
     assert.ok(summary.includes('recovery activity → Stretch'));
+    assert.ok(summary.includes('remove Morning Buffer protection'));
     assert.ok(summary.includes('remove Evening Wind-Down protection'));
   });
 
@@ -800,7 +802,7 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
     const pending = usePrototypeStore.getState().pendingApproval;
     assert.ok(pending);
     assert.equal(pending.operation, 'edit-routine-schedule');
-    assert.ok(pending.summary.includes('Change active routine days to'));
+    assert.equal(pending.summary, 'Change active routine days to Mon, Tue, Wed, Thu, Fri, Sun');
     assert.ok(!pending.summary.includes('Sat')); // Saturday removed
 
     // State and coordinator must be UNCHANGED
@@ -928,6 +930,47 @@ describe('Pass 03 — Protected Workflows & Full Integration', () => {
 
     const coordCommitted = RhythmCoordinator.getInstance().getConfiguration()?.routineWindows.find((w) => w.id === 'evening-wind-down');
     assert.equal(coordCommitted?.startTime, '21:15');
+  });
+
+  test('25a. store-generated approval summaries identify app, protection, Emergency Access, and reset changes', async () => {
+    const store = usePrototypeStore.getState();
+    const partner = await store.createAccountabilityPartner({
+      name: 'Alice',
+      password: 'password123',
+    });
+    await store.enableAccountability(partner.id, 'password123');
+
+    const instagram = store.apps.find((app) => app.id === 'instagram')!;
+    const instagramGroup = store.riskGroups.find((group) => group.id === instagram.riskGroupId)!;
+    await store.updateAppClassification(instagram.id, 'normal');
+    assert.equal(
+      usePrototypeStore.getState().pendingApproval?.summary,
+      `Change ${instagram.name} from Risk / ${instagramGroup.name} to Normal`
+    );
+    store.cancelPendingApproval();
+
+    const morning = store.routineWindows.find((window) => window.id === 'morning-buffer')!;
+    const social = store.riskGroups.find((group) => group.id === 'social')!;
+    const wasProtected = morning.protectedGroupIds.includes(social.id);
+    await store.toggleGroupProtection(morning.id, social.id, !wasProtected);
+    assert.equal(
+      usePrototypeStore.getState().pendingApproval?.summary,
+      `${!wasProtected ? 'Add' : 'Remove'} ${social.name} ${!wasProtected ? 'to' : 'from'} ${morning.name} protection`
+    );
+    store.cancelPendingApproval();
+
+    await store.startAccessLease(social.id, 10);
+    assert.equal(
+      usePrototypeStore.getState().pendingApproval?.summary,
+      `Allow ${social.name} for 10 minutes using Emergency Access`
+    );
+    store.cancelPendingApproval();
+
+    await store.resetDemo();
+    assert.equal(
+      usePrototypeStore.getState().pendingApproval?.summary,
+      'Reset all Rhythmic Routine local settings and Accountability protection'
+    );
   });
 
   test('26. direct public mutation commands use the same approval gateway', async () => {

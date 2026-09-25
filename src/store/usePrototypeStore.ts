@@ -52,6 +52,7 @@ import {
   AccountabilitySettings,
   AppPolicyPayload,
   ApprovalResult,
+  AttemptState,
   IOSSelectionEditPayload,
   ManagePartnerMutationPayload,
   PendingApproval,
@@ -60,9 +61,11 @@ import {
 } from '../domain/accountability/types';
 import {
   PROTECTED_OPERATIONS,
+  buildAppPolicySummary,
+  buildRiskGroupEditSummary,
+  buildRoutineScheduleSummary,
   requiresPartnerApproval,
   getEnabledPartners,
-  formatDays,
 } from '../domain/accountability/policy';
 import {
   getAccountabilityService,
@@ -306,6 +309,7 @@ interface PrototypeState {
     password: string
   ) => Promise<ApprovalResult>;
   cancelPendingApproval: () => void;
+  getAccountabilityAttemptState: (partnerId: string) => Promise<AttemptState>;
 
   createAccountabilityPartner: (params: {
     name: string;
@@ -1534,7 +1538,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const group = get().riskGroups.find((item) => item.id === groupId);
     await get().requestProtectedMutation({
       operation: 'start-access-lease',
-      summary: `Allow ${group?.name ?? 'Risk Group'} for ${durationMinutes} minutes`,
+      summary: `Allow ${group?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
       payload: { groupId, durationMinutes },
     });
   },
@@ -1544,7 +1548,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const group = get().riskGroups.find((g) => g.id === activeGroupId) || get().riskGroups[0];
     await get().requestProtectedMutation({
       operation: 'start-access-lease',
-      summary: `Allow ${group?.name ?? 'Risk Group'} for ${EMERGENCY_ACCESS_MINUTES} minutes`,
+      summary: `Allow ${group?.name ?? 'Risk Group'} for ${EMERGENCY_ACCESS_MINUTES} minutes using Emergency Access`,
       payload: { groupId: activeGroupId, durationMinutes: EMERGENCY_ACCESS_MINUTES },
     });
   },
@@ -1552,7 +1556,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   resetDemo: async () => {
     await get().requestProtectedMutation({
       operation: 'reset-local-state',
-      summary: 'Reset all demo data, local configuration, and accountability',
+      summary: 'Reset all Rhythmic Routine local settings and Accountability protection',
       payload: {},
     });
   },
@@ -1598,7 +1602,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     };
     await get().requestProtectedMutation({
       operation: 'change-app-classification',
-      summary: app ? `${app.name} classification change` : `Change app classification`,
+      summary: app
+        ? buildAppPolicySummary(app, payload, state.riskGroups)
+        : 'Change app classification',
       payload,
     });
   },
@@ -1645,9 +1651,31 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       w.id === windowId ? { ...w, ...updates } : w
     );
 
+    const summaries: string[] = [];
+    if (updates.startTime !== undefined && updates.startTime !== currentWindow.startTime) {
+      summaries.push(buildRoutineScheduleSummary('time', {
+        windowName: currentWindow.name,
+        fieldLabel: 'start time',
+        time: updates.startTime,
+      }));
+    }
+    if (updates.endTime !== undefined && updates.endTime !== currentWindow.endTime) {
+      summaries.push(buildRoutineScheduleSummary('time', {
+        windowName: currentWindow.name,
+        fieldLabel: 'end time',
+        time: updates.endTime,
+      }));
+    }
+    if (updates.activeDays !== undefined && JSON.stringify(updates.activeDays) !== JSON.stringify(currentWindow.activeDays)) {
+      summaries.push(buildRoutineScheduleSummary('days', { days: updates.activeDays }));
+    }
+    if (updates.enabled !== undefined && updates.enabled !== currentWindow.enabled) {
+      summaries.push(`${updates.enabled ? 'Enable' : 'Disable'} ${currentWindow.name}`);
+    }
+
     await get().requestProtectedMutation({
       operation: 'edit-routine-schedule',
-      summary: `Update ${currentWindow.name} routine schedule`,
+      summary: summaries.join('; ') || `Update ${currentWindow.name} routine schedule`,
       payload: {
         routineWindows: nextWindows,
       },
@@ -1669,7 +1697,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
     await get().requestProtectedMutation({
       operation: 'edit-routine-schedule',
-      summary: `Change active routine days to ${formatDays(newDays)}`,
+      summary: buildRoutineScheduleSummary('days', { days: newDays }),
       payload: {
         routineWindows: nextWindows,
       },
@@ -1677,9 +1705,12 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   toggleGroupProtection: async (windowId, groupId, enabled) => {
+    const state = get();
+    const groupName = state.riskGroups.find((group) => group.id === groupId)?.name ?? 'Risk Group';
+    const windowName = state.routineWindows.find((window) => window.id === windowId)?.name ?? 'routine';
     await get().requestProtectedMutation({
       operation: 'edit-risk-group-protection',
-      summary: `${enabled ? 'Protect' : 'Unprotect'} ${get().riskGroups.find((group) => group.id === groupId)?.name ?? 'Risk Group'}`,
+      summary: `${enabled ? 'Add' : 'Remove'} ${groupName} ${enabled ? 'to' : 'from'} ${windowName} protection`,
       payload: { windowId, groupId, enabled },
     });
   },
@@ -1704,7 +1735,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
     const result = await get().requestProtectedMutation({
       operation: 'edit-risk-group',
-      summary: `Update ${existing.name}`,
+      summary: buildRiskGroupEditSummary(existing, draft, state.routineWindows, state.offlineActivities),
       payload: { groupId, draft: clonePayload(draft) },
     });
     if (result.status === 'pending-approval') {
@@ -1851,7 +1882,11 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
     await get().requestProtectedMutation({
       operation: 'edit-routine-schedule',
-      summary: `Change ${currentWindow.name} ${label} to ${time}`,
+      summary: buildRoutineScheduleSummary('time', {
+        windowName: currentWindow.name,
+        fieldLabel: label,
+        time,
+      }),
       payload: {
         routineWindows: nextWindows,
       },
@@ -1996,6 +2031,10 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     set({ pendingApproval: null });
   },
 
+  getAccountabilityAttemptState: async (partnerId: string) => {
+    return await getAccountabilityService().getPersistedAttemptState(partnerId);
+  },
+
   // Partner Management Actions
   createAccountabilityPartner: async (params: {
     name: string;
@@ -2054,7 +2093,26 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     }
     const result = await get().requestProtectedMutation({
       operation: 'manage-accountability-partner',
-      summary: `Update partner "${existing.name}"`,
+      summary: (() => {
+        const changes: string[] = [];
+        if (updates.name !== undefined && updates.name.trim() !== existing.name) {
+          changes.push(`rename to “${updates.name.trim()}”`);
+        }
+        if (updates.relationshipLabel !== undefined && updates.relationshipLabel.trim() !== (existing.relationshipLabel ?? '')) {
+          changes.push(updates.relationshipLabel.trim()
+            ? 'update relationship label'
+            : 'remove relationship label');
+        }
+        if (updates.enabled !== undefined && updates.enabled !== existing.enabled) {
+          if (changes.length === 0) {
+            return `${updates.enabled ? 'Enable' : 'Disable'} accountability partner "${existing.name}"`;
+          }
+          changes.push(`${updates.enabled ? 'enable' : 'disable'} partner`);
+        }
+        return changes.length
+          ? `Update accountability partner "${existing.name}": ${changes.join('; ')}`
+          : `Update accountability partner "${existing.name}"`;
+      })(),
       payload: { action: 'update', partnerId, updates } satisfies ManagePartnerMutationPayload,
     });
     return result.status === 'executed' ? result.result as AccountabilityPartner : existing;

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  Alert,
   View,
   Text,
   StyleSheet,
@@ -17,11 +18,10 @@ import { Shield, ShieldAlert, X, Check, Lock, UserCheck } from 'lucide-react-nat
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import { getEnabledPartners } from '../domain/accountability/policy';
-import { PendingApproval } from '../domain/accountability/types';
+import { AttemptState, PendingApproval } from '../domain/accountability/types';
 
-function getLockoutSecondsRemaining(lockoutEndsAt?: number): number {
-  if (!lockoutEndsAt) return 60;
-  return Math.max(1, Math.ceil((lockoutEndsAt - Date.now()) / 1000));
+function getCurrentTime(): number {
+  return Date.now();
 }
 
 export const AccountabilityApprovalModal: React.FC = () => {
@@ -41,6 +41,7 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
   const accountability = usePrototypeStore((s) => s.accountability);
   const approveProtectedMutation = usePrototypeStore((s) => s.approveProtectedMutation);
   const cancelPendingApproval = usePrototypeStore((s) => s.cancelPendingApproval);
+  const getAccountabilityAttemptState = usePrototypeStore((s) => s.getAccountabilityAttemptState);
 
   const enabledPartners = getEnabledPartners(accountability);
   const defaultPartnerId = enabledPartners[0]?.id || '';
@@ -49,10 +50,70 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [attemptState, setAttemptState] = useState<AttemptState & {
+    partnerId: string;
+    loading: boolean;
+  }>(() => ({ partnerId: defaultPartnerId, failures: 0, loading: Boolean(defaultPartnerId) }));
+  const [now, setNow] = useState(0);
 
   const selectedPartner = enabledPartners.find((p) => p.id === partnerId) || enabledPartners[0];
+  const selectedPartnerId = selectedPartner?.id ?? '';
+  const selectedAttemptState = attemptState.partnerId === selectedPartnerId
+    ? attemptState
+    : undefined;
+  const attemptStateLoading = Boolean(selectedPartnerId) &&
+    (!selectedAttemptState || selectedAttemptState.loading);
+  const lockoutEndsAt = selectedAttemptState?.lockedUntil;
+  const locked = lockoutEndsAt !== undefined && now < lockoutEndsAt;
+  const lockoutSecondsRemaining = locked
+    ? Math.max(1, Math.ceil((lockoutEndsAt - now) / 1000))
+    : 0;
+
+  useEffect(() => {
+    let current = true;
+
+    if (!selectedPartnerId) {
+      return () => {
+        current = false;
+      };
+    }
+
+    void getAccountabilityAttemptState(selectedPartnerId)
+      .then((attemptState) => {
+        if (!current) return;
+        setAttemptState({ ...attemptState, partnerId: selectedPartnerId, loading: false });
+        setNow(Date.now());
+      })
+      .catch(() => {
+        if (!current) return;
+        setAttemptState({ partnerId: selectedPartnerId, failures: 0, loading: false });
+        setError('Partner verification is temporarily unavailable. Please try again.');
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [getAccountabilityAttemptState, selectedPartnerId]);
+
+  useEffect(() => {
+    if (lockoutEndsAt === undefined) return;
+
+    const timer = setInterval(() => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      if (currentTime >= lockoutEndsAt) {
+        setAttemptState((previous) => previous.partnerId === selectedPartnerId
+          ? { partnerId: selectedPartnerId, failures: 0, loading: false }
+          : previous);
+        setError(null);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [lockoutEndsAt, selectedPartnerId]);
 
   const handleApprove = async () => {
+    if (locked || attemptStateLoading) return;
     if (!password) {
       setError('Partner password is required');
       return;
@@ -69,10 +130,21 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
       const result = await approveProtectedMutation(selectedPartner.id, password);
       if (!result.ok) {
         if (result.reason === 'rate-limited') {
-          const secs = getLockoutSecondsRemaining(result.lockoutEndsAt);
-          setError(`Too many failed attempts. Locked out for ${secs}s.`);
+          setAttemptState({
+            partnerId: selectedPartner.id,
+            failures: 5,
+            lockedUntil: result.lockoutEndsAt,
+            loading: false,
+          });
+          setNow(getCurrentTime());
+          setError(null);
         } else if (result.reason === 'invalid-password') {
           const rem = result.remainingAttempts;
+          setAttemptState({
+            partnerId: selectedPartner.id,
+            failures: rem === undefined ? (selectedAttemptState?.failures ?? 0) + 1 : 5 - rem,
+            loading: false,
+          });
           if (rem !== undefined) {
             setError(`Incorrect password. ${rem} attempt${rem === 1 ? '' : 's'} remaining.`);
           } else {
@@ -80,6 +152,13 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
           }
         } else if (result.reason === 'partner-disabled') {
           setError('Selected partner is currently disabled.');
+        } else if (result.reason === 'verification-unavailable') {
+          setError('Partner verification is temporarily unavailable. Please try again.');
+        } else if (result.reason === 'approval-expired') {
+          Alert.alert(
+            'Approval expired',
+            'This protected change is no longer current. Review the setting and submit it again.'
+          );
         } else {
           setError('Authorization failed. Please try again.');
         }
@@ -153,8 +232,10 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
                             <TouchableOpacity
                               key={partner.id}
                               style={[styles.partnerOption, isSelected && styles.partnerOptionSelected]}
+                              disabled={loading}
                               onPress={() => {
                                 setPartnerId(partner.id);
+                                setPassword('');
                                 setError(null);
                               }}
                             >
@@ -211,7 +292,14 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
                   </View>
 
                   {/* Neutral Error State */}
-                  {error ? (
+                  {locked ? (
+                    <View style={styles.errorContainer}>
+                      <ShieldAlert size={16} color={colors.coral} />
+                      <Text style={styles.errorText}>
+                        Too many failed attempts. Try again in {lockoutSecondsRemaining}s.
+                      </Text>
+                    </View>
+                  ) : error ? (
                     <View style={styles.errorContainer}>
                       <ShieldAlert size={16} color={colors.coral} />
                       <Text style={styles.errorText}>{error}</Text>
@@ -230,9 +318,12 @@ const AccountabilityApprovalModalInner: React.FC<InnerModalProps> = ({ pendingAp
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.approveButton, loading && styles.buttonDisabled]}
+                    style={[
+                      styles.approveButton,
+                      (loading || attemptStateLoading || locked) && styles.buttonDisabled,
+                    ]}
                     onPress={handleApprove}
-                    disabled={loading}
+                    disabled={loading || attemptStateLoading || locked}
                   >
                     {loading ? (
                       <ActivityIndicator size="small" color="#FFFFFF" />

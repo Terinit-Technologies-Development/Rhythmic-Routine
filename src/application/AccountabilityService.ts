@@ -75,6 +75,22 @@ export class AccountabilityService {
   }
 
   /**
+   * Reads only the safe per-partner attempt counters used by the approval UI.
+   * Persisted state is hydrated once and an expired lockout is durably cleared.
+   */
+  public async getPersistedAttemptState(partnerId: string): Promise<AttemptState> {
+    await this.hydrateAttemptState(partnerId);
+    const state = this.attemptStateMap.get(partnerId);
+    if (state?.lockedUntil !== undefined && Date.now() >= state.lockedUntil) {
+      await this.resetAttempts(partnerId);
+      return { failures: 0 };
+    }
+    return state
+      ? { failures: state.failures, lockedUntil: state.lockedUntil }
+      : { failures: 0 };
+  }
+
+  /**
    * Verifies partner approval for an explicit operation.
    * Never stores or logs password.
    */
@@ -90,13 +106,12 @@ export class AccountabilityService {
       return { ok: false, reason: 'partner-disabled' };
     }
 
+    let state: AttemptState;
     try {
-      await this.hydrateAttemptState(partner.id);
+      state = await this.getPersistedAttemptState(partner.id);
     } catch {
       return { ok: false, reason: 'verification-unavailable' };
     }
-
-    const state = this.getAttemptState(partner.id);
     if (state.lockedUntil && Date.now() < state.lockedUntil) {
       return {
         ok: false,

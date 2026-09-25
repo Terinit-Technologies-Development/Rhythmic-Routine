@@ -30,7 +30,7 @@ export const EmergencyAccessModal: React.FC = () => {
     setVisible(false);
     await requestProtectedMutation({
       operation: 'start-access-lease',
-      summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes`,
+      summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
       payload: { groupId, durationMinutes },
     });
   };

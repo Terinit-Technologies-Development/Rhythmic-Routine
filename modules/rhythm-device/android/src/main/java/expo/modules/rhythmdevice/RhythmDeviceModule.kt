@@ -14,6 +14,12 @@ import android.view.accessibility.AccessibilityManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
+internal fun finishNativePolicyReset(cleared: Boolean, resetRuntime: () -> Unit): Boolean {
+  if (!cleared) return false
+  resetRuntime()
+  return true
+}
+
 class RhythmDeviceModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("RhythmDevice")
@@ -149,12 +155,13 @@ class RhythmDeviceModule : Module() {
 
     AsyncFunction("resetEnforcementState") {
       val context = appContext.reactContext ?: return@AsyncFunction false
-      context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+      val cleared = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
         .edit()
         .clear()
-        .apply()
-      RhythmEnforcementService.instance?.onNativePolicyReset()
-      return@AsyncFunction true
+        .commit()
+      return@AsyncFunction finishNativePolicyReset(cleared) {
+        RhythmEnforcementService.instance?.onNativePolicyReset()
+      }
     }
 
     AsyncFunction("setRiskGroupPolicies") { policiesList: List<Map<String, Any>> ->

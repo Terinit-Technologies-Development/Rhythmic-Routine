@@ -221,7 +221,7 @@ export const DemoStateSwitcher: React.FC = () => {
               setVisible(false);
               await requestProtectedMutation({
                 operation: 'reset-local-state',
-                summary: 'Reset all demo data, local configuration, and accountability',
+                summary: 'Reset all Rhythmic Routine local settings and Accountability protection',
                 payload: {},
               });
             }}
