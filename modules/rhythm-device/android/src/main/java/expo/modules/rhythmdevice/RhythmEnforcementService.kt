@@ -787,6 +787,18 @@ class RhythmEnforcementService : AccessibilityService() {
             )
         }
 
+        fun nextReadingTargetPreview(
+            context: Context,
+            now: Long = System.currentTimeMillis(),
+        ): NativeRoutineReadingTargetPreview {
+            val today = getLocalDateKey(now)
+            return NativeAttentionExchangeLogic.nextReadingTargetPreview(
+                state = loadAttentionExchangeState(context, now),
+                dateKey = today,
+                policy = loadAttentionPolicy(context),
+            )
+        }
+
         fun loadReadingGates(context: Context): Map<String, NativeReadingGate> {
             val json = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
                 .getString(RhythmNativePolicyKeys.READING_GATES_JSON, null) ?: return emptyMap()

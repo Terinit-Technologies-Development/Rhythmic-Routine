@@ -34,6 +34,13 @@
             android:exported="false"
             android:launchMode="singleTask"
             android:excludeFromRecents="true" />
+
+        <provider
+            android:name=".RoutineAttentionPreviewProvider"
+            android:authorities="${applicationId}.attention-preview"
+            android:exported="true"
+            android:readPermission="com.terinit.rhythmicreader.permission.RECOVERY"
+            android:writePermission="com.terinit.rhythmicreader.permission.RECOVERY" />
     </application>
 
 </manifest>

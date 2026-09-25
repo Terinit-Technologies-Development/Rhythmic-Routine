@@ -18,6 +18,13 @@ data class NativeReadingAttentionPolicy(
 
 data class NativeReadingRequirement(val activeSeconds: Long, val qualifiedPages: Int)
 
+data class NativeRoutineReadingTargetPreview(
+    val dateKey: String,
+    val nextCooldownOrdinal: Int,
+    val requiredActiveSeconds: Long,
+    val requiredQualifiedPages: Int,
+)
+
 data class NativeDailyAttentionExchangeState(
     val dateKey: String,
     val cooldownsTriggered: Int,
@@ -86,6 +93,27 @@ data class NativeCooldownExpiryDecision(
 
 object NativeAttentionExchangeLogic {
     val DEFAULT_POLICY = NativeReadingAttentionPolicy()
+
+    fun nextReadingTargetPreview(
+        state: NativeDailyAttentionExchangeState?,
+        dateKey: String,
+        policy: NativeReadingAttentionPolicy = DEFAULT_POLICY,
+    ): NativeRoutineReadingTargetPreview {
+        val dailyState = state?.takeIf { it.dateKey == dateKey }
+            ?: newDailyState(dateKey, state?.updatedAt ?: 0L)
+        val ordinal = if (dailyState.cooldownsTriggered == Int.MAX_VALUE) {
+            Int.MAX_VALUE
+        } else {
+            dailyState.cooldownsTriggered.coerceAtLeast(0) + 1
+        }
+        val requirement = requirementForCooldownOrdinal(ordinal, policy)
+        return NativeRoutineReadingTargetPreview(
+            dateKey = dateKey,
+            nextCooldownOrdinal = ordinal,
+            requiredActiveSeconds = requirement.activeSeconds,
+            requiredQualifiedPages = requirement.qualifiedPages,
+        )
+    }
 
     fun newDailyState(dateKey: String, now: Long) = NativeDailyAttentionExchangeState(
         dateKey = dateKey,

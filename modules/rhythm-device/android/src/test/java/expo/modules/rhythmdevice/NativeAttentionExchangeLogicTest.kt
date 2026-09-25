@@ -61,6 +61,42 @@ class NativeAttentionExchangeLogicTest {
     }
 
     @Test
+    fun `next target preview follows today's global cooldown ordinal and policy`() {
+        val first = NativeAttentionExchangeLogic.nextReadingTargetPreview(
+            NativeAttentionExchangeLogic.newDailyState(today, now),
+            today,
+        )
+        assertEquals(1, first.nextCooldownOrdinal)
+        assertEquals(0L, first.requiredActiveSeconds)
+        assertEquals(0, first.requiredQualifiedPages)
+
+        val afterFreeCooldowns = NativeAttentionExchangeLogic.nextReadingTargetPreview(
+            NativeDailyAttentionExchangeState(today, 2, 0L, 0, now),
+            today,
+        )
+        assertEquals(3, afterFreeCooldowns.nextCooldownOrdinal)
+        assertEquals(3600L, afterFreeCooldowns.requiredActiveSeconds)
+        assertEquals(36, afterFreeCooldowns.requiredQualifiedPages)
+
+        val laterTarget = NativeAttentionExchangeLogic.nextReadingTargetPreview(
+            NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now),
+            today,
+        )
+        assertEquals(4, laterTarget.nextCooldownOrdinal)
+        assertEquals(5400L, laterTarget.requiredActiveSeconds)
+        assertEquals(47, laterTarget.requiredQualifiedPages)
+
+        val nextDay = NativeAttentionExchangeLogic.nextReadingTargetPreview(
+            NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now),
+            tomorrow,
+        )
+        assertEquals(tomorrow, nextDay.dateKey)
+        assertEquals(1, nextDay.nextCooldownOrdinal)
+        assertEquals(0L, nextDay.requiredActiveSeconds)
+        assertEquals(0, nextDay.requiredQualifiedPages)
+    }
+
+    @Test
     fun `one exhaustion receives one daily ordinal across groups and retries`() {
         var state = NativeAttentionExchangeLogic.newDailyState(today, now)
         var cooldowns = emptyMap<String, NativeCooldownPolicy>()

@@ -104,7 +104,7 @@ export default function TodayScreen() {
         </View>
 
         <View style={styles.riskGroupsGrid}>
-          {riskGroups.slice(0, 2).map((group) => (
+          {riskGroups.map((group) => (
             <RiskGroupCard key={group.id} group={group} />
           ))}
         </View>
@@ -306,6 +306,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 20,
     gap: 12,
+    flexWrap: 'wrap',
     marginBottom: 16,
   },
   protectedCard: {

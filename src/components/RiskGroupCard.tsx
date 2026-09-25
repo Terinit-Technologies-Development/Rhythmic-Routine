@@ -58,26 +58,45 @@ export const RiskGroupCard: React.FC<RiskGroupCardProps> = ({ group }) => {
         const cooldownMinsRemaining = Math.max(1, Math.ceil((status.endsAt - now) / 60000));
         return (
           <View style={styles.usageContainer}>
-            <Text style={[styles.usageText, styles.usageCooldown]}>
-              Cooling down · {cooldownMinsRemaining} min remaining
+            <Text style={styles.usageText}>
+              <Text style={[styles.usageBold, styles.usageCooldown]}>
+                {allowanceMinutes}
+              </Text>{' '}
+              / {allowanceMinutes} min used
             </Text>
             <View style={styles.progressBarBg}>
               <View style={[styles.progressBarFill, { width: '100%', backgroundColor: colors.coralDark }]} />
             </View>
-            <Text style={styles.subtext}>{allowanceMinutes} min allowance</Text>
+            <Text style={[styles.subtext, styles.usageCooldown]}>
+              Cooldown · {cooldownMinsRemaining} min remaining
+            </Text>
           </View>
         );
       }
-      case 'fresh':
+      case 'fresh': {
+        const isZeroAllowance = allowanceMinutes <= 0;
         return (
           <View style={styles.usageContainer}>
-            <Text style={styles.usageText}>Fresh allowance available</Text>
+            <Text style={styles.usageText}>
+              <Text style={styles.usageBold}>0</Text> / {allowanceMinutes} min used
+            </Text>
             <View style={styles.progressBarBg}>
-              <View style={[styles.progressBarFill, { width: '0%' }]} />
+              <View
+                style={[
+                  styles.progressBarFill,
+                  {
+                    width: isZeroAllowance ? '100%' : '0%',
+                    backgroundColor: isZeroAllowance ? colors.coralDark : colors.forest,
+                  },
+                ]}
+              />
             </View>
-            <Text style={styles.subtext}>{allowanceMinutes} min remaining</Text>
+            <Text style={styles.subtext}>
+              {isZeroAllowance ? 'Allowance complete' : `${allowanceMinutes} min remaining in this cycle`}
+            </Text>
           </View>
         );
+      }
       case 'active': {
         const usedMinutes = Math.floor(status.snapshot.usedSeconds / 60);
         const remainingMinutes = Math.ceil(status.snapshot.remainingSeconds / 60);
@@ -90,7 +109,7 @@ export const RiskGroupCard: React.FC<RiskGroupCardProps> = ({ group }) => {
             <View style={styles.progressBarBg}>
               <View style={[styles.progressBarFill, { width: `${progressRatio * 100}%` }]} />
             </View>
-            <Text style={styles.subtext}>{remainingMinutes} min remaining</Text>
+            <Text style={styles.subtext}>{remainingMinutes} min remaining in this cycle</Text>
           </View>
         );
       }
@@ -124,7 +143,9 @@ export const RiskGroupCard: React.FC<RiskGroupCardProps> = ({ group }) => {
 
 const styles = StyleSheet.create({
   card: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: '47%',
     backgroundColor: '#FFFFFF',
     borderRadius: radii.xl,
     padding: 16,
