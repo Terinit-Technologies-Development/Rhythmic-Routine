@@ -16,6 +16,11 @@ object RhythmNativePolicyKeys {
     const val ATTENTION_EXCHANGE_STATE_JSON = "attention_exchange_state_json"
     const val READING_GATES_JSON = "reading_gates_json"
     const val DAILY_READING_EVIDENCE_JSON = "daily_reading_evidence_json"
+    // Pass 3 — Restorative Gate / Attention Day / Morning Meditation enforcement.
+    const val RESTORATIVE_GATES_JSON = "restorative_gates_json"
+    const val ATTENTION_DAY_JSON = "attention_day_json"
+    const val MORNING_MEDITATION_JSON = "morning_meditation_json"
+    const val COMPANION_PACKAGES_JSON = "companion_packages_json"
     const val EXTRA_GROUP_ID = "extra_group_id"
     const val EXTRA_GROUP_NAME = "extra_group_name"
     const val EXTRA_COOLDOWN_ENDS_AT = "extra_cooldown_ends_at"

@@ -1055,7 +1055,11 @@ class RhythmEnforcementService : AccessibilityService() {
                     cooldownsByGroup.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
                 ),
             )
-            return persistAttentionMutation(context, loadGroupUsageLedger(context), cooldownsByGroup.values.toList(), completedState, nextGates)
+            return persistAttentionMutation(context, loadGroupUsageLedger(context), cooldownsByGroup.values.toList(), completedState, nextGates).also {
+                // Pass 3: persist the Restorative/Morning enforcement projection
+                // (additive; survives JS/app process death).
+                RestorativeEnforcement.persist(context, RestorativeEnforcement.parse(snapshot))
+            }
         }
 
         fun mergeCooldownPoliciesFromJs(context: Context, incoming: List<NativeCooldownPolicy>, now: Long): Boolean {
@@ -1300,7 +1304,30 @@ class RhythmEnforcementService : AccessibilityService() {
 
         fun hasGroupAttentionHold(context: Context, groupId: String, now: Long = System.currentTimeMillis()): Boolean =
             loadCooldownPolicies(context).any { it.groupId == groupId && it.endsAt > now } ||
-                loadReadingGates(context)[groupId]?.attentionDateKey == getLocalDateKey(now)
+                loadReadingGates(context)[groupId]?.attentionDateKey == getLocalDateKey(now) ||
+                // Pass 3: an unsatisfied Restorative Gate keeps its group held
+                // after the timer expires (canReenter = cooldownElapsed &&
+                // gateSatisfiedOrAbsent).
+                RestorativeEnforcement.load(context).hasRestorativeHold(groupId)
+
+        /**
+         * Pass 3 — Morning Meditation Focus hold for one package.
+         *
+         * While the Attention Day's morning requirement is unsatisfied:
+         * official companion packages (Meditation, Routine) stay reachable,
+         * managed Risk/normal apps stay held, and unmanaged system/essential
+         * apps (dialer, SMS, banking, …) are never touched by this layer.
+         */
+        fun hasMorningFocusHold(context: Context, packageName: String): Boolean {
+            val restorative = RestorativeEnforcement.load(context)
+            if (!restorative.morningFocusActive) return false
+            if (restorative.isCompanionPackage(packageName)) return false
+            val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
+            val managed = HashSet<String>()
+            managed.addAll(prefs.getStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, emptySet()) ?: emptySet())
+            loadRiskGroupPolicies(context).forEach { managed.addAll(it.packageNames) }
+            return packageName in managed
+        }
 
         fun isRestrictedByCooldown(context: Context, packageName: String, now: Long = System.currentTimeMillis()) = loadCooldownPolicies(context).any { packageName in it.packageNames && it.endsAt > now }
         fun isProtectedByRoutine(context: Context, packageName: String, now: Long = System.currentTimeMillis()): Boolean {

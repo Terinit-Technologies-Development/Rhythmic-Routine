@@ -1,7 +1,19 @@
 import { AccessLease, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow } from '../../types/domain';
 import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns, RestrictionReason } from './types';
 import type { ActiveReadingGate } from './attentionExchange';
+import type { ActiveRestorativeGate } from './restorativeGate';
 import { getLocalDateKey, isGroupAllowanceExhausted } from './allowance';
+
+/**
+ * Narrow internal allowlist of first-party companion packages that must stay
+ * reachable whenever Routine requires them (Meditation Focus). Never exposed as
+ * a user classification: a user setting must not be able to make Meditation
+ * inaccessible while Morning Meditation is required.
+ */
+export const OFFICIAL_COMPANION_PACKAGES: ReadonlySet<string> = new Set([
+  'com.terinit.rhythmicmeditation',
+  'com.terinit.rhythmicroutine',
+]);
 
 export interface RestrictionOptions {
   isOvernight?: boolean;
@@ -12,6 +24,12 @@ export interface RestrictionOptions {
   /** Pass 03: reading obligations persist after their native cooldown timer expires. */
   activeReadingGates?: Record<string, ActiveReadingGate>;
   currentDateKey?: string;
+  /** Pass 3: Restorative Gate obligations (authoritative gate state). */
+  activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
+  /** Pass 3: Morning Meditation Focus is holding nonessential/Risk apps. */
+  morningMeditationActive?: boolean;
+  /** Pass 3: override for tests/special builds; defaults to OFFICIAL_COMPANION_PACKAGES. */
+  officialCompanionPackages?: ReadonlySet<string>;
 }
 
 /**
@@ -115,6 +133,32 @@ export function computeEffectiveRestrictions(
     }
   }
 
+  // Pass 3: an incomplete Restorative Gate keeps blocking after its cooldown
+  // timer expires. Central invariant:
+  //   canReenter = cooldownElapsed && gateSatisfiedOrAbsent
+  // — never "cooldown OR restorative activity", and completing Reader or
+  // Meditation work never shortens cooldownEndsAt.
+  for (const [groupId, gate] of Object.entries(options?.activeRestorativeGates ?? {})) {
+    if (gate.status === 'satisfied' || gate.cooldownEndsAt > now) continue;
+    const group = riskGroups.find((item) => item.id === groupId);
+    if (!group) continue;
+    for (const appId of group.appIds) {
+      addReason(appId, { type: 'restorative-gate', sourceId: gate.gateId });
+    }
+  }
+
+  // Pass 3: Morning Meditation Focus. Meditation, Routine itself, and Essential
+  // apps stay reachable; normal nonessential and Risk apps are restricted until
+  // the Attention Day's morning session is verified complete.
+  if (options?.morningMeditationActive) {
+    const companions = options.officialCompanionPackages ?? OFFICIAL_COMPANION_PACKAGES;
+    for (const app of apps) {
+      if (app.classification === 'essential') continue;
+      if (companions.has(app.id)) continue;
+      addReason(app.id, { type: 'morning-meditation', sourceId: 'morning-meditation' });
+    }
+  }
+
   // 3. Process Overnight Protection (all Risk apps protected)
   if (options?.isOvernight) {
     for (const app of apps) {
@@ -146,7 +190,9 @@ export function computeEffectiveRestrictions(
     }
   }
 
-  // 5. Apply Access Lease suppression after union of reasons
+  // 5. Apply Access Lease suppression after union of reasons.
+  // Pass 3: a lease can never trivially bypass Morning Meditation Focus — the
+  // 'morning-meditation' reason survives lease suppression for nonessential apps.
   const effectiveAppIds: string[] = [];
   const appRestrictions: AppRestriction[] = [];
 
@@ -154,8 +200,11 @@ export function computeEffectiveRestrictions(
     const app = apps.find((a) => a.id === appId);
     const isSuppressedByLease =
       app?.riskGroupId !== undefined && activeLeaseGroupIds.has(app.riskGroupId);
+    const holdsMorningFocus = restriction.reasons.some(
+      (reason) => reason.type === 'morning-meditation'
+    );
 
-    if (!isSuppressedByLease) {
+    if (!isSuppressedByLease || holdsMorningFocus) {
       effectiveAppIds.push(appId);
       appRestrictions.push(restriction);
     }

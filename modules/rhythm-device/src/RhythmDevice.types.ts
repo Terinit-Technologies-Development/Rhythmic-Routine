@@ -132,6 +132,39 @@ export interface NativeCooldownPolicyInput {
   requiredQualifiedPages?: number;
 }
 
+/**
+ * Pass 3 — Restorative Gate projection (additive; v1.2 native code ignores it).
+ * Only policy data is shared — never private meditation history.
+ */
+export interface NativeRestorativeGateInput {
+  gateId: string;
+  groupId: string;
+  attentionDayId: string;
+  dailyCooldownOrdinal: number;
+  createdAt: number;
+  cooldownEndsAt: number;
+  requirementKind: 'none' | 'baseline-reading' | 'restorative-choice' | 'legacy-reading';
+  selectedProvider: 'reader' | 'meditation' | null;
+  providerSessionId: string | null;
+  status: 'pending-selection' | 'in-progress' | 'satisfied';
+  requiredReadingSeconds: number | null;
+  requiredQualifiedPages: number | null;
+  requiredMeditationSeconds: number | null;
+}
+
+export interface NativeAttentionDayInput {
+  id: string;
+  startedAt: number;
+  nextBoundaryAt: number;
+}
+
+export interface NativeMorningMeditationInput {
+  attentionDayId: string;
+  sessionId: string;
+  requiredQualifiedSeconds: number;
+  satisfied: boolean;
+}
+
 export interface NativeAttentionExchangeSnapshot {
   attentionStateInitialized: boolean;
   dateKey: string;
@@ -145,6 +178,11 @@ export interface NativeAttentionExchangeSnapshot {
   foregroundGroupId?: string;
   evidence?: NativeDailyReadingEvidence;
   updatedAt: number;
+  /** Pass 3 fields (optional: older native builds omit them). */
+  attentionDay?: NativeAttentionDayInput | null;
+  activeRestorativeGates?: NativeRestorativeGateInput[];
+  morningMeditation?: NativeMorningMeditationInput | null;
+  officialCompanionPackages?: string[];
 }
 
 export interface NativeRoutineWindowInput {
@@ -211,5 +249,36 @@ export interface NativeDailyReadingEvidence {
   verifiedActiveSeconds: number;
   qualifiedPages: number;
   updatedAtEpochMs: number;
+}
+
+export type NativeMeditationAvailability =
+  | 'available'
+  | 'not-installed'
+  | 'untrusted-signature'
+  | 'protocol-incompatible'
+  | 'unavailable';
+
+/** Durable session row returned by the Meditation status provider (protocol v1). */
+export interface NativeMeditationSessionEvidence {
+  sessionId: string;
+  protocolVersion: number;
+  status: 'PENDING' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED' | 'INVALID' | string;
+  requiredQualifiedSeconds: number;
+  completedQualifiedSeconds: number;
+  completedAtEpochMs: number | null;
+  lastUpdatedAtEpochMs: number | null;
+}
+
+/** Recovery request fields written into the Meditation Intent payload Bundle. */
+export interface NativeMeditationRecoveryRequestInput {
+  session_id: string;
+  protocol_version: number;
+  session_kind: 'MORNING_REQUIRED' | 'COOLDOWN_RESTORATIVE';
+  required_qualified_seconds: number;
+  created_at_epoch_ms: number;
+  expires_at_epoch_ms?: number;
+  source_cooldown_id?: string;
+  source_risk_group_id?: string;
+  source_rhythmic_day_id?: string;
 }
 

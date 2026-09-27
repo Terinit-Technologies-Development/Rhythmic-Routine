@@ -13,6 +13,7 @@ import { colors, radii, shadows } from '../src/theme/tokens';
 import { ScreenHeader } from '../src/components/ScreenHeader';
 import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
+import { RestorativeChoiceCard } from '../src/components/RestorativeChoiceCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
 import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
@@ -25,6 +26,10 @@ export default function TouchGrassScreen() {
   const openRhythmicReader = usePrototypeStore((s) => s.openRhythmicReader);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
+  const restorativeStatus = usePrototypeStore((s) => s.restorativeStatus);
+  const selectRestorativeProvider = usePrototypeStore((s) => s.selectRestorativeProvider);
+  const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
+  const refreshMeditationEvidence = usePrototypeStore((s) => s.refreshMeditationEvidence);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const group = activeRiskGroupId
@@ -170,6 +175,34 @@ export default function TouchGrassScreen() {
           </View>
         </View>
 
+        {/* Pass 3 — Restorative Choice: one discrete requirement for CD4+
+            (Meditation 30 min OR Reading 30 min + 11 pages). The cooldown
+            timer above is independent and is never shortened by either path. */}
+        {restorativeStatus && restorativeStatus.requirementKind !== 'none' ? (
+          <View style={styles.restorativeSection}>
+            <RestorativeChoiceCard
+              view={restorativeStatus}
+              onSelectProvider={(provider) => {
+                void selectRestorativeProvider(restorativeStatus.groupId, provider);
+              }}
+              onBeginProvider={(provider) => {
+                if (provider === 'meditation') {
+                  void launchMeditationForGate(restorativeStatus.groupId);
+                  void refreshMeditationEvidence(restorativeStatus.groupId);
+                } else {
+                  void continueReading();
+                }
+              }}
+              meditationUnavailableReason={
+                restorativeStatus.phase === 'meditation-unavailable' ||
+                restorativeStatus.phase === 'meditation-incompatible'
+                  ? 'unavailable'
+                  : undefined
+              }
+            />
+          </View>
+        ) : null}
+
         {/* While You're Away Section */}
         <View style={styles.awaySection}>
           <View style={styles.awayHeader}>
@@ -223,6 +256,10 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingBottom: 40,
+  },
+  restorativeSection: {
+    marginTop: 16,
+    marginBottom: 4,
   },
   headerSection: {
     alignItems: 'center',

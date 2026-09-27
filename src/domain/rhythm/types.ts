@@ -18,6 +18,18 @@ import {
   type DailyAttentionExchangeState,
 } from './attentionExchange';
 import type { ReadingEvidenceSnapshot } from './readingEvidence';
+import type {
+  ActiveRestorativeGate,
+  RestorativeProvider,
+  RestorativeRequirementKind,
+} from './restorativeGate';
+import { migrateLegacyReadingGate } from './restorativeGate';
+import type {
+  MorningMeditationMigrationState,
+  MorningMeditationRequirement,
+  MorningMeditationState,
+} from './morningMeditation';
+import type { MeditationSessionEvidence } from './meditationEvidence';
 
 export {
   AccessLease,
@@ -27,7 +39,8 @@ export {
   DailyRiskAllowancePolicy,
   GroupAllowanceUsage,
 };
-export type { ActiveReadingGate, DailyAttentionExchangeState } from './attentionExchange';
+// ActiveReadingGate / DailyAttentionExchangeState are exported directly from
+// attentionExchange (re-exporting them here duplicated the barrel export).
 
 export const SESSION_RESET_GAP_MS = 5 * 60 * 1000; // 5 minutes inactivity tolerance
 
@@ -59,7 +72,11 @@ export type RestrictionReasonType =
   | 'routine-overnight'
   | 'daily-allowance'
   | 'cooldown'
-  | 'reading-quota';
+  | 'reading-quota'
+  /** Pass 3: a Restorative Gate obligation is incomplete for this Risk Group. */
+  | 'restorative-gate'
+  /** Pass 3: Morning Meditation Focus is holding nonessential/Risk apps. */
+  | 'morning-meditation';
 
 export interface RestrictionReason {
   type: RestrictionReasonType;
@@ -91,6 +108,25 @@ export interface RhythmRuntime {
   /** Android native state owns gate clearing while AccessibilityService enforcement is active. */
   nativeAttentionAuthority?: boolean;
   nativeForegroundGroupId?: string;
+  /**
+   * Pass 3: Restorative Gates (one per cooldown instance). Authoritative gate
+   * state; `activeReadingGates` remains as the Reader v1.2 compatibility view.
+   */
+  activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
+  /** Pass 3: Morning Meditation requirement + rollout migration state. */
+  morningMeditation?: MorningMeditationRuntimeState;
+  /** Cached Meditation status projection for the bound sessions (diagnostics only). */
+  meditationEvidence?: MeditationSessionEvidence;
+  /** Cached Reader recovery-session projection for the bound gate session. */
+  readerSessionEvidence?: import('./recovery').RecoverySessionInfo;
+}
+
+/** Pass 3 Morning Meditation runtime state. */
+export interface MorningMeditationRuntimeState {
+  requirement?: MorningMeditationRequirement;
+  migration?: MorningMeditationMigrationState;
+  /** Last resolved lifecycle state (projection only). */
+  state?: MorningMeditationState;
 }
 
 export interface PersistedRuntime {
@@ -111,8 +147,22 @@ export interface PersistedRuntime {
   readingEvidence?: ReadingEvidenceSnapshot;
   nativeAttentionAuthority?: boolean;
   nativeForegroundGroupId?: string;
+  /** Pass 3: authoritative Restorative Gate state (see RhythmRuntime). */
+  activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
+  /** Pass 3: Morning Meditation requirement + rollout migration state. */
+  morningMeditation?: MorningMeditationRuntimeState;
+  /** Cached Meditation status projection (diagnostics only). */
+  meditationEvidence?: MeditationSessionEvidence;
+  /**
+   * Pass 3 migration marker. v1.2 state migrates to RESTORATIVE_MIGRATION_VERSION
+   * exactly once; repeated initialization must be idempotent.
+   */
+  restorativeMigrationVersion?: number;
   lastReconciledAt: number;
 }
+
+/** Schema version of the Restorative Gate architecture. */
+export const RESTORATIVE_MIGRATION_VERSION = 2;
 
 export interface RhythmConfiguration {
   routineWindows: RoutineWindow[];
@@ -173,6 +223,24 @@ export type RhythmEvent =
   | { type: 'SYNC_DAILY_APP_USAGE'; dailyAppUsage: Record<string, DailyAppUsage>; timestamp: number }
   | { type: 'SYNC_GROUP_ALLOWANCE_USAGE'; groupAllowanceUsage: Record<string, GroupAllowanceUsage>; replaceExisting?: boolean; timestamp: number }
   | { type: 'SYNC_DAILY_READING_EVIDENCE'; evidence: ReadingEvidenceSnapshot; timestamp: number; preserveNativeGates?: boolean }
+  | {
+      type: 'SYNC_MEDITATION_EVIDENCE';
+      evidence: MeditationSessionEvidence;
+      timestamp: number;
+    }
+  | {
+      type: 'SYNC_READER_SESSION_EVIDENCE';
+      evidence: import('./recovery').RecoverySessionInfo;
+      timestamp: number;
+    }
+  | {
+      type: 'SELECT_RESTORATIVE_PROVIDER';
+      groupId: string;
+      provider: RestorativeProvider;
+      /** Opaque provider session id — persisted BEFORE the provider launches. */
+      providerSessionId: string;
+      timestamp: number;
+    }
   | {
       type: 'SYNC_NATIVE_ATTENTION_EXCHANGE';
       dailyAttentionExchange: DailyAttentionExchangeState;
@@ -303,8 +371,61 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
         highestRequiredActiveSeconds: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredActiveSeconds),
         highestRequiredQualifiedPages: finiteNonNegativeInteger(raw.dailyAttentionExchange.highestRequiredQualifiedPages),
         updatedAt: Number.isFinite(raw.dailyAttentionExchange.updatedAt) ? raw.dailyAttentionExchange.updatedAt : now,
+        meditationSubstitutionsUsed: finiteNonNegativeInteger(
+          raw.dailyAttentionExchange.meditationSubstitutionsUsed
+        ),
+        ...(typeof raw.dailyAttentionExchange.attentionDayId === 'string'
+          ? { attentionDayId: raw.dailyAttentionExchange.attentionDayId }
+          : {}),
       }
     : migrateDailyAttentionExchange(activeCooldowns, now, res.activeReadingGates);
+
+  // ---- Pass 3 restorative migration (idempotent) -------------------------
+  // Existing v1.2 activeReadingGates become LEGACY_READING Restorative Gates
+  // with their ORIGINAL numbers (e.g. 5400s/47p stays 5400s/47p). Gate ids are
+  // deterministic (`legacy-gate-<groupId>`), so running this migration again —
+  // including on already-migrated state — must produce identical output.
+  const alreadyMigrated =
+    raw.restorativeMigrationVersion === RESTORATIVE_MIGRATION_VERSION &&
+    raw.activeRestorativeGates &&
+    typeof raw.activeRestorativeGates === 'object';
+
+  if (alreadyMigrated) {
+    res.activeRestorativeGates = cloneObjectValues(
+      raw.activeRestorativeGates as Record<string, ActiveRestorativeGate>
+    );
+    res.restorativeMigrationVersion = RESTORATIVE_MIGRATION_VERSION;
+  } else {
+    const migrated: Record<string, ActiveRestorativeGate> = {};
+    for (const [groupId, gate] of Object.entries(res.activeReadingGates ?? {})) {
+      migrated[groupId] = migrateLegacyReadingGate({
+        groupId,
+        attentionDateKey: gate.attentionDateKey,
+        dailyCooldownOrdinal: gate.dailyCooldownOrdinal,
+        createdAt: gate.createdAt,
+        cooldownEndsAt: gate.cooldownEndsAt,
+        requiredReadingSeconds: gate.requiredReadingSeconds,
+        requiredQualifiedPages: gate.requiredQualifiedPages,
+      });
+    }
+    // Also adopt any unrecognized raw restorative gates (defensive copy).
+    for (const [groupId, gate] of Object.entries(
+      (raw.activeRestorativeGates ?? {}) as Record<string, unknown>
+    )) {
+      if (isValidPersistedRestorativeGate(groupId, gate)) {
+        migrated[groupId] = { ...(gate as ActiveRestorativeGate) };
+      }
+    }
+    res.activeRestorativeGates = migrated;
+    res.restorativeMigrationVersion = RESTORATIVE_MIGRATION_VERSION;
+  }
+
+  if (raw.morningMeditation && typeof raw.morningMeditation === 'object') {
+    res.morningMeditation = { ...raw.morningMeditation };
+  }
+  if (raw.meditationEvidence && typeof raw.meditationEvidence === 'object') {
+    res.meditationEvidence = { ...raw.meditationEvidence };
+  }
 
   if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
     res.dailyAppUsage = cloneObjectValues(raw.dailyAppUsage);
@@ -333,6 +454,26 @@ function isValidPersistedGate(groupId: string, value: unknown): value is ActiveR
     isFiniteNonNegativeNumber(gate.requiredQualifiedPages) &&
     Number.isInteger(gate.requiredReadingSeconds) &&
     Number.isInteger(gate.requiredQualifiedPages);
+}
+
+function isValidPersistedRestorativeGate(
+  groupId: string,
+  value: unknown
+): value is ActiveRestorativeGate {
+  if (!value || typeof value !== 'object') return false;
+  const gate = value as Partial<ActiveRestorativeGate>;
+  return gate.groupId === groupId &&
+    typeof gate.gateId === 'string' && gate.gateId.length > 0 &&
+    typeof gate.attentionDayId === 'string' && gate.attentionDayId.length > 0 &&
+    Number.isInteger(gate.dailyCooldownOrdinal) && (gate.dailyCooldownOrdinal ?? 0) > 0 &&
+    isFiniteNonNegativeNumber(gate.createdAt) &&
+    isFiniteNonNegativeNumber(gate.cooldownEndsAt) &&
+    typeof gate.requirementKind === 'string' &&
+    ['none', 'baseline-reading', 'restorative-choice', 'legacy-reading'].includes(
+      gate.requirementKind as RestorativeRequirementKind
+    ) &&
+    typeof gate.status === 'string' &&
+    ['pending-selection', 'in-progress', 'satisfied'].includes(gate.status);
 }
 
 function isValidPersistedReadingEvidence(value: unknown): value is ReadingEvidenceSnapshot {

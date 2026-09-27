@@ -466,6 +466,33 @@ class RhythmDeviceModule : Module() {
       }
     }
 
+    AsyncFunction("isMeditationAvailable") {
+      val context = appContext.reactContext ?: return@AsyncFunction "unavailable"
+      return@AsyncFunction MeditationStatusProviderClient.availabilityString(
+        MeditationStatusProviderClient.checkAvailability(context)
+      )
+    }
+
+    AsyncFunction("startMeditationRecoverySession") { request: Map<String, Any?> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      if (CompanionTrust.verify(context, MeditationContract.MEDITATION_PACKAGE) != CompanionTrustResult.TRUSTED) {
+        return@AsyncFunction false
+      }
+      try {
+        val intent = MeditationContract.buildRecoveryIntent(request) ?: return@AsyncFunction false
+        context.startActivity(intent)
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    AsyncFunction("queryMeditationStatus") { sessionId: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      val result = MeditationStatusProviderClient.query(context, sessionId)
+      return@AsyncFunction result.evidence?.let { meditationEvidenceMap(it) }
+    }
+
     AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
@@ -497,6 +524,16 @@ class RhythmDeviceModule : Module() {
     put("verifiedActiveSeconds", evidence.verifiedActiveSeconds.toDouble())
     put("qualifiedPages", evidence.qualifiedPages)
     put("updatedAtEpochMs", evidence.updatedAtEpochMs.toDouble())
+  }
+
+  private fun meditationEvidenceMap(evidence: NativeMeditationSessionEvidence): Map<String, Any?> = buildMap {
+    put(MeditationContract.COLUMN_SESSION_ID, evidence.sessionId)
+    put(MeditationContract.COLUMN_PROTOCOL_VERSION, evidence.protocolVersion)
+    put(MeditationContract.COLUMN_STATUS, evidence.status)
+    put(MeditationContract.COLUMN_REQUIRED_QUALIFIED_SECONDS, evidence.requiredQualifiedSeconds)
+    put(MeditationContract.COLUMN_COMPLETED_QUALIFIED_SECONDS, evidence.completedQualifiedSeconds)
+    put(MeditationContract.COLUMN_COMPLETED_AT_EPOCH_MS, evidence.completedAtEpochMs?.toDouble())
+    put(MeditationContract.COLUMN_LAST_UPDATED_AT_EPOCH_MS, evidence.lastUpdatedAtEpochMs?.toDouble())
   }
 
   private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {

@@ -3,6 +3,7 @@ import RhythmDeviceModule from '../../modules/rhythm-device';
 import { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
 import { offlineActivities } from '../data/mockData';
 import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
+import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
 import { getLocalDateKey } from '../domain/rhythm/allowance';
 
 export interface IOSNativeGroupPolicy {
@@ -237,6 +238,45 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             },
             activeReadingGates: Object.values(runtime.activeReadingGates || {}),
             activeCooldowns,
+            // Pass 3 — additive native enforcement data (v1.2 native code
+            // ignores unknown keys):
+            //   Attention Day, Restorative Gate presence/status, the Morning
+            //   Meditation requirement, and the official companion allowlist.
+            // Only policy data is shared — never private meditation history.
+            attentionDay: runtime.dailyAttentionExchange?.attentionDayId
+              ? {
+                  id: runtime.dailyAttentionExchange.attentionDayId,
+                  startedAt: 0,
+                  nextBoundaryAt: 0,
+                }
+              : null,
+            activeRestorativeGates: Object.values(runtime.activeRestorativeGates || {}).map(
+              (gate) => ({
+                gateId: gate.gateId,
+                groupId: gate.groupId,
+                attentionDayId: gate.attentionDayId,
+                dailyCooldownOrdinal: gate.dailyCooldownOrdinal,
+                createdAt: gate.createdAt,
+                cooldownEndsAt: gate.cooldownEndsAt,
+                requirementKind: gate.requirementKind,
+                selectedProvider: gate.selectedProvider ?? null,
+                providerSessionId: gate.providerSessionId ?? null,
+                status: gate.status,
+                requiredReadingSeconds: gate.requiredReadingSeconds ?? null,
+                requiredQualifiedPages: gate.requiredQualifiedPages ?? null,
+                requiredMeditationSeconds: gate.requiredMeditationSeconds ?? null,
+              })
+            ),
+            morningMeditation: runtime.morningMeditation?.requirement
+              ? {
+                  attentionDayId: runtime.morningMeditation.requirement.attentionDayId,
+                  sessionId: runtime.morningMeditation.requirement.sessionId,
+                  requiredQualifiedSeconds:
+                    runtime.morningMeditation.requirement.requiredQualifiedSeconds,
+                  satisfied: Boolean(runtime.morningMeditation.requirement.satisfiedAt),
+                }
+              : null,
+            officialCompanionPackages: [...OFFICIAL_COMPANION_PACKAGES],
           };
           const attentionStateSignature = JSON.stringify(attentionState);
           if (this.lastAndroidAttentionStateSignature !== attentionStateSignature) {

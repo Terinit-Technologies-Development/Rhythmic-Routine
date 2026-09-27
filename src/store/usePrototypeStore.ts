@@ -29,6 +29,17 @@ import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
 import { getPrimaryCooldown, RhythmRuntime } from '../domain/rhythm/types';
 import { deriveAttentionGateStatus, AttentionGateStatus, ActiveReadingGate, DailyAttentionExchangeState } from '../domain/rhythm/attentionExchange';
+import {
+  deriveRestorativeStatus,
+  type ActiveRestorativeGate,
+  type RestorativeProvider,
+  type RestorativeStatusView,
+} from '../domain/rhythm/restorativeGate';
+import { generateRecoverySessionId } from '../domain/rhythm/recovery';
+import {
+  buildCooldownMeditationRequest,
+  nativeMeditationBridge,
+} from '../platform/NativeMeditationBridge';
 import { ReadingEvidenceSnapshot } from '../domain/rhythm/readingEvidence';
 import {
   DailyRhythmSummary,
@@ -194,7 +205,43 @@ function attentionStateProjection(runtime: RhythmRuntime, now = Date.now()) {
       ? { ...runtime.dailyAttentionExchange }
       : undefined,
     readingEvidence: runtime.readingEvidence ? { ...runtime.readingEvidence } : undefined,
+    activeRestorativeGates: Object.fromEntries(
+      Object.entries(runtime.activeRestorativeGates ?? {}).map(([groupId, gate]) => [groupId, { ...gate }])
+    ) as Record<string, ActiveRestorativeGate>,
+    restorativeStatus: projectPrimaryRestorativeStatus(runtime, now),
   };
+}
+
+/**
+ * Pass 3: Restorative Gate status projection for the UI (Restorative Choice +
+ * the distinct status states). Fail-closed — an unsatisfied gate never
+ * projects as complete.
+ */
+function projectPrimaryRestorativeStatus(
+  runtime: RhythmRuntime,
+  now: number
+): RestorativeStatusView | undefined {
+  const gates = runtime.activeRestorativeGates ?? {};
+  const gateEntry = Object.values(gates).sort(
+    (a, b) => b.createdAt - a.createdAt || a.groupId.localeCompare(b.groupId)
+  )[0];
+  if (!gateEntry) return undefined;
+  const attentionDayId =
+    runtime.dailyAttentionExchange?.attentionDayId ?? gateEntry.attentionDayId;
+  return deriveRestorativeStatus({
+    groupId: gateEntry.groupId,
+    gate: gateEntry,
+    cooldownEndsAt: runtime.activeCooldowns?.[gateEntry.groupId]?.endsAt,
+    now,
+    attentionDayId,
+    currentDateKey: getLocalDateKey(now),
+    acceptedEvidenceDateKeys: [getLocalDateKey(now), getLocalDateKey(gateEntry.createdAt)],
+    meditationSubstitutionsUsed:
+      runtime.dailyAttentionExchange?.meditationSubstitutionsUsed ?? 0,
+    readerDailyEvidence: runtime.readingEvidence as never,
+    readerSessionEvidence: runtime.readerSessionEvidence ?? null,
+    meditationEvidence: runtime.meditationEvidence ?? null,
+  });
 }
 
 interface PrototypeState {
@@ -206,6 +253,10 @@ interface PrototypeState {
   activeReadingGates?: Record<string, ActiveReadingGate>;
   dailyAttentionExchange?: DailyAttentionExchangeState;
   readingEvidence?: ReadingEvidenceSnapshot;
+  /** Pass 3: authoritative Restorative Gate state (one per cooldown instance). */
+  activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
+  /** Pass 3: Restorative Gate status projection for the primary gate. */
+  restorativeStatus?: RestorativeStatusView;
   apps: DeviceApp[];
   riskGroups: RiskGroup[];
   routineWindows: RoutineWindow[];
@@ -239,6 +290,12 @@ interface PrototypeState {
   refreshDailyUsage: () => Promise<void>;
   refreshReadingEvidence: () => Promise<void>;
   openRhythmicReader: () => Promise<boolean>;
+  /** Pass 3: bind an opaque provider session to a gate and lock the choice. */
+  selectRestorativeProvider: (groupId: string, provider: RestorativeProvider) => Promise<void>;
+  /** Pass 3: launch the bound cooldown Meditation session. */
+  launchMeditationForGate: (groupId: string) => Promise<boolean>;
+  /** Pass 3: refresh Meditation evidence for the bound session (fail-closed). */
+  refreshMeditationEvidence: (groupId: string) => Promise<void>;
   refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
@@ -1304,6 +1361,48 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       return await RhythmDeviceModule.openRhythmicReader();
     } catch {
       return false;
+    }
+  },
+
+  selectRestorativeProvider: async (groupId, provider) => {
+    // The opaque provider session id is persisted on the gate BEFORE the
+    // provider launches (one provider session can satisfy exactly one gate).
+    await RhythmCoordinator.getInstance().dispatch({
+      type: 'SELECT_RESTORATIVE_PROVIDER',
+      groupId,
+      provider,
+      providerSessionId: generateRecoverySessionId(),
+      timestamp: Date.now(),
+    });
+  },
+
+  launchMeditationForGate: async (groupId) => {
+    const runtime = RhythmCoordinator.getInstance().getRuntimeSnapshot();
+    const gate = runtime?.activeRestorativeGates?.[groupId];
+    if (!gate?.providerSessionId) return false;
+    const request = buildCooldownMeditationRequest({
+      sessionId: gate.providerSessionId,
+      sourceCooldownId: gate.gateId,
+      sourceRiskGroupId: gate.groupId,
+      sourceRhythmicDayId: gate.attentionDayId,
+      createdAtEpochMs: Date.now(),
+      requiredQualifiedSeconds: gate.requiredMeditationSeconds ?? 1800,
+    });
+    return nativeMeditationBridge.startMeditationRecoverySession(request);
+  },
+
+  refreshMeditationEvidence: async (groupId) => {
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = coordinator.getRuntimeSnapshot();
+    const gate = runtime?.activeRestorativeGates?.[groupId];
+    if (!gate?.providerSessionId) return;
+    const evidence = await nativeMeditationBridge.queryMeditationStatus(gate.providerSessionId);
+    if (evidence) {
+      await coordinator.dispatch({
+        type: 'SYNC_MEDITATION_EVIDENCE',
+        evidence,
+        timestamp: Date.now(),
+      });
     }
   },
 

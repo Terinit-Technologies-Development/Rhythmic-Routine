@@ -1,0 +1,294 @@
+# Rhythmic Routine — Pass 03: Restorative-Gate Integration
+
+Status: **Pass 3 implemented, tested, and committed on `feat/pass-03-restorative-gates`.**
+This document is the Pass 3 handoff (spec section 58). Physical-device
+validation (spec 55) has NOT been run in this environment — the checklist is
+below and its results must be recorded before enforcement ships.
+
+---
+
+## 1. What changed (policy)
+
+The v1.2 cumulative Reader gate is retired after cooldown 3. The finalized
+policy is now implemented and tested:
+
+| Cooldown ordinal | Requirement |
+| --- | --- |
+| 1–2 | 90-minute separation only (no gate) |
+| 3 | separation + **Daily Reader baseline**: 3600 verified sec AND 36 qualified pages (Reader Daily Evidence V2 aggregate) |
+| 4+ | separation + **ONE discrete restorative requirement**: Reader **1800 sec + 11 pages** (bound recovery session) **OR** Meditation **1800 qualified sec** (bound COOLDOWN_RESTORATIVE session) |
+
+Hard invariants enforced in code and tests:
+
+- `canReenter = cooldownElapsed && gateSatisfiedOrAbsent` (never OR; gates never
+  change `cooldownEndsAt`)
+- Meditation satisfies at most **2 cooldown gates per Attention Day**
+  (`meditationSubstitutionsUsed`, consumed exactly once per gate on verified
+  completion — never on select/launch/start/pause/cancel/fail)
+- Morning / Evening / Standalone meditation never consume the cap
+- One provider session satisfies exactly one gate (session-id binding)
+- Reader and Meditation partial progress can never be combined (provider locks
+  on first meaningful progress)
+- Provider errors never fail open (deny-by-default, including signature checks)
+- No midnight loophole: counters reset at the Attention Day boundary only
+
+## 2. Branch / commits
+
+- Branch: `feat/pass-03-restorative-gates`
+- Baseline: `93d3a8d15ef861dc0fa7cac2ba806df927d358e1` (v1.2.0 master, frozen)
+- Diff summary: `git diff 93d3a8d..HEAD`
+- Untouched refs: `tag v1.2.0`, `release/v1.2.0`, `release/v1.2.0-rc1`
+
+## 3. Attention Day
+
+Schema (`src/domain/rhythm/attentionDay.ts`):
+
+```ts
+interface AttentionDay { id: string; startedAt: number; nextBoundaryAt: number }
+```
+
+Boundary algorithm (`resolveAttentionDay(now, schedule)`):
+
+1. Use the Morning Window's **END** time (minutes past local midnight).
+2. Walk back ≤ 7 days to the most recent boundary whose day is active for the
+   window; it opens the Attention Day. Id: `ad-<yyyyMMdd>-<HHmm>`.
+3. The next active boundary closes it (`nextBoundaryAt`).
+4. No usable Morning Window (disabled / missing endTime / no active day in the
+   lookback) → **fallback = local calendar day** (`ad-<yyyy-MM-dd>`),
+   deterministic and documented.
+
+Example (buffer ends 07:30): `27 Sep 07:30 … 28 Sep 07:29:59` is one Attention
+Day; `28 Sep 07:30` opens the next. Substitution counters and ordinals reset
+ONLY at that transition (spec 51 tested).
+
+## 4. ActiveRestorativeGate (final schema)
+
+`src/domain/rhythm/restorativeGate.ts`:
+
+```ts
+interface ActiveRestorativeGate {
+  gateId: string;                     // deterministic: gate-<attentionDayId>-<groupId>-o<ordinal>
+  groupId: string;
+  attentionDayId: string;
+  dailyCooldownOrdinal: number;
+  createdAt: number;
+  cooldownEndsAt: number;
+  requirementKind: 'none' | 'baseline-reading' | 'restorative-choice' | 'legacy-reading';
+  selectedProvider?: 'reader' | 'meditation';
+  providerSessionId?: string;         // persisted BEFORE provider launch
+  status: 'pending-selection' | 'in-progress' | 'satisfied';
+  satisfiedAt?: number;
+  requiredReadingSeconds?: number;    // baseline / legacy (aggregate Reader)
+  requiredQualifiedPages?: number;
+  requiredRestorativeReadingSeconds?: number;  // CD4+ Reader path (per session)
+  requiredRestorativeQualifiedPages?: number;
+  requiredMeditationSeconds?: number;          // CD4+ Meditation path (1800)
+  providerLocked?: boolean;
+  meditationSubstitutionConsumed?: boolean;    // substitution idempotency guard
+  attentionDateKey?: string;         // LEGACY_READING keeps v1.2 day scoping
+}
+```
+
+Gate policy functions: `requirementKindForCooldownOrdinal`,
+`createRestorativeGateForOrdinal`, `evaluateRestorativeGate` (fail-closed),
+`selectGateProvider`/`lockGateProvider`, `deriveRestorativeStatus` (status UX),
+`isMeditationPathAllowed` (cap), `migrateLegacyReadingGate`.
+
+## 5. Migration
+
+- **Migration version**: `RESTORATIVE_MIGRATION_VERSION = 2`
+  (`src/domain/rhythm/types.ts`, `normalizePersistedRuntime`).
+- **Legacy `activeReadingGates` migration**: every persisted v1.2 gate becomes a
+  `LEGACY_READING` Restorative Gate with its **original** numbers
+  (`legacy-gate-<groupId>` deterministic id, `attentionDateKey` day scoping,
+  aggregate Reader evidence semantics). A seeded `90 min / 47 pages` gate
+  (actually `5400 sec / 47 pages` for ordinal 4) stays `5400/47` until it
+  naturally completes/expires — never converted to `1800/11` mid-cycle.
+- **Idempotency (spec 42)**: repeated initialization never duplicates gates,
+  allocates ordinals, regenerates ids, or resets substitutions (tested by
+  running the migration twice and comparing state).
+- **Morning rollout (spec 27)**: `MorningMeditationMigrationState
+  { migratedAt, migrationAttentionDayId, enforceableFromAttentionDayId? }`.
+  Upgrades are enforceable only from the FIRST Attention Day strictly AFTER the
+  migration day (update at 14:00 never locks the current day); fresh installs
+  enforce from their own day. Missing migration state never enforces.
+
+## 6. Morning Meditation Required
+
+- State machine (`src/domain/rhythm/morningMeditation.ts`):
+  `overnight-protected → morning-buffer → morning-meditation-required →
+  available` (`resolveMorningMeditationState`).
+- **Session identity**: Routine-authoritative and deterministic per Attention
+  Day: `sessionId = morning-<attentionDayId>` (`morningMeditationSessionId`).
+  App restart/reconciliation never creates duplicate obligations.
+- Trust: only the exact bound `MORNING_REQUIRED` session
+  (`status === 'COMPLETED'`, `completedQualifiedSeconds >= 1800`) satisfies the
+  morning. Morning completion never consumes a cooldown substitution.
+- **Morning Focus enforcement** (`computeEffectiveRestrictions`,
+  `RestrictionReasonType 'morning-meditation'`): Essential apps and the official
+  companion allowlist (`OFFICIAL_COMPANION_PACKAGES` = Meditation + Routine) stay
+  reachable; all other nonessential and Risk apps are held. The reason survives
+  Access Lease suppression (leases cannot trivially bypass the focus).
+- Native side: `RhythmEnforcementService.hasMorningFocusHold` (managed packages
+  held, companions and unmanaged system/essential apps untouched).
+
+## 7. Meditation IPC (authoritative contract, as implemented)
+
+| Item | Value |
+| --- | --- |
+| Activity/component | `com.terinit.rhythmicmeditation.app.MainActivity` (singleTask; `onCreate`/`onNewIntent`) |
+| Intent action | `com.terinit.rhythmicmeditation.action.START_MEDITATION_RECOVERY` |
+| Payload | `extra_request_payload` Bundle: `session_id`, `protocol_version` (=1), `session_kind` (`MORNING_REQUIRED` \| `COOLDOWN_RESTORATIVE`), `required_qualified_seconds`, `created_at_epoch_ms`, `expires_at_epoch_ms?`, `source_cooldown_id?`, `source_risk_group_id?`, `source_rhythmic_day_id?` |
+| Signature permission | `com.terinit.rhythmicmeditation.permission.STATUS_ACCESS` (signature-level) |
+| Provider authority | `com.terinit.rhythmicmeditation.status` (read-only; session id via `selectionArgs[0]` or URI path; columns `sessionId, protocolVersion, status, requiredQualifiedSeconds, completedQualifiedSeconds, completedAtEpochMs, lastUpdatedAtEpochMs`) |
+| Protocol | version 1 |
+| Trust config | Kotlin `CompanionTrust.verify` — Meditation's signing certs must equal Routine's own signer (deny-by-default, no debug bypass, no package-name-only trust). Meditation side configures Routine in `AppContainer.callerTrustPolicy`. |
+
+Kotlin client: `MeditationContract.kt`, `MeditationStatusProviderClient.kt`,
+`CompanionTrust.kt`; TS bridge `modules/rhythm-device/src/RhythmDeviceModule.ts`
+(`isMeditationAvailable`, `startMeditationRecoverySession`,
+`queryMeditationStatus`) and `src/platform/NativeMeditationBridge.ts`.
+
+Trusted completion (spec 19): `status === 'COMPLETED'` for the **exact bound
+session id**, `completedQualifiedSeconds >= requiredQualifiedSeconds` (1800),
+`protocolVersion === 1` — never launch/ACTIVE/wall-clock/return/Intent result.
+
+## 8. Cooldown 3 / Cooldown 4+ implementations
+
+- **CD3 (Reader baseline)**: `baseline-reading` gate, `3600/36`, satisfied from
+  Reader Daily Evidence V2 aggregate for the gate's accepted date keys (gate
+  creation date key + evaluation date key — preserves v1.2 semantics across the
+  Attention Day boundary). Can be satisfied BEFORE the cooldown ends; the
+  cooldown still runs the full 90 minutes.
+- **CD4+ Reader**: `restorative-choice` + `selectedProvider='reader'` + bound
+  `providerSessionId` created via the existing Reader recovery-session protocol
+  (`startRecoverySession`, 1800 sec / 11 pages requested for that session).
+  Verified per session: `status === 'COMPLETE'`, `activeSeconds >= 1800`,
+  `qualifiedPages >= 11`. `R4` can never satisfy `G5`.
+- **CD4+ Meditation**: `selectedProvider='meditation'` + bound
+  `providerSessionId` persisted on the gate BEFORE launch
+  (`SELECT_RESTORATIVE_PROVIDER` engine event), then
+  `startMeditationRecoverySession` with `session_kind=COOLDOWN_RESTORATIVE`,
+  `required_qualified_seconds=1800`, `source_cooldown_id=gateId`,
+  `source_risk_group_id=groupId`, `source_rhythmic_day_id=attentionDayId`.
+  Verified through the status provider.
+
+## 9. Meditation substitution counter
+
+- Lives in `DailyAttentionExchangeState.meditationSubstitutionsUsed`
+  (Attention-Day-scoped, resets only at the Morning-Buffer boundary).
+- Consumed **exactly once** per gate, only when the bound session transitions to
+  verified `COMPLETED` satisfying its gate (`meditationSubstitutionConsumed`
+  guard + `consumeMeditationSubstitution` cap). Select/launch/start/pause/
+  cancel/fail never consume.
+- Cap (2/day) blocks both the offer (`selectGateProvider(..., meditationAllowed)`)
+  and satisfaction (`evaluateRestorativeGate` refuses beyond the cap).
+- CD6+ meditation is unavailable; Reader remains.
+
+## 10. Restriction reasons & native snapshot
+
+- New reasons: `'restorative-gate'` (unsatisfied gate after its timer) and
+  `'morning-meditation'` (Morning Focus). Union semantics preserved; Access
+  Lease suppression does NOT clear `morning-meditation`.
+- Native snapshot (`NativeRhythmSyncProvider.setAttentionExchangeState`) now
+  sends additive fields (v1.2 native ignores unknown keys):
+  `attentionDay`, `activeRestorativeGates` (gateId/group/attentionDay/ordinal/
+  kind/provider/status/requirements — no private history),
+  `morningMeditation { attentionDayId, sessionId, requiredQualifiedSeconds,
+  satisfied }`, `officialCompanionPackages`.
+- Native persistence (`RestorativeEnforcement.kt`, SharedPreferences
+  `rhythm_native_policy` → `restorative_gates_json`) survives JS/app process
+  death. Enforcement hooks: `hasGroupAttentionHold` (cooldown OR same-day gate
+  OR unsatisfied restorative gate) and `hasMorningFocusHold`.
+- Reader v1.2 compatibility preserved: `activeReadingGates` keeps being
+  projected (compat view) for quota UI / Reader preview; final Reader alignment
+  is Pass 4.
+
+## 11. Accountability (spec 45)
+
+New protected operations (partner approval required when accountability is on;
+policies themselves are FIXED — no new user-facing settings):
+`disable-morning-meditation`, `reduce-morning-requirement`,
+`disable-restorative-gate`, `increase-meditation-substitution-max`,
+`reset-attention-day`, `reset-restorative-gate`,
+`change-essential-classification`.
+
+## 12. Test results
+
+| Suite | Before | After | Result |
+| --- | --- | --- | --- |
+| Routine JS (`npm test`) | 355 tests / 67 suites | **405 tests / 77 suites** | 0 failures |
+| Routine native (`:rhythm-device:testDebugUnitTest`) | 14 tests | **41 tests** | 0 failures |
+| Meditation regression (`:app:test`) | 91 tests | **91 tests** | 0 failures (Pass 2 baseline not regressed) |
+| `npm run typecheck` / `npm run lint` | clean / 4 pre-existing errors | **clean / 0 errors 0 warnings** | pass |
+| `:rhythm-device:compileDebugKotlin`, `:app:assembleDebug` (both repos) | — | pass | |
+
+New Routine JS suites (49 tests): `pass03_restorative_gates` (requirement
+model incl. the explicit "ordinal 4 ≠ 5400/47" regression, cooldown/gate truth
+table ×2 paths, substitution M1/M2/cap/M1↛G5/cancelled/idempotency, provider
+locking, fail-closed provider trust, legacy 5400/47 preservation),
+`pass03_attention_day` (spec 51 boundary table, midnight no-loophole,
+fallbacks), `pass03_morning_meditation` (lifecycle, identity, focus
+enforcement, lease-proofing, rollout migration), `pass03_restorative_migration`
+(spec 41/54 idempotent migration, parallel Risk Groups, discrete CD4 gate).
+
+Old tests updated only where they asserted the obsolete cumulative escalation
+(2 policy tables + 2 quota views + persistence fixture shape) — no behavioral
+regressions in cooldowns, restrictions, accountability, native ledger, or
+persistence beyond the intended policy change.
+
+## 13. Device validation (spec 55) — REQUIRED, NOT RUN HERE
+
+No physical device is available in this environment. Before Pass 3 enforcement
+ships, install **Routine Pass 3 + Reader v1.2.0 + Meditation af4c894+** with
+compatible signing identity and record results for:
+
+A. Morning Buffer → Meditation Required (nonessential blocked; Essential +
+   Meditation + Routine reachable) · B. Screen-off meditation continues
+   qualifying · C. Essential interruption pauses safely and keeps focus/cooldown
+   · D. CD3 Reader baseline (3600/36) · E. CD4 Meditation (M1 → G4, used = 1)
+   · F. CD4 Reader (bound session R4) · G. CD5 second Meditation (used = 2)
+   · H. CD6 cap exhausted (Reader only) · I. Cooldown complete before gate
+   (stays blocked) · J. Gate complete before cooldown (stays blocked) ·
+   K. Routine restart with active gate (ids stable) · L. Meditation process
+   recovery (checkpointed time only).
+
+Pass 2 physical QA checklist (force-stop recovery, real 30-minute session with
+screen-off) is also outstanding — it is the **decision gate for the meditation
+foreground service**: if screen-off sessions prove unreliable under Android
+process management, add the narrowest active-session foreground service (quiet
+notification, stops on complete/cancel, same monotonic/checkpoint semantics, no
+wake locks unless separately proven). Provider-runtime problems must never be
+fixed by weakening gate verification.
+
+## 14. Known limitations
+
+- **Device enforcement wiring is partially complete**: the JS snapshot sends
+  the Pass 3 fields and native `RestorativeEnforcement` persists + evaluates
+  holds (`hasGroupAttentionHold`, `hasMorningFocusHold`), but the full
+  AccessibilityService enforcement path (overlay text, restriction application
+  driven by the morning focus for every managed package) needs the device
+  validation pass to complete and tune.
+- Meditation Focus treats "managed" packages (risk groups + base restrictions)
+  as restricted; unmanaged system/essential apps are untouched on the native
+  side (JS-side union uses the Essential classification explicitly).
+- `attentionDay.startedAt/nextBoundaryAt` are sent as `0` placeholders in the
+  native payload (id is authoritative); fill when native needs boundary times.
+- Provider availability states surface as `unavailable` at the TS bridge (the
+  Kotlin layer distinguishes not-installed/untrusted/incompatible/missing/
+  corrupt internally).
+- Legacy gates keep Reader aggregate evidence; Reader's own preview/quota
+  surfaces still reflect v1.2 cumulative wording until Pass 4.
+
+## 15. Exact work remaining for Pass 04 (out of scope here)
+
+- Final Reader alignment: migrate Reader preview/quota surfaces off the
+  cumulative escalation wording; Reader recovery-session UI for CD4+ gates
+  (1800/11); Reader evidence per bound session exposure.
+- Evening Meditation flow and Insights work (beyond the compatibility plumbing
+  done here).
+- Device validation (spec 55) results + any resulting enforcement tuning,
+  including the foreground-service decision on the Meditation side.
+- Optional: native overlay/status UX for the eight distinct states (spec 37 is
+  fully modeled in `deriveRestorativeStatus`; the Routine screen shows the
+  Restorative Choice card + status line).

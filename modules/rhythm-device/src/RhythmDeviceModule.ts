@@ -16,6 +16,9 @@ import {
   NativeUsageEvent,
   NativeRecoveryStatus,
   NativeDailyReadingEvidence,
+  NativeMeditationAvailability,
+  NativeMeditationSessionEvidence,
+  NativeMeditationRecoveryRequestInput,
 } from './RhythmDevice.types';
 
 // Fallback behavior:
@@ -168,6 +171,13 @@ export const FallbackModule = {
     updatedAtEpochMs: 0,
   }),
   openRhythmicReader: async (): Promise<boolean> => false,
+  isMeditationAvailable: async (): Promise<NativeMeditationAvailability> => 'unavailable',
+  startMeditationRecoverySession: async (
+    _request: NativeMeditationRecoveryRequestInput
+  ): Promise<boolean> => false,
+  queryMeditationStatus: async (
+    _sessionId: string
+  ): Promise<NativeMeditationSessionEvidence | null> => null,
 };
 
 let nativeModuleAvailable = false;

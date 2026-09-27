@@ -9,6 +9,7 @@ import {
   deriveAttentionGateStatus,
   isReadingRequirementSatisfied,
   isTrustedEvidenceForDate,
+  legacyReadingRequirementForCooldownOrdinal,
   migrateDailyAttentionExchange,
   reconcileAttentionExchangeDate,
   remainingReadingRequirement,
@@ -51,7 +52,7 @@ function startThirdOrdinalCooldown(
 }
 
 describe('v1.2 Productive Attention Exchange domain', () => {
-  test('fixed policy yields the exact global ordinal boundaries', () => {
+  test('Pass 3 discrete policy yields the exact global ordinal boundaries', () => {
     assert.deepEqual(
       Array.from({ length: 7 }, (_, i) => {
         const value = requirementForCooldownOrdinal(i + 1);
@@ -61,12 +62,23 @@ describe('v1.2 Productive Attention Exchange domain', () => {
         [0, 0],
         [0, 0],
         [3600, 36],
-        [5400, 47],
-        [7200, 58],
-        [9000, 69],
-        [10800, 80],
+        [1800, 11],
+        [1800, 11],
+        [1800, 11],
+        [1800, 11],
       ]
     );
+  });
+
+  test('Pass 3 regression: ordinal 4 must NOT be the v1.2 cumulative 5400/47', () => {
+    const ordinal4 = requirementForCooldownOrdinal(4);
+    assert.notDeepEqual(ordinal4, { activeSeconds: 5400, qualifiedPages: 47 });
+    assert.deepEqual(ordinal4, { activeSeconds: 1800, qualifiedPages: 11 });
+    // The cumulative formula survives ONLY as the legacy audit/migration path.
+    assert.deepEqual(legacyReadingRequirementForCooldownOrdinal(4), {
+      activeSeconds: 5400,
+      qualifiedPages: 47,
+    });
   });
 
   test('allocates ordinals globally across Risk Groups and never uses cycleRevision', () => {
@@ -115,7 +127,7 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     assert.equal(isReadingRequirementSatisfied(proactiveEvidence, requirementForCooldownOrdinal(4)), true);
     assert.deepEqual(
       remainingReadingRequirement(proactiveEvidence, requirementForCooldownOrdinal(5)),
-      { activeSeconds: 25 * 60, qualifiedPages: 8 }
+      { activeSeconds: 0, qualifiedPages: 0 }
     );
     assert.equal(
       isReadingRequirementSatisfied({ verifiedActiveSeconds: 3600, qualifiedPages: 35 }, { activeSeconds: 3600, qualifiedPages: 36 }),
@@ -413,6 +425,7 @@ describe('v1.2 Productive Attention Exchange domain', () => {
       highestRequiredActiveSeconds: 0,
       highestRequiredQualifiedPages: 0,
       updatedAt: nextDay,
+      meditationSubstitutionsUsed: 0,
     });
   });
 });

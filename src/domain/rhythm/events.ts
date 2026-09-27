@@ -30,9 +30,18 @@ import {
   allocateCooldownRequirement,
   createDailyAttentionExchangeState,
   migrateDailyAttentionExchange,
-  reconcileAttentionExchangeDate,
+  reconcileAttentionExchangeForAttentionDay,
+  consumeMeditationSubstitution,
   reconcileReadingGate,
 } from './attentionExchange';
+import {
+  createRestorativeGateForOrdinal,
+  evaluateRestorativeGate,
+  isMeditationPathAllowed,
+  selectGateProvider,
+  type ActiveRestorativeGate,
+} from './restorativeGate';
+import { resolveAttentionDay } from './attentionDay';
 import {
   computeEffectiveRestrictions,
   diffRestrictions,
@@ -60,12 +69,17 @@ export function processRhythmEvent(
   const gapMs = config.sessionResetGapMs ?? SESSION_RESET_GAP_MS;
   const currentDateKey = getLocalDateKey(nowMs);
 
+  // Pass 3: the Attention Day (Morning-Buffer boundary) is the reset boundary
+  // for the restorative policy — never midnight.
+  const attentionDay = resolveAttentionDay(nowMs, config.routineWindows);
+
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
   const nextAccessLeases: Record<string, AccessLease> = { ...(currentRuntime.activeAccessLeases || {}) };
-  let nextDailyAttentionExchange = reconcileAttentionExchangeDate(
+  let nextDailyAttentionExchange = reconcileAttentionExchangeForAttentionDay(
     currentRuntime.dailyAttentionExchange ??
       migrateDailyAttentionExchange(currentRuntime.activeCooldowns ?? {}, nowMs, currentRuntime.activeReadingGates ?? {}),
+    attentionDay.id,
     nowMs
   );
   const nextReadingGates: Record<string, ActiveReadingGate> = Object.fromEntries(
@@ -73,8 +87,18 @@ export function processRhythmEvent(
       .filter(([, gate]) => gate.attentionDateKey === currentDateKey)
       .map(([groupId, gate]) => [groupId, { ...gate }])
   );
+  const nextRestorativeGates: Record<string, ActiveRestorativeGate> = Object.fromEntries(
+    Object.entries(currentRuntime.activeRestorativeGates ?? {})
+      .map(([groupId, gate]) => [groupId, { ...gate }])
+  );
   let nextReadingEvidence = currentRuntime.readingEvidence?.dateKey === currentDateKey
     ? { ...currentRuntime.readingEvidence }
+    : undefined;
+  let nextMeditationEvidence = currentRuntime.meditationEvidence
+    ? { ...currentRuntime.meditationEvidence }
+    : undefined;
+  let nextReaderSessionEvidence = currentRuntime.readerSessionEvidence
+    ? { ...currentRuntime.readerSessionEvidence }
     : undefined;
   let nextNativeAttentionAuthority = currentRuntime.nativeAttentionAuthority === true;
   let nextNativeForegroundGroupId = currentRuntime.nativeForegroundGroupId;
@@ -146,11 +170,14 @@ export function processRhythmEvent(
               nowMs,
               timerCooldown.endsAt,
               nextDailyAttentionExchange,
-              nextReadingGates
+              nextReadingGates,
+              nextRestorativeGates,
+              attentionDay.id
             );
             const newCooldown = allocated.cooldown;
             nextDailyAttentionExchange = allocated.dailyAttentionExchange;
             replaceRecord(nextReadingGates, allocated.activeReadingGates);
+            replaceRecord(nextRestorativeGates, allocated.activeRestorativeGates);
             nextCooldowns[nextSession.groupId] = newCooldown;
 
             effects.push({
@@ -274,11 +301,14 @@ export function processRhythmEvent(
             event.timestamp,
             timerCooldown.endsAt,
             nextDailyAttentionExchange,
-            nextReadingGates
+            nextReadingGates,
+            nextRestorativeGates,
+            attentionDay.id
           );
           const newCooldown = allocated.cooldown;
           nextDailyAttentionExchange = allocated.dailyAttentionExchange;
           replaceRecord(nextReadingGates, allocated.activeReadingGates);
+          replaceRecord(nextRestorativeGates, allocated.activeRestorativeGates);
           nextCooldowns[targetGroupId] = newCooldown;
 
           effects.push({
@@ -364,6 +394,36 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'SYNC_MEDITATION_EVIDENCE': {
+      // Bound-session evidence from the Meditation status provider. Cached for
+      // gate evaluation; the trust decision happens in evaluateRestorativeGate.
+      nextMeditationEvidence = { ...event.evidence };
+      break;
+    }
+
+    case 'SYNC_READER_SESSION_EVIDENCE': {
+      nextReaderSessionEvidence = { ...event.evidence };
+      break;
+    }
+
+    case 'SELECT_RESTORATIVE_PROVIDER': {
+      // Selecting a provider binds an opaque provider session id to the gate
+      // BEFORE the provider launches. Selection is refused once meaningful
+      // progress locked the gate, or once the meditation cap is exhausted.
+      const gate = nextRestorativeGates[event.groupId];
+      if (!gate) break;
+      const meditationAllowed = event.provider !== 'meditation' ||
+        isMeditationPathAllowed(nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0);
+      const selected = selectGateProvider(gate, event.provider, { meditationAllowed });
+      if (selected !== gate && selected.selectedProvider === event.provider) {
+        nextRestorativeGates[event.groupId] = {
+          ...selected,
+          providerSessionId: event.providerSessionId,
+        };
+      }
+      break;
+    }
+
     case 'SYNC_NATIVE_ATTENTION_EXCHANGE': {
       nextNativeAttentionAuthority = true;
       nextDailyAttentionExchange = event.dailyAttentionExchange.dateKey === currentDateKey
@@ -412,11 +472,14 @@ export function processRhythmEvent(
         nowMs,
         event.endsAt,
         nextDailyAttentionExchange,
-        nextReadingGates
+        nextReadingGates,
+        nextRestorativeGates,
+        attentionDay.id
       );
       nextCooldowns[event.groupId] = allocated.cooldown;
       nextDailyAttentionExchange = allocated.dailyAttentionExchange;
       replaceRecord(nextReadingGates, allocated.activeReadingGates);
+      replaceRecord(nextRestorativeGates, allocated.activeRestorativeGates);
       if (nextSession?.groupId === event.groupId) {
         nextSession = undefined;
       }
@@ -525,11 +588,14 @@ export function processRhythmEvent(
             endsAt,
             nextDailyAttentionExchange,
             nextReadingGates,
+            nextRestorativeGates,
+            attentionDay.id,
             nowMs
           );
           nextCooldowns[event.groupId] = allocated.cooldown;
           nextDailyAttentionExchange = allocated.dailyAttentionExchange;
           replaceRecord(nextReadingGates, allocated.activeReadingGates);
+          replaceRecord(nextRestorativeGates, allocated.activeRestorativeGates);
         }
       }
       break;
@@ -555,6 +621,7 @@ export function processRhythmEvent(
 
     case 'RISK_GROUP_DELETED': {
       delete nextReadingGates[event.groupId];
+      delete nextRestorativeGates[event.groupId];
       if (nextCooldowns[event.groupId]) {
         delete nextCooldowns[event.groupId];
         effects.push({
@@ -593,6 +660,34 @@ export function processRhythmEvent(
       });
       if (reconciledGate) nextReadingGates[groupId] = reconciledGate;
       else delete nextReadingGates[groupId];
+    }
+
+    // Pass 3: Restorative Gate reconciliation — kind-aware, fail-closed.
+    // A meditation substitution is consumed exactly once, only when a bound
+    // session is verified complete and satisfies its gate.
+    for (const [groupId, gate] of Object.entries(nextRestorativeGates)) {
+      const evaluation = evaluateRestorativeGate({
+        gate,
+        now: nowMs,
+        attentionDayId: attentionDay.id,
+        currentDateKey,
+        acceptedEvidenceDateKeys: [currentDateKey, getLocalDateKey(gate.createdAt)],
+        readerDailyEvidence: nextReadingEvidence,
+        readerSessionEvidence: nextReaderSessionEvidence,
+        meditationEvidence: nextMeditationEvidence,
+        meditationSubstitutionsUsed: nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0,
+      });
+      if (!evaluation.gate) {
+        delete nextRestorativeGates[groupId];
+        continue;
+      }
+      nextRestorativeGates[groupId] = evaluation.gate;
+      if (evaluation.substitutionConsumed) {
+        nextDailyAttentionExchange = consumeMeditationSubstitution(
+          nextDailyAttentionExchange,
+          nowMs
+        );
+      }
     }
   }
 
@@ -770,7 +865,11 @@ export function processRhythmEvent(
     groupAllowanceUsage: nextGroupAllowanceUsage,
     dailyAttentionExchange: nextDailyAttentionExchange,
     activeReadingGates: nextReadingGates,
+    activeRestorativeGates: nextRestorativeGates,
     ...(nextReadingEvidence ? { readingEvidence: nextReadingEvidence } : {}),
+    ...(nextMeditationEvidence ? { meditationEvidence: nextMeditationEvidence } : {}),
+    ...(nextReaderSessionEvidence ? { readerSessionEvidence: nextReaderSessionEvidence } : {}),
+    ...(currentRuntime.morningMeditation ? { morningMeditation: currentRuntime.morningMeditation } : {}),
     nativeAttentionAuthority: nextNativeAttentionAuthority,
     nativeForegroundGroupId: nextNativeForegroundGroupId,
   };
@@ -788,14 +887,19 @@ function allocateAttentionCooldown(
   endsAt: number,
   currentState: RhythmRuntime['dailyAttentionExchange'],
   currentGates: Record<string, ActiveReadingGate>,
+  currentRestorativeGates: Record<string, ActiveRestorativeGate> = {},
+  attentionDayId?: string,
   allocationAt: number = startedAt
 ): {
   cooldown: ActiveCooldown;
   dailyAttentionExchange: NonNullable<RhythmRuntime['dailyAttentionExchange']>;
   activeReadingGates: Record<string, ActiveReadingGate>;
+  activeRestorativeGates: Record<string, ActiveRestorativeGate>;
 } {
   const state = currentState ?? createDailyAttentionExchangeState(getLocalDateKey(allocationAt), allocationAt);
   const allocation = allocateCooldownRequirement(state, allocationAt);
+  const resolvedAttentionDayId =
+    attentionDayId ?? allocation.nextState.attentionDayId ?? `ad-${allocation.nextState.dateKey}`;
   const cooldown: ActiveCooldown = {
     groupId,
     startedAt,
@@ -805,6 +909,8 @@ function allocateAttentionCooldown(
     requiredReadingSeconds: allocation.requirement.activeSeconds,
     requiredQualifiedPages: allocation.requirement.qualifiedPages,
   };
+
+  // Reader v1.2 compatibility view (quota screens / Reader preview keep working).
   const activeReadingGates = { ...currentGates };
   delete activeReadingGates[groupId];
   if (allocation.requirement.activeSeconds > 0 || allocation.requirement.qualifiedPages > 0) {
@@ -818,10 +924,26 @@ function allocateAttentionCooldown(
       requiredQualifiedPages: allocation.requirement.qualifiedPages,
     };
   }
+
+  // Pass 3: one Restorative Gate per cooldown instance (deterministic id).
+  const activeRestorativeGates = { ...currentRestorativeGates };
+  delete activeRestorativeGates[groupId];
+  const gate = createRestorativeGateForOrdinal({
+    groupId,
+    attentionDayId: resolvedAttentionDayId,
+    dailyCooldownOrdinal: allocation.ordinal,
+    createdAt: startedAt,
+    cooldownEndsAt: endsAt,
+  });
+  if (gate) {
+    activeRestorativeGates[groupId] = gate;
+  }
+
   return {
     cooldown,
-    dailyAttentionExchange: allocation.nextState,
+    dailyAttentionExchange: { ...allocation.nextState, attentionDayId: resolvedAttentionDayId },
     activeReadingGates,
+    activeRestorativeGates,
   };
 }
 
