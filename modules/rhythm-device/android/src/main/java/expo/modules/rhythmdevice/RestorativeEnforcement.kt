@@ -24,10 +24,18 @@ data class NativeRestorativeGateState(
     val groupId: String,
     val attentionDayId: String,
     val requirementKind: String,
-    val status: String
+    val status: String,
+    val selectedProvider: String? = null,
+    val dailyCooldownOrdinal: Int = 0
 ) {
     val satisfied: Boolean get() = status == "satisfied"
     val holdsGroup: Boolean get() = requirementKind != "none" && !satisfied
+
+    /** Wire label for previews: 'reader' | 'meditation' | 'none'. */
+    fun selectedProviderLabel(): String = when (selectedProvider) {
+        "reader", "meditation" -> selectedProvider
+        else -> "none"
+    }
 }
 
 data class NativeAttentionDayState(val id: String)
@@ -67,6 +75,33 @@ object RestorativeEnforcement {
         "com.terinit.rhythmicroutine"
     )
 
+    /** CD4+ discrete Reader path requirement (per bound recovery session). */
+    const val RESTORATIVE_READING_SECONDS = 1800L
+    const val RESTORATIVE_QUALIFIED_PAGES = 11
+
+    /** CD3 daily Reader baseline (cumulative Daily Evidence V2 target). */
+    const val BASELINE_READING_SECONDS = 3600L
+    const val BASELINE_QUALIFIED_PAGES = 36
+
+    /** Kotlin mirror of the Pass 3 policy (spec 2: frozen). */
+    fun requirementKindForOrdinal(ordinal: Int): String = when {
+        ordinal <= 2 -> "none"
+        ordinal == 3 -> "baseline-reading"
+        else -> "restorative-choice"
+    }
+
+    /**
+     * The gate a preview should describe: the gate matching the next ordinal
+     * if one exists, else the oldest unsatisfied gate, else none.
+     */
+    fun selectPreviewGate(
+        gates: List<NativeRestorativeGateState>,
+        nextOrdinal: Int
+    ): NativeRestorativeGateState? =
+        gates.firstOrNull { it.dailyCooldownOrdinal == nextOrdinal && it.requirementKind != "none" }
+            ?: gates.filter { it.holdsGroup }.minByOrNull { it.dailyCooldownOrdinal }
+            ?: gates.firstOrNull { it.requirementKind != "none" }
+
     /** Parses the additive Pass 3 fields from the JS `attentionState` map. */
     fun parse(snapshot: Map<String, Any?>): RestorativeEnforcementSnapshot {
         val gates = LinkedHashMap<String, NativeRestorativeGateState>()
@@ -86,7 +121,9 @@ object RestorativeEnforcement {
                     groupId = groupId,
                     attentionDayId = attentionDayId,
                     requirementKind = requirementKind,
-                    status = status
+                    status = status,
+                    selectedProvider = map["selectedProvider"] as? String,
+                    dailyCooldownOrdinal = (map["dailyCooldownOrdinal"] as? Number)?.toInt() ?: 0
                 )
             }
         }
@@ -135,6 +172,8 @@ object RestorativeEnforcement {
                     .put("attentionDayId", gate.attentionDayId)
                     .put("requirementKind", gate.requirementKind)
                     .put("status", gate.status)
+                    .put("selectedProvider", gate.selectedProvider)
+                    .put("dailyCooldownOrdinal", gate.dailyCooldownOrdinal)
             )
         }
         root.put("restorativeGates", gates)
@@ -169,7 +208,9 @@ object RestorativeEnforcement {
                             "groupId" to obj.optString("groupId"),
                             "attentionDayId" to obj.optString("attentionDayId"),
                             "requirementKind" to obj.optString("requirementKind"),
-                            "status" to obj.optString("status")
+                            "status" to obj.optString("status"),
+                            "selectedProvider" to obj.optString("selectedProvider", "none"),
+                            "dailyCooldownOrdinal" to obj.optInt("dailyCooldownOrdinal")
                         )
                     )
                 }
