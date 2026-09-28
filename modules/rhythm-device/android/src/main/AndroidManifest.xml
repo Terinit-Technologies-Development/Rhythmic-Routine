@@ -49,6 +49,12 @@
             android:exported="true"
             android:readPermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS"
             android:writePermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
+        <provider
+            android:name=".EveningSignalProvider"
+            android:authorities="${applicationId}.evening-signal"
+            android:exported="true"
+            android:readPermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS"
+            android:writePermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
     </application>
 
 </manifest>

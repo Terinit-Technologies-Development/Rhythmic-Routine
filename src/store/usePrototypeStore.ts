@@ -294,6 +294,8 @@ interface PrototypeState {
   selectRestorativeProvider: (groupId: string, provider: RestorativeProvider) => Promise<void>;
   /** Pass 3: launch the bound cooldown Meditation session. */
   launchMeditationForGate: (groupId: string) => Promise<boolean>;
+  /** Pass 4: bind the gate's Reader recovery session (1800s / 11p) and open Reader. */
+  launchReaderForGate: (groupId: string) => Promise<boolean>;
   /** Pass 3: refresh Meditation evidence for the bound session (fail-closed). */
   refreshMeditationEvidence: (groupId: string) => Promise<void>;
   refreshInsights: () => Promise<void>;
@@ -1389,6 +1391,32 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       requiredQualifiedSeconds: gate.requiredMeditationSeconds ?? 1800,
     });
     return nativeMeditationBridge.startMeditationRecoverySession(request);
+  },
+
+  launchReaderForGate: async (groupId) => {
+    // Bind the gate's recovery session to Reader (the v1 recovery protocol:
+    // 1800 active seconds / 11 qualified pages for THIS session id) and open
+    // Reader. The bound session can satisfy exactly one gate.
+    const runtime = RhythmCoordinator.getInstance().getRuntimeSnapshot();
+    const gate = runtime?.activeRestorativeGates?.[groupId];
+    if (!gate?.providerSessionId) return false;
+    let started = false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
+      started =
+        (await RhythmDeviceModule.startRecoverySession({
+          sessionId: gate.providerSessionId,
+          requiredSeconds: gate.requiredRestorativeReadingSeconds ?? 1800,
+          requiredPages: gate.requiredRestorativeQualifiedPages ?? 11,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+        })) === true;
+    } catch {
+      started = false;
+    }
+    await get().openRhythmicReader();
+    return started;
   },
 
   refreshMeditationEvidence: async (groupId) => {

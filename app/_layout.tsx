@@ -77,7 +77,7 @@ export default function RootLayout() {
           </Stack>
 
           {/* Web-only interactive state simulation switcher */}
-          {Platform.OS === 'web' && <DemoStateSwitcher />}
+          {(Platform.OS === 'web' || __DEV__) && <DemoStateSwitcher />}
 
           {/* Global Modals */}
           <TimeSelectorModal />

@@ -29,6 +29,7 @@ export default function TouchGrassScreen() {
   const restorativeStatus = usePrototypeStore((s) => s.restorativeStatus);
   const selectRestorativeProvider = usePrototypeStore((s) => s.selectRestorativeProvider);
   const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
+  const launchReaderForGate = usePrototypeStore((s) => s.launchReaderForGate);
   const refreshMeditationEvidence = usePrototypeStore((s) => s.refreshMeditationEvidence);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
@@ -190,7 +191,7 @@ export default function TouchGrassScreen() {
                   void launchMeditationForGate(restorativeStatus.groupId);
                   void refreshMeditationEvidence(restorativeStatus.groupId);
                 } else {
-                  void continueReading();
+                  void launchReaderForGate(restorativeStatus.groupId);
                 }
               }}
               meditationUnavailableReason={
