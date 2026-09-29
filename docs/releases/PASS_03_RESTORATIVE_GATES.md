@@ -2,8 +2,13 @@
 
 Status: **Pass 3 implemented, tested, and committed on `feat/pass-03-restorative-gates`.**
 This document is the Pass 3 handoff (spec section 58). Physical-device
-validation (spec 55) has NOT been run in this environment — the checklist is
-below and its results must be recorded before enforcement ships.
+validation (spec 55) was attempted on a Redmi Note 13 Pro+ 5G (Android 16/API
+36), but is **incomplete and blocked**: Android reports Usage Access allowed
+and Routine's Accessibility Service enabled/bound, while Routine itself reports
+restriction authorization denied and capability `foundation-only`. A saved
+Risk-app assignment also failed to appear in the native enforcement policy,
+and launching that app produced no Routine intervention. Spec 55 is therefore
+not passed and enforcement is not ready to ship.
 
 ---
 
@@ -237,11 +242,36 @@ Old tests updated only where they asserted the obsolete cumulative escalation
 regressions in cooldowns, restrictions, accountability, native ledger, or
 persistence beyond the intended policy change.
 
-## 13. Device validation (spec 55) — REQUIRED, NOT RUN HERE
+## 13. Device validation (spec 55) — INCOMPLETE, BLOCKED
 
-No physical device is available in this environment. Before Pass 3 enforcement
-ships, install **Routine Pass 3 + Reader v1.2.0 + Meditation af4c894+** with
-compatible signing identity and record results for:
+Device: **Xiaomi Redmi Note 13 Pro+ 5G** (`23129RN51X`), Android 16/API 36.
+Routine was installed from the current development build for this branch;
+Reader and Meditation were also installed. The user enabled Routine's
+Accessibility Service and Usage Access during the session. Android reported
+`GET_USAGE_STATS: allow`, the enabled accessibility component was
+`com.terinit.rhythmicroutine/expo.modules.rhythmdevice.RhythmEnforcementService`,
+and `dumpsys accessibility` showed it bound. However, Routine's Settings UI
+continued to report **Screen Time & Shielding Authorization: DENIED** and
+**Restriction Capability: FOUNDATION ONLY**.
+
+The device test classified **Block Blast!** (`com.block.juggle`) as Risk in
+Social Feeds. SQLite preferences confirmed both the Risk classification and
+group membership were persisted. After relaunching Routine, its native policy
+snapshot still contained `risk_group_policies_json: []`,
+`routine_schedule_json.allRiskPackages: []`, and a cooldown with an empty
+`packageNames` list. Launching Block Blast! produced no Routine intervention.
+This establishes a native projection/enforcement integration blocker; it does
+not establish successful live enforcement.
+
+The debug state switcher displayed a Social cooldown, but the persisted daily
+attention state remained at `cooldownsTriggered: 0`, and the native cooldown
+had no attention-day ordinal or gate requirements. This is not valid evidence
+for CD1–CD6 behavior.
+
+Before Pass 3 enforcement ships, resolve the contradictory permission status
+and ensure the saved Risk-app policy reaches the native snapshot. Then install
+**Routine Pass 3 + Reader v1.2.0 + Meditation af4c894+** with compatible
+signing identity and record results for:
 
 A. Morning Buffer → Meditation Required (nonessential blocked; Essential +
    Meditation + Routine reachable) · B. Screen-off meditation continues
@@ -253,22 +283,23 @@ A. Morning Buffer → Meditation Required (nonessential blocked; Essential +
    K. Routine restart with active gate (ids stable) · L. Meditation process
    recovery (checkpointed time only).
 
-Pass 2 physical QA checklist (force-stop recovery, real 30-minute session with
-screen-off) is also outstanding — it is the **decision gate for the meditation
-foreground service**: if screen-off sessions prove unreliable under Android
-process management, add the narrowest active-session foreground service (quiet
-notification, stops on complete/cancel, same monotonic/checkpoint semantics, no
-wake locks unless separately proven). Provider-runtime problems must never be
-fixed by weakening gate verification.
+Meditation-side session QA (screen-off qualification, force-stop recovery,
+Essential interruption, and foreground-service behavior) is recorded in
+`Rhythmic-Meditation/docs/PASS_04_HANDOFF.md`; the narrow active-session
+foreground service was required by device evidence and verified there. Those
+provider-session results do not close the Routine policy-projection and
+enforcement blocker above. Provider-runtime problems must never be fixed by
+weakening gate verification.
 
 ## 14. Known limitations
 
-- **Device enforcement wiring is partially complete**: the JS snapshot sends
-  the Pass 3 fields and native `RestorativeEnforcement` persists + evaluates
-  holds (`hasGroupAttentionHold`, `hasMorningFocusHold`), but the full
-  AccessibilityService enforcement path (overlay text, restriction application
-  driven by the morning focus for every managed package) needs the device
-  validation pass to complete and tune.
+- **Release blocker — native device projection is not verified.** On the tested
+  device the app's saved Risk assignment did not appear in native policy
+  storage, and the app reported enforcement as `foundation-only` despite the
+  Android Accessibility Service being enabled and bound. Morning Focus,
+  restorative-gate holds, and intervention UX therefore remain unverified on
+  hardware until this sync/status discrepancy is resolved and the device matrix
+  passes.
 - Meditation Focus treats "managed" packages (risk groups + base restrictions)
   as restricted; unmanaged system/essential apps are untouched on the native
   side (JS-side union uses the Essential classification explicitly).
