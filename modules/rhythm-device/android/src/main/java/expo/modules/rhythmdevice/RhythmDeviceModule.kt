@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -148,9 +149,10 @@ class RhythmDeviceModule : Module() {
     AsyncFunction("setBaseRestrictions") { packageNames: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).apply()
+      val saved = prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).commit()
       RhythmEnforcementService.instance?.onBaseRestrictionsChanged()
-      return@AsyncFunction checkAccessibilityPermission(context)
+      // Honest save semantics: the write result, not a capability report.
+      return@AsyncFunction saved
     }
 
     AsyncFunction("resetEnforcementState") {
@@ -292,6 +294,11 @@ class RhythmDeviceModule : Module() {
         .filter { it.attentionDateKey == RhythmEnforcementService.getLocalDateKey() }
       val evidence = RhythmEnforcementService.loadDailyReadingEvidence(context)
         ?.takeIf { it.dateKey == RhythmEnforcementService.getLocalDateKey() }
+      // Blocker remediation: projection-proof of what native enforcement
+      // actually holds (bounded sample only; never the installed-app inventory).
+      val riskPolicies = RhythmEnforcementService.loadRiskGroupPolicies(context)
+      val riskPackages = riskPolicies.flatMap { it.packageNames }.toSet()
+      val routineRiskPackages = schedule.allRiskPackages
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
@@ -306,6 +313,10 @@ class RhythmDeviceModule : Module() {
         "readingGateCount" to gates.size,
         "readerProviderAvailable" to evidence?.providerAvailable,
         "readerProtocolCompatible" to evidence?.protocolCompatible,
+        "riskPolicyCount" to riskPolicies.size,
+        "riskPackageCount" to riskPackages.size,
+        "routineRiskPackageCount" to routineRiskPackages.size,
+        "riskPackageSample" to riskPackages.sorted().take(10),
       )
       val foregroundPolicy = service?.lastForegroundPackage?.let { pkg ->
         RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }
@@ -358,6 +369,24 @@ class RhythmDeviceModule : Module() {
         result["accountedWatermarkCount"] = watermarks.size
       }
       return@AsyncFunction result
+    }
+
+    /**
+     * QA-only (debuggable builds): seeds the group usage ledger to its allowance
+     * boundary and re-enters the PRODUCTION allowance-exhaustion transition.
+     * Every returned field is read back from production-allocated state — the
+     * hook never constructs cooldowns, ordinals, gates, or evidence.
+     */
+    AsyncFunction("seedGroupAllowanceExhaustionForQa") { groupId: String, packageName: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction mapOf<String, Any?>(
+        "enabled" to false,
+        "error" to "no-react-context"
+      )
+      val service = RhythmEnforcementService.instance ?: return@AsyncFunction mapOf<String, Any?>(
+        "enabled" to false,
+        "error" to "enforcement-service-not-bound"
+      )
+      return@AsyncFunction service.runQaAllowanceExhaustion(groupId, packageName)
     }
 
     AsyncFunction("applyShieldRestrictions") { _: List<String> ->
@@ -625,15 +654,65 @@ class RhythmDeviceModule : Module() {
     return mode == AppOpsManager.MODE_ALLOWED
   }
 
+  /**
+   * Verifies that Routine's OWN enforcement service is enabled. Two sources:
+   * the AccessibilityManager service list (primary) and the system secure
+   * settings value (compatibility fallback for OEM builds where the manager
+   * list is filtered while the service is genuinely enabled and bound). Both
+   * must identify Routine's exact service — never "any accessibility service".
+   */
   private fun checkAccessibilityPermission(context: Context): Boolean {
-    val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
-    val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-    val expectedServiceName = "${context.packageName}/${RhythmEnforcementService::class.java.name}"
-    for (service in enabledServices) {
-      if (service.id.equals(expectedServiceName, ignoreCase = true) || service.id.endsWith(RhythmEnforcementService::class.java.simpleName)) {
-        return true
-      }
-    }
-    return false
+    val expected = ComponentName(context, RhythmEnforcementService::class.java)
+
+    val managerMatch = (
+      context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+    )
+      ?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+      ?.any { info ->
+        val serviceInfo = info.resolveInfo?.serviceInfo
+        serviceInfo != null &&
+          ComponentName(serviceInfo.packageName, serviceInfo.name) == expected
+      } == true
+
+    if (managerMatch) return true
+
+    val accessibilityEnabled = Settings.Secure.getInt(
+      context.contentResolver,
+      Settings.Secure.ACCESSIBILITY_ENABLED,
+      0
+    ) == 1
+
+    if (!accessibilityEnabled) return false
+
+    val enabled = Settings.Secure.getString(
+      context.contentResolver,
+      Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ).orEmpty()
+
+    return enabledServiceListContains(enabled, expected.flattenToString())
   }
+}
+
+/**
+ * Normalizes one ENABLED_ACCESSIBILITY_SERVICES entry to "package/class" and
+ * compares against the expected flattened ComponentName. Relative class names
+ * (".Service") are expanded against the entry's package. Pure — unit-testable
+ * without Android framework classes.
+ */
+internal fun enabledServiceListContains(enabledServices: String, expectedFlattened: String): Boolean {
+  val expected = expectedFlattened.trim()
+  return enabledServices.split(':')
+    .mapNotNull { normalizeEnabledServiceEntry(it) }
+    .any { it.equals(expected, ignoreCase = true) }
+}
+
+internal fun normalizeEnabledServiceEntry(entry: String): String? {
+  val trimmed = entry.trim()
+  if (trimmed.isEmpty()) return null
+  val separator = trimmed.indexOf('/')
+  if (separator <= 0 || separator == trimmed.length - 1) return null
+  val pkg = trimmed.substring(0, separator)
+  var cls = trimmed.substring(separator + 1)
+  if (cls.startsWith(".")) cls = pkg + cls
+  return "$pkg/$cls"
 }

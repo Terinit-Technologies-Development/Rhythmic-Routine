@@ -6,6 +6,55 @@ import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExch
 import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
 import { getLocalDateKey } from '../domain/rhythm/allowance';
 
+/** Ordered native-projection stages; the first failure aborts and is recorded. */
+export type NativeSyncStage =
+  | 'module'
+  | 'attention-policy'
+  | 'attention-state'
+  | 'base-restrictions'
+  | 'risk-policies'
+  | 'cooldowns'
+  | 'routine-schedule';
+
+/** Evidence of one native-projection attempt. Never silent. */
+export interface NativeSyncDiagnostics {
+  success: boolean;
+  failedStage?: NativeSyncStage;
+  error?: string;
+  updatedAt: number;
+}
+
+/**
+ * Deep-removes keys whose value is `undefined`. The Expo bridge's Kotlin
+ * `Map<String, Any?>` conversion rejects `undefined`-valued keys inside nested
+ * maps, and a rejected conversion aborted the entire projection chain silently.
+ */
+export function sanitizeForNative<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForNative(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (item === undefined) continue;
+      out[key] = sanitizeForNative(item);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+/** A native write is only real when the native side confirmed persistence. */
+export function requireNativeSave(
+  stage: NativeSyncStage,
+  method: string,
+  saved: unknown
+): void {
+  if (saved !== true) {
+    throw new Error(`${method} returned ${String(saved)} (native save not confirmed)`);
+  }
+}
+
 export interface IOSNativeGroupPolicy {
   groupId: string;
   selectionRef?: string;
@@ -58,11 +107,18 @@ export interface NativeRhythmSyncProvider {
   sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void>;
   getSnapshot?(): Promise<IOSSharedRhythmSnapshot | null>;
   getAndroidSnapshot?(): Promise<NativeAttentionExchangeSnapshot | null>;
+  /** Evidence of the last native projection attempt (never silent). */
+  getLastSyncDiagnostics?(): NativeSyncDiagnostics;
+  /** Forces the next sync to re-project every native policy payload. */
+  forceReproject?(): void;
 }
 
 export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
+  private lastSyncDiagnostics: NativeSyncDiagnostics = { success: true, updatedAt: 0 };
+
   async sync(_runtime: RhythmRuntime, _config: RhythmConfiguration): Promise<void> {
     // No-op for web/mock environments
+    this.lastSyncDiagnostics = { success: true, updatedAt: Date.now() };
   }
 
   async getSnapshot(): Promise<IOSSharedRhythmSnapshot | null> {
@@ -71,6 +127,14 @@ export class NoopNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
 
   async getAndroidSnapshot(): Promise<NativeAttentionExchangeSnapshot | null> {
     return null;
+  }
+
+  getLastSyncDiagnostics(): NativeSyncDiagnostics {
+    return { ...this.lastSyncDiagnostics };
+  }
+
+  forceReproject(): void {
+    // Nothing to re-project in a no-op environment.
   }
 }
 
@@ -119,11 +183,62 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   private lastAndroidCooldownsSignature?: string;
   private lastAndroidAttentionPolicySignature?: string;
   private lastAndroidAttentionStateSignature?: string;
+  private syncStage: NativeSyncStage | undefined;
+  private lastSyncDiagnostics: NativeSyncDiagnostics = { success: true, updatedAt: 0 };
+  private lastProjectionCheckAt = 0;
+
+  private static readonly PROJECTION_CHECK_INTERVAL_MS = 30_000;
+
+  /** Evidence of the last native projection attempt (never silent). */
+  getLastSyncDiagnostics(): NativeSyncDiagnostics {
+    return { ...this.lastSyncDiagnostics };
+  }
+
+  /** Forces the next sync to re-project every native policy payload. */
+  forceReproject(): void {
+    this.lastAndroidBaseRestrictionsSignature = undefined;
+    this.lastAndroidRiskPoliciesSignature = undefined;
+    this.lastAndroidRoutineScheduleSignature = undefined;
+    this.lastAndroidCooldownsSignature = undefined;
+    this.lastAndroidAttentionPolicySignature = undefined;
+    this.lastAndroidAttentionStateSignature = undefined;
+    this.lastProjectionCheckAt = 0;
+  }
+
+  /**
+   * Projection-consistency invariant (self-healing): when JS holds Risk packages
+   * but native reports none, the native policy is out of sync — re-project the
+   * full payload instead of trusting a stale signature cache. Bounded by a
+   * cheap read at most once per PROJECTION_CHECK_INTERVAL_MS.
+   */
+  private async reprojectOnNativePolicyMismatch(
+    riskPolicies: NativeRiskGroupPolicy[]
+  ): Promise<void> {
+    const expected = new Set(riskPolicies.flatMap((policy) => policy.packageNames)).size;
+    if (expected === 0) return;
+    const now = Date.now();
+    if (now - this.lastProjectionCheckAt < PlatformNativeRhythmSyncProvider.PROJECTION_CHECK_INTERVAL_MS) return;
+    this.lastProjectionCheckAt = now;
+    try {
+      const diagnostics = await RhythmDeviceModule.getEnforcementDiagnostics();
+      // Only a real native module reports meaningful counts; a fallback shim has
+      // nothing to heal.
+      if (diagnostics?.nativeModuleAvailable !== true) return;
+      const nativeCount = diagnostics.riskPackageCount;
+      if (typeof nativeCount === 'number' && nativeCount !== expected) {
+        this.forceReproject();
+      }
+    } catch {
+      // Advisory only; the write that follows still verifies its own result.
+    }
+  }
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
+    this.syncStage = undefined;
     try {
       const os = getPlatformOS();
       if (os === 'ios') {
+        this.syncStage = 'module';
         const groups: IOSNativeGroupPolicy[] = config.riskGroups.map((g) => ({
           groupId: g.id,
           selectionRef: g.nativeSelectionRef,
@@ -198,18 +313,31 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
           }
         }
       } else if (os === 'android') {
+        // The bridge must be the REAL native module: on a device, fallback writes
+        // fail — they must never silently simulate success.
+        this.syncStage = 'module';
+        const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
+        if (!moduleDiagnostics.available) {
+          throw new Error(
+            `RhythmDevice native module unavailable (${moduleDiagnostics.source}${moduleDiagnostics.loadError ? `: ${moduleDiagnostics.loadError}` : ''})`
+          );
+        }
+
         // Seed native defaults and an empty native store before any group-policy
         // update can cause the AccessibilityService to evaluate an exhausted ledger.
-        const attentionPolicy = { ...DEFAULT_READING_ATTENTION_POLICY };
+        this.syncStage = 'attention-policy';
+        const attentionPolicy = sanitizeForNative({ ...DEFAULT_READING_ATTENTION_POLICY });
         const attentionPolicySignature = JSON.stringify(attentionPolicy);
         if (
           RhythmDeviceModule.setAttentionExchangePolicy &&
           this.lastAndroidAttentionPolicySignature !== attentionPolicySignature
         ) {
           const saved = await RhythmDeviceModule.setAttentionExchangePolicy(attentionPolicy);
-          if (saved !== false) this.lastAndroidAttentionPolicySignature = attentionPolicySignature;
+          requireNativeSave('attention-policy', 'setAttentionExchangePolicy', saved);
+          this.lastAndroidAttentionPolicySignature = attentionPolicySignature;
         }
 
+        this.syncStage = 'attention-state';
         if (RhythmDeviceModule.setAttentionExchangeState) {
           const activeCooldowns = Object.entries(runtime.activeCooldowns || {})
             .filter(([, cooldown]) => cooldown.endsAt > Date.now())
@@ -228,7 +356,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 requiredQualifiedPages: cooldown.requiredQualifiedPages,
               };
             });
-          const attentionState = {
+          const attentionState = sanitizeForNative({
             dailyAttentionExchange: runtime.dailyAttentionExchange ?? {
               dateKey: getLocalDateKey(),
               cooldownsTriggered: 0,
@@ -277,23 +405,27 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 }
               : null,
             officialCompanionPackages: [...OFFICIAL_COMPANION_PACKAGES],
-          };
+          });
           const attentionStateSignature = JSON.stringify(attentionState);
           if (this.lastAndroidAttentionStateSignature !== attentionStateSignature) {
             const saved = await RhythmDeviceModule.setAttentionExchangeState(attentionState);
-            if (saved !== false) this.lastAndroidAttentionStateSignature = attentionStateSignature;
+            requireNativeSave('attention-state', 'setAttentionExchangeState', saved);
+            this.lastAndroidAttentionStateSignature = attentionStateSignature;
           }
         }
 
         // Clear opaque base restrictions so native solely evaluates routines, cooldowns, and allowances
+        this.syncStage = 'base-restrictions';
         if (this.lastAndroidBaseRestrictionsSignature !== '[]') {
-          await RhythmDeviceModule.setBaseRestrictions([]);
+          const saved = await RhythmDeviceModule.setBaseRestrictions([]);
+          requireNativeSave('base-restrictions', 'setBaseRestrictions', saved);
           this.lastAndroidBaseRestrictionsSignature = '[]';
         }
 
         // 1. Sync one shared policy per configured Risk Group.
+        this.syncStage = 'risk-policies';
         if (RhythmDeviceModule.setRiskGroupPolicies) {
-          const riskPolicies = config.riskGroups.map((group) => {
+          const riskPolicies = sanitizeForNative(config.riskGroups.map((group) => {
             const activity = offlineActivities.find((item) => item.id === (group.recoveryActivityId ?? 'walk')) ?? offlineActivities.find((item) => item.id === 'walk');
             return {
             groupId: group.id,
@@ -310,17 +442,22 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             },
           };
           }).filter((policy) => policy.packageNames.length > 0)
-            .sort((a, b) => a.groupId.localeCompare(b.groupId));
+            .sort((a, b) => a.groupId.localeCompare(b.groupId)));
+          // Self-healing: a stale signature cache must never mask a native
+          // projection that lost its packages.
+          await this.reprojectOnNativePolicyMismatch(riskPolicies);
           const policySig = JSON.stringify(riskPolicies);
           if (this.lastAndroidRiskPoliciesSignature !== policySig) {
-            await RhythmDeviceModule.setRiskGroupPolicies(riskPolicies);
+            const saved = await RhythmDeviceModule.setRiskGroupPolicies(riskPolicies);
+            requireNativeSave('risk-policies', 'setRiskGroupPolicies', saved);
             this.lastAndroidRiskPoliciesSignature = policySig;
           }
         }
 
         // 2. Sync explicit active cooldown policies
+        this.syncStage = 'cooldowns';
         if (RhythmDeviceModule.setCooldownPolicies) {
-          const cooldownPolicies = Object.entries(runtime.activeCooldowns || {})
+          const cooldownPolicies = sanitizeForNative(Object.entries(runtime.activeCooldowns || {})
             .filter(([, cd]) => cd.endsAt > Date.now())
             .map(([gid, cd]) => {
               const grp = config.riskGroups.find((g) => g.id === gid);
@@ -338,16 +475,18 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               };
             })
             .filter((p) => p.packageNames.length > 0)
-            .sort((a, b) => a.groupId.localeCompare(b.groupId));
+            .sort((a, b) => a.groupId.localeCompare(b.groupId)));
 
           const cdSig = JSON.stringify(cooldownPolicies);
           if (this.lastAndroidCooldownsSignature !== cdSig) {
-            await RhythmDeviceModule.setCooldownPolicies(cooldownPolicies);
+            const saved = await RhythmDeviceModule.setCooldownPolicies(cooldownPolicies);
+            requireNativeSave('cooldowns', 'setCooldownPolicies', saved);
             this.lastAndroidCooldownsSignature = cdSig;
           }
         }
 
         // 3. Sync native routine schedule with explicit window types and allRiskPackages
+        this.syncStage = 'routine-schedule';
         if (RhythmDeviceModule.setRoutineSchedule) {
           const allRiskPackages = config.apps
             .filter((a) => a.classification === 'risk')
@@ -383,19 +522,27 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             })
             .sort((a, b) => a.id.localeCompare(b.id));
 
-          const scheduleInput = {
+          const scheduleInput = sanitizeForNative({
             windows: scheduleWindows,
             allRiskPackages,
-          };
+          });
           const schedSig = JSON.stringify(scheduleInput);
           if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
-            await RhythmDeviceModule.setRoutineSchedule(scheduleInput);
+            const saved = await RhythmDeviceModule.setRoutineSchedule(scheduleInput);
+            requireNativeSave('routine-schedule', 'setRoutineSchedule', saved);
             this.lastAndroidRoutineScheduleSignature = schedSig;
           }
         }
       }
-    } catch {
-      // Platform sync boundary
+      this.lastSyncDiagnostics = { success: true, updatedAt: Date.now() };
+    } catch (error) {
+      // Evidence, never silence: record exactly which stage failed and why.
+      this.lastSyncDiagnostics = {
+        success: false,
+        ...(this.syncStage ? { failedStage: this.syncStage } : {}),
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: Date.now(),
+      };
     }
   }
 

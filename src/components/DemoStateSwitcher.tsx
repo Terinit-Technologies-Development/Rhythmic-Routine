@@ -37,6 +37,9 @@ export const DemoStateSwitcher: React.FC = () => {
   const rhythmState = usePrototypeStore((s) => s.rhythmState);
   const setRhythmState = usePrototypeStore((s) => s.setRhythmState);
   const simulateCooldown = usePrototypeStore((s) => s.simulateCooldown);
+  const triggerProductionAllowanceExhaustionForQa = usePrototypeStore(
+    (s) => s.triggerProductionAllowanceExhaustionForQa
+  );
   const simulateRiskSession = usePrototypeStore((s) => s.simulateRiskSession);
   const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const routineWindows = usePrototypeStore((s) => s.routineWindows);
@@ -92,8 +95,8 @@ export const DemoStateSwitcher: React.FC = () => {
     },
     {
       id: 'cooldown',
-      label: 'Touch Grass Cooldown',
-      description: `${allowance} min allowance reached, ${cooldown} min recovery countdown`,
+      label: 'Touch Grass Cooldown (demo UI only)',
+      description: `UI-only ${cooldown} min countdown — creates NO ordinal and NO restorative gate`,
       icon: Waves,
       color: colors.skyDark,
       bg: colors.skyLight,
@@ -214,6 +217,48 @@ export const DemoStateSwitcher: React.FC = () => {
             <Sparkles size={18} color={colors.forest} />
             <Text style={styles.actionBtnText}>Revisit Onboarding Flow</Text>
           </TouchableOpacity>
+
+          {activeGroup && (activeGroup.appIds?.length ?? 0) > 0 && (
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={async () => {
+                setVisible(false);
+                const packageName = activeGroup.appIds[0];
+                if (!packageName) return;
+                await triggerProductionAllowanceExhaustionForQa(activeGroup.id, packageName);
+              }}
+            >
+              <Zap size={18} color={colors.forest} />
+              <Text style={styles.actionBtnText}>
+                QA: Exhaust {activeGroup.name} Allowance (production path)
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {riskGroups
+            .filter(
+              (group) =>
+                Boolean(group) &&
+                group.id !== activeGroup?.id &&
+                (group.appIds?.length ?? 0) > 0
+            )
+            .map((group) => (
+              <TouchableOpacity
+                key={group.id}
+                style={styles.actionBtn}
+                onPress={async () => {
+                  setVisible(false);
+                  const packageName = group.appIds?.[0];
+                  if (!packageName) return;
+                  await triggerProductionAllowanceExhaustionForQa(group.id, packageName);
+                }}
+              >
+                <Zap size={18} color={colors.forest} />
+                <Text style={styles.actionBtnText}>
+                  QA: Exhaust {group.name} Allowance (production path)
+                </Text>
+              </TouchableOpacity>
+            ))}
 
           <TouchableOpacity
             style={[styles.actionBtn, styles.resetBtn]}

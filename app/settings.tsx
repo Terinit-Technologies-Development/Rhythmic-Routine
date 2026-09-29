@@ -26,7 +26,7 @@ import { useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../src/theme/tokens';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { getPlatformServices } from '../src/platform/PlatformServices';
-import RhythmDeviceModule from '../modules/rhythm-device';
+import RhythmDeviceModule, { getRhythmNativeModuleDiagnostics } from '../modules/rhythm-device';
 import { AndroidAccessibilityDisclosure } from '../src/components/AndroidAccessibilityDisclosure';
 import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
 
@@ -44,26 +44,54 @@ export default function SettingsScreen() {
   const [showDisclosureModal, setShowDisclosureModal] = useState(false);
   const [isSelectingApps, setIsSelectingApps] = useState(false);
   const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [moduleDiagnostics, setModuleDiagnostics] = useState<any>(null);
+  const [syncDiagnostics, setSyncDiagnostics] = useState<any>(null);
+  const apps = usePrototypeStore((s) => s.apps);
 
-  const fetchDiagnostics = async () => {
+  const collectDiagnostics = async () => {
+    const moduleDiag = getRhythmNativeModuleDiagnostics();
+    const syncProvider = getPlatformServices().nativeRhythm;
+    const syncDiag = syncProvider.getLastSyncDiagnostics ? syncProvider.getLastSyncDiagnostics() : null;
+    let enforcement: any = null;
     if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
       try {
-        const diag = await RhythmDeviceModule.getEnforcementDiagnostics();
-        setDiagnostics(diag);
+        enforcement = await RhythmDeviceModule.getEnforcementDiagnostics();
       } catch {
         // Non-fatal
       }
     }
+    return { moduleDiag, syncDiag, enforcement };
+  };
+
+  const fetchDiagnostics = async () => {
+    const { moduleDiag, syncDiag, enforcement } = await collectDiagnostics();
+    setModuleDiagnostics(moduleDiag);
+    if (syncDiag) setSyncDiagnostics(syncDiag);
+    if (enforcement) setDiagnostics(enforcement);
   };
 
   useEffect(() => {
     checkPermissions();
-    if (Platform.OS === 'android' && RhythmDeviceModule.getEnforcementDiagnostics) {
-      RhythmDeviceModule.getEnforcementDiagnostics()
-        .then((diag) => setDiagnostics(diag))
-        .catch(() => {});
-    }
+    let cancelled = false;
+    collectDiagnostics()
+      .then(({ moduleDiag, syncDiag, enforcement }) => {
+        if (cancelled) return;
+        setModuleDiagnostics(moduleDiag);
+        if (syncDiag) setSyncDiagnostics(syncDiag);
+        if (enforcement) setDiagnostics(enforcement);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [checkPermissions]);
+
+  // Projection-consistency invariant: JS holding Risk apps while native holds
+  // none means the native policy is out of sync — never "healthy enforced".
+  const jsRiskAppCount = apps.filter((a) => a.classification === 'risk').length;
+  const nativeRiskPackageCount = typeof diagnostics?.riskPackageCount === 'number' ? diagnostics.riskPackageCount : null;
+  const nativePolicyHealthy =
+    nativeRiskPackageCount === null ? null : jsRiskAppCount === 0 || nativeRiskPackageCount > 0;
 
   const requestRestriction = async () => {
     const { permissions } = getPlatformServices();
@@ -332,7 +360,69 @@ export default function SettingsScreen() {
 
             <View style={styles.diagGrid}>
               <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Native Module</Text>
+                <Text style={[styles.diagValue, { color: moduleDiagnostics?.available ? colors.forest : colors.coralDark }]}>
+                  {moduleDiagnostics?.available ? 'AVAILABLE' : `FALLBACK${moduleDiagnostics?.loadError ? ' — ' + moduleDiagnostics.loadError : ''}`}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
                 <Text style={styles.diagLabel}>Accessibility Service</Text>
+                <Text style={[styles.diagValue, { color: permissionState?.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted }]}>
+                  {permissionState?.restrictionAuthorization === 'granted' ? 'BOUND / RECOGNISED' : 'NOT RECOGNISED'}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Restriction Capability</Text>
+                <Text style={[styles.diagValue, { color: permissionState?.restrictionCapability === 'enforced' ? colors.forest : colors.coralDark }]}>
+                  {(permissionState?.restrictionCapability ?? 'unknown').toUpperCase()}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Native Risk Policies</Text>
+                <Text style={styles.diagValue}>{diagnostics?.riskPolicyCount ?? '—'}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Native Risk Packages</Text>
+                <Text style={styles.diagValue}>{diagnostics?.riskPackageCount ?? '—'}</Text>
+              </View>
+              {nativePolicyHealthy === false && (
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Native policy out of sync</Text>
+                  <Text style={[styles.diagValue, { color: colors.coralDark }]}>
+                    {jsRiskAppCount} JS Risk app(s) · {nativeRiskPackageCount} native
+                  </Text>
+                </View>
+              )}
+              {syncDiagnostics && (
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Native Policy Sync</Text>
+                  <Text style={[styles.diagValue, { color: syncDiagnostics.success ? colors.forest : colors.coralDark }]}>
+                    {syncDiagnostics.success
+                      ? 'OK'
+                      : `FAILED${syncDiagnostics.failedStage ? ' @ ' + syncDiagnostics.failedStage : ''}${syncDiagnostics.error ? ' — ' + syncDiagnostics.error : ''}`}
+                  </Text>
+                </View>
+              )}
+              {Array.isArray(diagnostics?.riskPackageSample) && diagnostics.riskPackageSample.length > 0 && (
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Risk Package Sample</Text>
+                  <Text style={styles.diagValue}>{diagnostics.riskPackageSample.join(', ')}</Text>
+                </View>
+              )}
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Last Foreground</Text>
+                <Text style={styles.diagValue}>{diagnostics?.lastForegroundPackage ?? '—'}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Last Intervention</Text>
+                <Text style={styles.diagValue}>{diagnostics?.lastInterventionPackage ?? '—'}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Daily Cooldown Ordinal</Text>
+                <Text style={styles.diagValue}>{diagnostics?.dailyCooldownOrdinal ?? '—'}</Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Enforcement Service Running</Text>
                 <Text style={[styles.diagValue, { color: diagnostics.serviceRunning ? colors.forest : colors.textMuted }]}>
                   {diagnostics.serviceRunning ? 'Active' : 'Inactive'}
                 </Text>

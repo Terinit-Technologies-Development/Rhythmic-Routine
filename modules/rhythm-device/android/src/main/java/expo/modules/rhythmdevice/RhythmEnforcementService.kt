@@ -5,6 +5,7 @@ import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -624,6 +625,57 @@ class RhythmEnforcementService : AccessibilityService() {
             }
         }
     }
+
+    /**
+     * QA-only production-equivalent trigger (debuggable builds). Seeds ONLY the
+     * group usage ledger to its allowance boundary, then enters the same
+     * production transition used when genuine foreground usage reaches the
+     * boundary: startGroupUsage -> exhaustGroup -> allocateCooldown. Ordinal,
+     * cooldown, and gate are produced exclusively by production logic; every
+     * returned field is read back from persisted production state.
+     */
+    @Synchronized
+    fun runQaAllowanceExhaustion(groupId: String, packageName: String): Map<String, Any?> {
+      if (!isQaExhaustionHookEnabled(applicationContext)) {
+        return mapOf("enabled" to false, "error" to "qa-hook-disabled")
+      }
+      val policy = loadRiskGroupPolicies(applicationContext).firstOrNull { it.groupId == groupId }
+        ?: return mapOf("enabled" to true, "error" to "unknown-group")
+      if (policy.packageNames.isEmpty()) {
+        return mapOf("enabled" to true, "error" to "group-has-no-packages")
+      }
+      val now = System.currentTimeMillis()
+      rolloverIfNeeded(now)
+      val dateKey = getLocalDateKey(now)
+      val allowanceMillis = policy.allowanceMinutes * 60_000L
+      val ledger = loadGroupUsageLedger(applicationContext).toMutableMap()
+      val current = ledger[groupId]?.takeIf { it.dateKey == dateKey }
+        ?: NativeGroupAllowanceUsage(groupId, dateKey, 0L, null, null, null, ledger[groupId]?.cycleRevision ?: 0L)
+      ledger[groupId] = current.copy(usedMillis = allowanceMillis, exhaustedAt = null)
+      saveGroupUsageLedger(applicationContext, ledger)
+      // Production transition (identical to genuine boundary crossing):
+      startGroupUsage(policy, packageName, now)
+      val cooldown = loadCooldownPolicies(applicationContext).firstOrNull { it.groupId == groupId }
+      val gate = loadReadingGates(applicationContext)[groupId]
+      val state = loadAttentionExchangeState(applicationContext, now)
+      return mapOf(
+        "enabled" to true,
+        "groupId" to groupId,
+        "seededUsedMillis" to allowanceMillis,
+        "productionTransition" to "startGroupUsage",
+        "cooldownCreated" to (cooldown != null && cooldown.endsAt > now),
+        "cooldownEndsAt" to (cooldown?.endsAt ?: 0L),
+        "dailyCooldownOrdinal" to (cooldown?.dailyCooldownOrdinal ?: 0),
+        "attentionDateKey" to (cooldown?.attentionDateKey ?: ""),
+        "requiredReadingSeconds" to (gate?.requiredReadingSeconds ?: 0L),
+        "requiredQualifiedPages" to (gate?.requiredQualifiedPages ?: 0),
+        "attentionCooldownsTriggered" to state.cooldownsTriggered,
+      )
+    }
+
+    /** Stable public builds are never debuggable: the QA hook is disabled there. */
+    private fun isQaExhaustionHookEnabled(context: Context): Boolean =
+      (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     fun scheduleLeaseExpiry(lease: NativeAccessLease) {
         cancelLeaseExpiry(lease.groupId)

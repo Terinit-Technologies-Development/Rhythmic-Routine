@@ -36,6 +36,7 @@ import {
 } from './attentionExchange';
 import {
   createRestorativeGateForOrdinal,
+  deterministicGateId,
   evaluateRestorativeGate,
   isMeditationPathAllowed,
   selectGateProvider,
@@ -439,6 +440,71 @@ export function processRhythmEvent(
           .filter(([, cooldown]) => cooldown.endsAt > nowMs)
           .map(([groupId, cooldown]) => [groupId, { ...cooldown }])
       ));
+      // Native-allocated cooldowns carry their ordinal + requirements from the
+      // production allocation path (allowance exhaustion). Derive the matching
+      // Restorative Gate here — the same derivation the JS allocation route
+      // performs — so CD3/CD4 gates exist for production cooldowns observed
+      // while JS was absent. Idempotent: deterministic gate ids keep repeated
+      // re-imports from resetting gate progress or identities.
+      {
+        const nativeCycles: {
+          groupId: string;
+          ordinal: number;
+          createdAt: number;
+          cooldownEndsAt: number;
+        }[] = [];
+        for (const cooldown of Object.values(event.activeCooldowns)) {
+          if (
+            cooldown.attentionDateKey === currentDateKey &&
+            typeof cooldown.dailyCooldownOrdinal === 'number' &&
+            cooldown.dailyCooldownOrdinal > 0
+          ) {
+            nativeCycles.push({
+              groupId: cooldown.groupId,
+              ordinal: cooldown.dailyCooldownOrdinal,
+              createdAt: cooldown.startedAt ?? 0,
+              cooldownEndsAt: cooldown.endsAt,
+            });
+          }
+        }
+        for (const gate of Object.values(event.activeReadingGates)) {
+          if (
+            gate.attentionDateKey === currentDateKey &&
+            Number.isInteger(gate.dailyCooldownOrdinal) &&
+            gate.dailyCooldownOrdinal > 0 &&
+            !nativeCycles.some((cycle) => cycle.groupId === gate.groupId)
+          ) {
+            nativeCycles.push({
+              groupId: gate.groupId,
+              ordinal: gate.dailyCooldownOrdinal,
+              createdAt: gate.createdAt,
+              cooldownEndsAt: gate.cooldownEndsAt,
+            });
+          }
+        }
+        for (const cycle of nativeCycles) {
+          const gateId = deterministicGateId({
+            attentionDayId: attentionDay.id,
+            groupId: cycle.groupId,
+            dailyCooldownOrdinal: cycle.ordinal,
+          });
+          const existing = nextRestorativeGates[cycle.groupId];
+          if (existing && existing.gateId === gateId) continue;
+          const gate = createRestorativeGateForOrdinal({
+            groupId: cycle.groupId,
+            attentionDayId: attentionDay.id,
+            dailyCooldownOrdinal: cycle.ordinal,
+            createdAt: cycle.createdAt,
+            cooldownEndsAt: cycle.cooldownEndsAt,
+            gateId,
+          });
+          if (gate) {
+            nextRestorativeGates[cycle.groupId] = gate;
+          } else {
+            delete nextRestorativeGates[cycle.groupId];
+          }
+        }
+      }
       replaceRecord(nextAccessLeases, Object.fromEntries(
         Object.entries(event.activeAccessLeases)
           .filter(([, lease]) => lease.endsAt > nowMs)

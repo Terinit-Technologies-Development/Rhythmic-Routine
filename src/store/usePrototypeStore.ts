@@ -23,6 +23,8 @@ import {
   offlineActivities as defaultOfflineActivities,
 } from '../data/mockData';
 import { getPlatformServices } from '../platform/PlatformServices';
+import RhythmDeviceModule from '../../modules/rhythm-device';
+import type { NativeQaExhaustionResult } from '../../modules/rhythm-device/src/RhythmDevice.types';
 import { MockUsageProvider } from '../platform/mock/MockUsageProvider';
 import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
@@ -303,6 +305,16 @@ interface PrototypeState {
   requestUsagePermission: () => Promise<void>;
   setRhythmState: (state: RhythmState) => Promise<void>;
   simulateCooldown: (groupId?: string) => Promise<void>;
+  /**
+   * DEV/QA only: production-equivalent allowance-exhaustion trigger. Seeds the
+   * native usage ledger boundary and enters the production exhaustion
+   * transition — never constructs cooldowns, ordinals, gates, or evidence.
+   * Disabled in stable public configuration.
+   */
+  triggerProductionAllowanceExhaustionForQa: (
+    groupId: string,
+    packageName: string
+  ) => Promise<NativeQaExhaustionResult>;
   simulateRiskSession: (groupId?: string) => void;
   resolveExpiredTimer: () => Promise<void>;
   resetDemo: () => Promise<void>;
@@ -1635,6 +1647,33 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       endsAt,
       timestamp: Date.now(),
     });
+  },
+
+  triggerProductionAllowanceExhaustionForQa: async (groupId, packageName) => {
+    // DEV/QA only (stable public builds never expose this action; the native
+    // side additionally refuses non-debuggable apps).
+    const qaEnabled =
+      typeof __DEV__ !== 'undefined' ? __DEV__ || getPlatformOS() === 'web' : getPlatformOS() === 'web';
+    if (!qaEnabled) {
+      return { enabled: false, error: 'qa-hook-disabled' };
+    }
+    try {
+      // 1. Seed ONLY the usage ledger boundary; 2. production exhaustion logic
+      // allocates the ordinal, cooldown, and gate. Nothing is constructed here.
+      const result = await RhythmDeviceModule.seedGroupAllowanceExhaustionForQa(
+        groupId,
+        packageName
+      );
+      // Import the production-allocated state immediately (no app restart) so
+      // the JS runtime reflects the real ordinal/gate.
+      await RhythmCoordinator.getInstance().handleAppResume();
+      return result;
+    } catch (error) {
+      return {
+        enabled: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   },
 
   simulateRiskSession: (groupId = 'social') => {

@@ -1231,22 +1231,41 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
   });
 
   describe('4. Platform Synchronization, Discovery Refresh & JS Cadence Invariants', () => {
-    it('FallbackModule provides safe implementations for group allowance methods', async () => {
+    it('FallbackModule reports honest write results (no false-positive native saves)', async () => {
+      // Regression: on a real device (non-web) the fallback shim must NEVER
+      // report a successful native policy write — silent `true` results hid
+      // the native enforcement blocker.
       const ok = await FallbackModule.setRiskGroupPolicies([
         { groupId: 'social', groupName: 'Social', packageNames: ['com.instagram.android'], allowanceMinutes: 30, cooldownMinutes: 15, recoveryActivity: { id: 'walk', title: 'Take a short walk', subtitle: 'Fresh air. Clear mind.', iconEmoji: 'walk' } },
       ]);
-      assert.equal(ok, true);
+      assert.equal(ok, false, 'Fallback setRiskGroupPolicies must not report native success');
+
+      const okSchedule = await FallbackModule.setRoutineSchedule({ windows: [], allRiskPackages: [] });
+      assert.equal(okSchedule, false, 'Fallback setRoutineSchedule must not report native success');
+
+      const okAttention = await FallbackModule.setAttentionExchangeState({});
+      assert.equal(okAttention, false, 'Fallback setAttentionExchangeState must not report native success');
+
+      const okPolicy = await FallbackModule.setAttentionExchangePolicy({
+        freeCooldownCount: 2,
+        baselineActiveSeconds: 3600,
+        baselineQualifiedPages: 36,
+        incrementalActiveSeconds: 1800,
+        incrementalQualifiedPages: 11,
+      });
+      assert.equal(okPolicy, false, 'Fallback setAttentionExchangePolicy must not report native success');
 
       const okCd = await FallbackModule.setCooldownPolicies([
         { groupId: 'social', packageNames: ['com.instagram.android'], endsAt: Date.now() + 60000 },
       ]);
-      assert.equal(okCd, true);
+      assert.equal(okCd, false, 'Fallback setCooldownPolicies must not report native success');
 
       const snapshot = await FallbackModule.getGroupAllowanceSnapshot();
       assert.ok(Array.isArray(snapshot));
 
       const diag = await FallbackModule.getEnforcementDiagnostics();
       assert.equal(diag.serviceRunning, false);
+      assert.equal(diag.nativeModuleAvailable, false);
     });
 
     it('PlatformNativeRhythmSyncProvider synchronizes one shared group policy on Android', async () => {
@@ -1254,6 +1273,13 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       const syncProvider = new PlatformNativeRhythmSyncProvider();
       let policiesReceived: any = null;
 
+      // Healthy native module: every write confirms persistence.
+      (RhythmDeviceModule as any).getNativeModuleDiagnostics = async () => ({ available: true, source: 'native' });
+      (RhythmDeviceModule as any).setAttentionExchangePolicy = async () => true;
+      (RhythmDeviceModule as any).setAttentionExchangeState = async () => true;
+      (RhythmDeviceModule as any).setBaseRestrictions = async () => true;
+      (RhythmDeviceModule as any).setRoutineSchedule = async () => true;
+      (RhythmDeviceModule as any).setCooldownPolicies = async () => true;
       (RhythmDeviceModule as any).setRiskGroupPolicies = async (policies: any[]) => {
         policiesReceived = policies;
         return true;
@@ -1467,6 +1493,13 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
       const syncProvider = new PlatformNativeRhythmSyncProvider();
       let capturedScheduleInput: any = null;
 
+      // Healthy native module: every write confirms persistence.
+      (RhythmDeviceModule as any).getNativeModuleDiagnostics = async () => ({ available: true, source: 'native' });
+      (RhythmDeviceModule as any).setAttentionExchangePolicy = async () => true;
+      (RhythmDeviceModule as any).setAttentionExchangeState = async () => true;
+      (RhythmDeviceModule as any).setBaseRestrictions = async () => true;
+      (RhythmDeviceModule as any).setCooldownPolicies = async () => true;
+      (RhythmDeviceModule as any).setRiskGroupPolicies = async () => true;
       (RhythmDeviceModule as any).setRoutineSchedule = async (schedule: any) => {
         capturedScheduleInput = schedule;
         return true;

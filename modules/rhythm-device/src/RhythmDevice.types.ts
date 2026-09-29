@@ -1,3 +1,15 @@
+/**
+ * Truth about how the JS side reached the native layer. The device must report
+ * `available: true` / `source: 'native'` before enforcement can ever be called
+ * READY — a fallback shim must never be presented as enforcement capable.
+ */
+export interface RhythmNativeModuleDiagnostics {
+  available: boolean;
+  source: 'native' | 'fallback';
+  /** Bounded load-failure reason for QA diagnostics (never a stack trace). */
+  loadError?: string;
+}
+
 export interface NativePermissionStatus {
   hasUsagePermission: boolean;
   hasRestrictionPermission: boolean;
@@ -230,6 +242,35 @@ export interface NativeEnforcementDiagnostics {
   activeReadingRequiredPages?: number;
   readerProviderAvailable?: boolean;
   readerProtocolCompatible?: boolean;
+  /** Whether the JS side reached this data through the real native module. */
+  nativeModuleAvailable?: boolean;
+  /** Native policy projection proof (blocker remediation). */
+  riskPolicyCount?: number;
+  riskPackageCount?: number;
+  routineRiskPackageCount?: number;
+  /** Bounded sample for QA builds; never the full installed-app inventory. */
+  riskPackageSample?: string[];
+}
+
+/**
+ * QA-only result of the production-equivalent allowance-exhaustion trigger.
+ * The trigger seeds the usage ledger boundary and re-enters the production
+ * transition; every policy outcome below is READ BACK from what production
+ * allocated — never constructed by the hook itself.
+ */
+export interface NativeQaExhaustionResult {
+  enabled: boolean;
+  error?: string;
+  groupId?: string;
+  seededUsedMillis?: number;
+  productionTransition?: string;
+  cooldownCreated?: boolean;
+  cooldownEndsAt?: number;
+  dailyCooldownOrdinal?: number;
+  attentionDateKey?: string;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
+  attentionCooldownsTriggered?: number;
 }
 
 export interface NativeRecoveryStatus {

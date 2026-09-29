@@ -1,6 +1,19 @@
-import { Platform } from 'react-native';
 import { PermissionProvider, PermissionState } from '../PermissionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
+
+/** Lazy platform resolution keeps this provider importable in Node test runs. */
+function getPlatformOS(): string {
+  if (process.env.RHYTHM_PLATFORM_OVERRIDE) {
+    return process.env.RHYTHM_PLATFORM_OVERRIDE;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Platform: RNPlatform } = require('react-native');
+    return RNPlatform?.OS || 'web';
+  } catch {
+    return 'web';
+  }
+}
 
 export class NativePermissionProvider implements PermissionProvider {
   async getStatus(): Promise<PermissionState> {
@@ -9,20 +22,27 @@ export class NativePermissionProvider implements PermissionProvider {
       const usageAccess = nativeStatus.hasUsagePermission ? 'granted' : 'denied';
 
       let restrictionAuthorization: PermissionState['restrictionAuthorization'] = 'unsupported';
-      if (Platform.OS === 'ios') {
+      const os = getPlatformOS();
+      if (os === 'ios') {
         if (nativeStatus.familyControlsStatus === 'approved') {
           restrictionAuthorization = 'granted';
         } else if (nativeStatus.familyControlsStatus === 'denied') {
           restrictionAuthorization = 'denied';
         }
-      } else if (Platform.OS === 'android') {
+      } else if (os === 'android') {
         restrictionAuthorization = nativeStatus.hasRestrictionPermission ? 'granted' : 'denied';
       }
+
+      // Capability truth requires BOTH the real native module and the
+      // Accessibility enforcement service. An unavailable bridge must never be
+      // presented as enforcement capable.
+      const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
+      const nativeReady = moduleDiagnostics.available && nativeStatus.hasRestrictionPermission;
 
       return {
         usageAccess,
         restrictionAuthorization,
-        restrictionCapability: nativeStatus.hasRestrictionPermission ? 'enforced' : 'foundation-only',
+        restrictionCapability: nativeReady ? 'enforced' : 'foundation-only',
       };
     } catch {
       return {
@@ -43,9 +63,10 @@ export class NativePermissionProvider implements PermissionProvider {
 
   async requestRestrictionAccess(): Promise<void> {
     try {
-      if (Platform.OS === 'ios') {
+      const os = getPlatformOS();
+      if (os === 'ios') {
         await RhythmDeviceModule.requestFamilyControls();
-      } else if (Platform.OS === 'android') {
+      } else if (os === 'android') {
         await RhythmDeviceModule.requestRestrictionPermission();
       }
     } catch {

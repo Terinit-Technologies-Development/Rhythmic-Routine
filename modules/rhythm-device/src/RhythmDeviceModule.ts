@@ -19,6 +19,8 @@ import {
   NativeMeditationAvailability,
   NativeMeditationSessionEvidence,
   NativeMeditationRecoveryRequestInput,
+  NativeQaExhaustionResult,
+  RhythmNativeModuleDiagnostics,
 } from './RhythmDevice.types';
 
 // Fallback behavior:
@@ -28,6 +30,9 @@ import {
 const isWeb =
   typeof window !== 'undefined' &&
   typeof (window as any).document !== 'undefined';
+
+/** Web/demo may simulate native-policy success; a real device must not. */
+const nativeFallbackSuccess = isWeb;
 
 const fallbackGroupRevisions: Record<string, number> = {};
 const fallbackRollbacks: Record<string, { previousRevision: number; hasSelection: boolean }> = {};
@@ -56,6 +61,8 @@ export const FallbackModule = {
     persistentMonitoringOperational: false,
     expiryMonitoringOperational: false,
   }),
+  getNativeModuleDiagnostics: async (): Promise<RhythmNativeModuleDiagnostics> =>
+    getRhythmNativeModuleDiagnostics(),
   requestUsagePermission: async (): Promise<void> => {},
   requestRestrictionPermission: async (): Promise<void> => {},
   requestFamilyControls: async (): Promise<string> => 'unsupported',
@@ -112,15 +119,18 @@ export const FallbackModule = {
   revokeAuthorization: async (): Promise<void> => {},
   getInstalledApps: async (): Promise<NativeAppInfo[]> => [],
   queryUsageEvents: async (_startTime: number, _endTime: number): Promise<NativeUsageEvent[]> => [],
-  setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
-  setRiskGroupPolicies: async (_policies: NativeRiskGroupPolicyInput[]): Promise<boolean> => true,
+  setBaseRestrictions: async (_packageNames: string[]): Promise<boolean> => isWeb,
+  // Native policy writes must NEVER report success from the fallback shim:
+  // only the web/demo environment may simulate success. A real device without
+  // the RhythmDevice module gets an honest `false` so callers fail closed.
+  setRiskGroupPolicies: async (_policies: NativeRiskGroupPolicyInput[]): Promise<boolean> => nativeFallbackSuccess,
   getGroupUsageSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   getGroupAllowanceSnapshot: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
   reconcileGroupUsage: async (): Promise<NativeGroupAllowanceSnapshot[]> => [],
-  setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => true,
-  setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => true,
-  setAttentionExchangePolicy: async (_policy: NativeReadingAttentionPolicyInput): Promise<boolean> => true,
-  setAttentionExchangeState: async (_snapshot: Record<string, unknown>): Promise<boolean> => true,
+  setRoutineSchedule: async (_schedule: NativeRoutineWindowInput[] | NativeRoutineScheduleInput): Promise<boolean> => nativeFallbackSuccess,
+  setCooldownPolicies: async (_policies: NativeCooldownPolicyInput[]): Promise<boolean> => nativeFallbackSuccess,
+  setAttentionExchangePolicy: async (_policy: NativeReadingAttentionPolicyInput): Promise<boolean> => nativeFallbackSuccess,
+  setAttentionExchangeState: async (_snapshot: Record<string, unknown>): Promise<boolean> => nativeFallbackSuccess,
   getAttentionExchangeSnapshot: async (): Promise<NativeAttentionExchangeSnapshot | null> => null,
   reconcileAttentionExchange: async (): Promise<boolean> => false,
   getEnforcementDiagnostics: async (): Promise<NativeEnforcementDiagnostics> => ({
@@ -128,6 +138,11 @@ export const FallbackModule = {
     baseRestrictedPackageCount: 0,
     activeLeaseCount: 0,
     overlayVisible: false,
+    nativeModuleAvailable: false,
+    riskPolicyCount: 0,
+    riskPackageCount: 0,
+    routineRiskPackageCount: 0,
+    riskPackageSample: [],
   }),
   applyShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
   clearShieldRestrictions: async (_packageNames: string[]): Promise<boolean> => false,
@@ -178,25 +193,52 @@ export const FallbackModule = {
   queryMeditationStatus: async (
     _sessionId: string
   ): Promise<NativeMeditationSessionEvidence | null> => null,
+  seedGroupAllowanceExhaustionForQa: async (
+    _groupId: string,
+    _packageName: string
+  ): Promise<NativeQaExhaustionResult> => ({ enabled: false, error: 'native-module-unavailable' }),
 };
 
 let nativeModuleAvailable = false;
+let nativeModuleLoadError: string | undefined;
 let NativeModule: typeof FallbackModule = FallbackModule;
 
 try {
   // Try loading Expo NativeModulesProxy if available
   const { requireNativeModule } = require('expo-modules-core');
   const mod = requireNativeModule('RhythmDevice');
-  if (mod) {
-    nativeModuleAvailable = true;
-    NativeModule = {
-      ...FallbackModule,
-      ...mod,
-    };
+  if (!mod) {
+    throw new Error('RhythmDevice native module returned null');
   }
-} catch {
-  // Use fallback
+  nativeModuleAvailable = true;
+  NativeModule = {
+    ...FallbackModule,
+    ...mod,
+  };
+} catch (error) {
+  nativeModuleLoadError = error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * Explicit source-of-truth diagnostic: did JS reach the real native module?
+ * QA surfaces must show `AVAILABLE` before enforcement can ever be READY.
+ */
+export function getRhythmNativeModuleDiagnostics(): RhythmNativeModuleDiagnostics {
+  return {
+    available: nativeModuleAvailable,
+    source: nativeModuleAvailable ? 'native' : 'fallback',
+    ...(nativeModuleLoadError ? { loadError: nativeModuleLoadError } : {}),
+  };
+}
+
+const loadedNativeEnforcementDiagnostics = NativeModule.getEnforcementDiagnostics;
+NativeModule = {
+  ...NativeModule,
+  getEnforcementDiagnostics: async () => {
+    const base = await loadedNativeEnforcementDiagnostics();
+    return { ...base, nativeModuleAvailable: nativeModuleAvailable };
+  },
+};
 
 export const isRhythmNativeModuleAvailable = nativeModuleAvailable;
 export default NativeModule;

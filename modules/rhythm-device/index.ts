@@ -1,5 +1,9 @@
-import RhythmDeviceModule, { isRhythmNativeModuleAvailable, FallbackModule } from './src/RhythmDeviceModule';
+import RhythmDeviceModule, {
+  getRhythmNativeModuleDiagnostics,
+  isRhythmNativeModuleAvailable,
+  FallbackModule,
+} from './src/RhythmDeviceModule';
 export * from './src/RhythmDevice.types';
-export { isRhythmNativeModuleAvailable, FallbackModule };
+export { getRhythmNativeModuleDiagnostics, isRhythmNativeModuleAvailable, FallbackModule };
 export default RhythmDeviceModule;
 
