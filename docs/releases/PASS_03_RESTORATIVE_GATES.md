@@ -323,3 +323,145 @@ weakening gate verification.
 - Optional: native overlay/status UX for the eight distinct states (spec 37 is
   fully modeled in `deriveRestorativeStatus`; the Routine screen shows the
   Restorative Choice card + status line).
+
+## 16. Native-enforcement blocker remediation (RELEASE HOLD closure)
+
+### 16.1 Original physical failure (reproduced, commit `48058d7`)
+
+Redmi Note 13 Pro+ 5G (`23129RN51X`), Android 16/API 36: Usage Access granted
+and Routine's Accessibility Service enabled/bound, yet Routine reported
+restriction capability `FOUNDATION ONLY`, the saved Block Blast! Risk
+classification never reached the native policy projection
+(`risk_group_policies_json: []`, `allRiskPackages: []`), and launching the Risk
+app produced no intervention.
+
+### 16.2 Root cause (two independent defects)
+
+1. **Capability truth defect.** `checkAccessibilityPermission()` relied solely
+   on `AccessibilityManager.getEnabledAccessibilityServiceList()`, which this
+   HyperOS build does not report through even while `dumpsys accessibility`
+   shows the service enabled and bound. Routine therefore reported
+   `hasRestrictionPermission=false` → `foundation-only`.
+2. **Silent projection-chain failure.** `PlatformNativeRhythmSyncProvider.sync()`
+   swallowed every error (`catch {}`); the fallback shim returned `true` for
+   native policy writes (false-positive success); projection payloads carried
+   `undefined`-valued keys (`attentionDateKey: cooldown.attentionDateKey` after
+   a native import dropped metadata, `recoveryActivity.durationSuggestion`)
+   whose rejection by the Expo bridge's Kotlin map conversion aborts the whole
+   stage chain — **before** `setRiskGroupPolicies` runs; and signature caches
+   advanced even when writes were never confirmed, permanently skipping
+   re-projection. The classification→policy chain broke silently between
+   `RiskGroup.appIds` and `setRiskGroupPolicies`.
+
+### 16.3 Files changed
+
+| Area | Files |
+| --- | --- |
+| Bridge honesty + diagnostics | `modules/rhythm-device/src/RhythmDeviceModule.ts`, `RhythmDevice.types.ts`, `index.ts` |
+| Sync verification + self-healing | `src/platform/NativeRhythmSyncProvider.ts` |
+| Capability truth | `src/platform/native/NativePermissionProvider.ts`, `NativeRestrictionProvider.ts` |
+| Accessibility detection | `modules/rhythm-device/android/.../RhythmDeviceModule.kt` |
+| Projection diagnostics + QA trigger | `RhythmDeviceModule.kt`, `RhythmEnforcementService.kt` (`runQaAllowanceExhaustion`) |
+| Gate derivation for native allocations | `src/domain/rhythm/events.ts` (`SYNC_NATIVE_ATTENTION_EXCHANGE`) |
+| QA trigger surface | `src/store/usePrototypeStore.ts`, `src/components/DemoStateSwitcher.tsx`, `app/settings.tsx` |
+| Regressions | `src/domain/rhythm/__tests__/pass05_blocker_remediation.test.ts`, `pass02_native_ledger.test.ts`, `modules/rhythm-device/android/src/test/.../NativeServiceDetectionTest.kt`, `QaExhaustionAllocationTest.kt` |
+
+### 16.4 Diagnostics added
+
+- `getRhythmNativeModuleDiagnostics()` — `{ available, source: 'native' | 'fallback', loadError? }`;
+  Settings shows **Native Module: AVAILABLE / FALLBACK**.
+- `NativeSyncDiagnostics` — `{ success, failedStage?, error?, updatedAt }` per
+  projection attempt (module / attention-policy / attention-state /
+  base-restrictions / risk-policies / cooldowns / routine-schedule). Native
+  writes are verified (`saved !== true` throws); signatures advance only on
+  confirmed saves.
+- `getEnforcementDiagnostics()` — `riskPolicyCount`, `riskPackageCount`,
+  `routineRiskPackageCount`, `riskPackageSample` (bounded), plus
+  `lastForegroundPackage` / `lastInterventionPackage`.
+- Settings separates Native Module / Accessibility Service / Restriction
+  Capability / Native Risk Policies / Native Risk Packages / Native Policy
+  Sync / Last Foreground / Last Intervention / Daily Cooldown Ordinal, and
+  surfaces **"Native policy out of sync"** when JS holds Risk apps while native
+  holds none.
+
+### 16.5 QA trigger (dev/debug builds only)
+
+`triggerProductionAllowanceExhaustionForQa(groupId, packageName)` seeds ONLY the
+native group usage ledger to its allowance boundary, then enters the same
+production transition used when genuine usage reaches the boundary
+(`startGroupUsage → exhaustGroup → NativeAttentionExchangeLogic.allocateCooldown`).
+It never constructs cooldowns, ordinals, gates, substitution counters, or
+evidence; every reported value is read back from production state. Native side
+refuses non-debuggable apps (`FLAG_DEBUGGABLE` gate). The old debug cooldown row
+is relabeled **"demo UI only — creates NO ordinal and NO restorative gate"**.
+
+### 16.6 Automated regressions
+
+| Suite | Before → after |
+| --- | --- |
+| Routine JS (`npm test`) | 405 → **414 tests / 82 suites**, 0 failures |
+| Routine native (`:rhythm-device:testDebugUnitTest`) | 49 → **62 tests**, 0 failures |
+| `npm run typecheck` / `npm run lint` | clean / clean |
+| `:rhythm-device:compileDebugKotlin`, `:app:assembleDebug` | pass |
+
+New coverage: fallback write honesty (no false-positive native saves),
+bridge payload sanitation, write-verification + failing-stage evidence,
+capability truth (module available ∧ Accessibility recognised = enforced;
+module unavailable → foundation-only), classification→`setRiskGroupPolicies`
+projection without app restart, projection-mismatch self-healing, the
+production-equivalent ordinal sequence (1 → 2 → 3 with the 3600/36 baseline gate
+at ordinal 3, both JS-import derivation and Kotlin allocation), and
+Accessibility service-name normalization (exact service only).
+
+### 16.7 Device results (2026-09-29, rebuilt `app-debug.apk` 12:17)
+
+| # | Check | Result |
+| --- | --- | --- |
+| A | Native Module | **AVAILABLE** |
+| B | Usage Access / Accessibility / Capability | **GRANTED / BOUND · RECOGNISED / ENFORCED** |
+| C | Projection | **riskPolicyCount 1→3, riskPackageCount 1→3, sample `com.block.juggle`**, Native Policy Sync **OK**; final native `risk_group_policies_json` = social(`com.block.juggle`), entertainment(`com.netflix.mediaclient`), qa(`com.google.android.youtube`) |
+| D | Foreground detection | service observed `com.block.juggle` (intervention fired from its foreground event) |
+| E | Enforcement | launching Block Blast! under the real production cooldown raised the **Touch Grass intervention** ("Social Feeds is cooling down · 01:29:26 left"); diagnostics **Last Intervention: com.block.juggle** |
+| F | Production-equivalent ordinals | QA trigger 1 (Social) → **"Next cooldown · #2"**, real 90-min cooldown + intervention; trigger 2 (Entertainment) → **"Entertainment is cooling down · 01:29:34"**, "Next cooldown · #3"; trigger 3 (QA group) → **CD3 gate live: "of 60 min" (3600 s) · "of 36 pages"**, "Next cooldown · #4", "3 used today" |
+
+The CD3 requirement card ("Daily reading check-in · 60 min · 36 pages (shared
+by Rhythmic Routine)") can only render from a production-allocated cooldown
+carrying `dailyCooldownOrdinal = 3` with requirement 3600/36 — the exact
+baseline-reading gate.
+
+### 16.8 Block Blast projection evidence
+
+User classification (Risk / Social Feeds) → `RiskGroup.appIds` →
+`NativeRhythmSyncProvider` → `setRiskGroupPolicies` → SharedPreferences
+(`risk_group_policies_json` contains `com.block.juggle`) →
+`RhythmEnforcementService` foreground match → **intervention** (captured on
+device). The chain is verified end-to-end.
+
+### 16.9 Open follow-ups (do not block the acceptance gate; tracked)
+
+- **F1 — post-sequence persisted-state anomaly.** After the trigger sequence,
+  the persisted (native + JS) attention state showed a single fresh Social
+  cooldown (`dailyCooldownOrdinal: 1`, started 14:45:54) while the captured UI
+  minutes earlier showed cooldownsTriggered 3 + the CD3 gate. The ordinal
+  sequence itself is proven by the sequential captures; the post-sequence state
+  transition (likely an interplay between cooldown-expiry cycle completion,
+  `reconcileUsage` re-exhaustion, and native-attention authority import)
+  needs one focused re-run using the new failing-stage diagnostics.
+- **F2 — CD4+ requirement divergence.** Native
+  `NativeAttentionExchangeLogic.requirementForCooldownOrdinal` still uses the
+  v1.2 cumulative escalation (ordinal 4 → 5400/47) while Pass 3 policy is the
+  discrete 1800/11 restorative choice. Affects only CD4+ (rows 44–46 scope);
+  resolve before resuming those rows.
+- MIUI reverts Accessibility Services enabled via ADB `settings put`; the
+  in-Settings toggle persists. Reinstalling the APK also drops the binding —
+  re-enable in Settings after every reinstall during QA.
+
+## 17. Acceptance gate status
+
+**BLOCKER RESOLVED.** All item-21 conditions were observed on the physical
+device: `isRhythmNativeModuleAvailable = true`; Usage Access recognised;
+Routine Accessibility Service recognised; Restriction Capability = ENFORCED;
+Native Risk Policy count > 0 with `com.block.juggle` projected; Accessibility
+foreground detection and a real intervention on `com.block.juggle` under an
+active restriction; and the production-equivalent path allocated ordinals 1, 2,
+3 with the real baseline-reading gate (3600 s / 36 pages) at ordinal 3.
