@@ -1,14 +1,11 @@
 # Rhythmic Routine — Pass 03: Restorative-Gate Integration
 
-Status: **Pass 3 implemented, tested, and committed on `feat/pass-03-restorative-gates`.**
-This document is the Pass 3 handoff (spec section 58). Physical-device
-validation (spec 55) was attempted on a Redmi Note 13 Pro+ 5G (Android 16/API
-36), but is **incomplete and blocked**: Android reports Usage Access allowed
-and Routine's Accessibility Service enabled/bound, while Routine itself reports
-restriction authorization denied and capability `foundation-only`. A saved
-Risk-app assignment also failed to appear in the native enforcement policy,
-and launching that app produced no Routine intervention. Spec 55 is therefore
-not passed and enforcement is not ready to ship.
+Status: **Pass 3 is implemented and committed; Pass 05A remediation is physically verified and ready for local commit on `feat/pass-03-restorative-gates`.**
+This document is the Pass 3 handoff (spec section 58) with the completed Pass
+05A continuation. Core automated verification is green. On the Redmi Note 13 Pro+ 5G
+(Android 16/API 36), the native projection/enforcement blocker is resolved and
+physical CD4+ rows 44–46 pass. No merge, tag, release, or store submission is
+part of this handoff.
 
 ---
 
@@ -437,24 +434,106 @@ User classification (Risk / Social Feeds) → `RiskGroup.appIds` →
 `RhythmEnforcementService` foreground match → **intervention** (captured on
 device). The chain is verified end-to-end.
 
-### 16.9 Open follow-ups (do not block the acceptance gate; tracked)
+### 16.9 Pass 05A follow-up status
 
-- **F1 — post-sequence persisted-state anomaly.** After the trigger sequence,
-  the persisted (native + JS) attention state showed a single fresh Social
-  cooldown (`dailyCooldownOrdinal: 1`, started 14:45:54) while the captured UI
-  minutes earlier showed cooldownsTriggered 3 + the CD3 gate. The ordinal
-  sequence itself is proven by the sequential captures; the post-sequence state
-  transition (likely an interplay between cooldown-expiry cycle completion,
-  `reconcileUsage` re-exhaustion, and native-attention authority import)
-  needs one focused re-run using the new failing-stage diagnostics.
-- **F2 — CD4+ requirement divergence.** Native
-  `NativeAttentionExchangeLogic.requirementForCooldownOrdinal` still uses the
-  v1.2 cumulative escalation (ordinal 4 → 5400/47) while Pass 3 policy is the
-  discrete 1800/11 restorative choice. Affects only CD4+ (rows 44–46 scope);
-  resolve before resuming those rows.
+- **F1 — post-sequence persisted-state anomaly: reverified closed (2026-09-30).**
+  Native SharedPreferences and JS SQLite agree on Attention Day
+  `ad-20260930-0800`, cooldown ordinal `5`, and gate
+  `gate-ad-20260930-0800-music-o5`. After the exact bound Meditation record
+  verified, both persist that gate as `satisfied`; JS also persists
+  `providerLocked = true`, `meditationSubstitutionConsumed = true`, and
+  `meditationSubstitutionsUsed = 1`. The gate retains its original
+  `cooldownEndsAt = 1790759904540` (11:18:24.540 local); the Meditation record
+  completed at `1790760991914` (11:36:31.914 local), after the full 90-minute
+  cooldown had already elapsed. The CD3 daily reading target remains 3600/36.
+- **F2 — CD4+ requirement divergence: resolved.** New native allocations now
+  use the discrete Pass 3 table (CD1–2 none, CD3 3600/36 baseline, CD4+
+  `RESTORATIVE_CHOICE` with Reader 1800/11 or Meditation 1800 qualified
+  seconds). The v1.2 cumulative formula remains only for auditing/migrating
+  stored legacy obligations, including ordinal-4 `LEGACY_READING` 5400/47.
+  Native/JS reconciliation preserves deterministic gate identity, provider
+  binding, Attention Day identity, completed status, and cooldown independence.
+- The bound CD5 Meditation session completed and its evidence was verified
+  from a cold-started Meditation content-provider process; details are below.
 - MIUI reverts Accessibility Services enabled via ADB `settings put`; the
   in-Settings toggle persists. Reinstalling the APK also drops the binding —
   re-enable in Settings after every reinstall during QA.
+
+### 16.10 Pass 05A physical rows 44–46 (complete)
+
+Device: **Xiaomi Redmi Note 13 Pro+ 5G** (`23129RN51X`), Android 16/API 36.
+The Routine Accessibility Service is enabled and bound; Usage Access is
+granted. Reader and Meditation are installed with the shared Routine debug
+signer. Meditation's pre-existing local database was backed up and restored
+after reinstall; its prior session history was verified before beginning the
+bound recovery run.
+
+| Row | Physical check | Result |
+| --- | --- | --- |
+| 44 | Production-equivalent CD4+ allocation uses discrete `RESTORATIVE_CHOICE`; native and JS retain one matching deterministic gate and a full 90-minute cooldown. | **PASS** — Music ordinal 5 persisted as `restorative-choice`, `gate-ad-20260930-0800-music-o5`; cooldown start/end stayed `1790754504540` / `1790759904540`. |
+| 45 | Bound Reader alternative for CD4+: Reader session evidence is per-session, 1800 seconds / 11 qualified pages; no aggregate Daily Reader Evidence is accepted for CD4+. | **PASS** — ordinal-4 Reader restorative gate and bound-session flow physically displayed 30 minutes / 11 pages; the CD4 screen also showed its 90-minute cooldown. |
+| 46 | Bound Meditation alternative: exact gate-bound `COOLDOWN_RESTORATIVE` session, 1800 qualified seconds; provider lock/substitution accounting occurs only on verified completion, and cooldown remains independent. | **PASS** — Meditation SQLite reports the bound session `COMPLETED`, 1800/1800, with matching source gate/day IDs and `PRAGMA integrity_check = ok`. Routine's cold-start status-provider query reconciled the native and JS gates to `satisfied`, locked Meditation, consumed exactly one substitution, and retained the original cooldown end; completion occurred after cooldown expiry. Settings showed Native Policy Sync **OK**, Restriction Capability **ENFORCED**, and daily ordinal 5. |
+
+Physical integration fixes applied during this run:
+
+- Routine launches the bound recovery Activity via `startActivityForResult`,
+  allowing Android to attest Routine as the caller while Meditation retains its
+  deny-by-default same-signer verification.
+- Meditation decodes typed Bundle values without coercing numeric fields via
+  `getString()`, then idempotently adopts/starts the exact request session ID in
+  its runtime before routing. The active UI and status provider now share the
+  same bound session and 1800-second requirement.
+- Meditation's status provider uses a lazy `AppContainer`: Android can create
+  and query a provider before `Application.onCreate()`, so the first cold-start
+  evidence query must not depend on an Activity having initialized app state.
+- Routine refreshes that exact Meditation status-provider row when the Touch
+  Grass screen resumes, so a completion accrued while Routine is backgrounded
+  is reconciled without reissuing a recovery request.
+- Meditation's existing local database, WAL, and profile marker were backed up
+  before the matching-signer debug APK reinstall and restored before QA.
+
+Pass 05A automated checks on this working tree:
+
+| Check | Result |
+| --- | --- |
+| Routine JS (`npm test`) | **419 tests / 82 suites**, 0 failures |
+| Routine Android native (`:rhythm-device:testDebugUnitTest`) | **71 tests**, 0 failures |
+| Routine `:rhythm-device:compileDebugKotlin` | pass |
+| Routine `npm run typecheck` / `npm run lint` | pass / pass |
+| Meditation `:app:testDebugUnitTest` | **175 tests**, 0 failures |
+| Meditation recovery/status-provider instrumentation | **6 recovery-intent + 2 cursor tests passed** before the final lazy-initialization adjustment. The final rerun did not complete: Gradle's default signer conflicted with the QA install on Redmi, and the emulator's test target could not cold-start under memory pressure. The cold-start status-provider query itself passed on Redmi. |
+| Meditation `:app:assembleDebug` | pass |
+| `git diff --check` (both repositories) | pass |
+
+The 8 previously passing instrumentation tests cover the recovery Bundle codec
+and status cursor schema/rows. After making the content-provider cold-start
+safe, the final instrumentation rerun was attempted against the connected
+emulator and Redmi: Gradle's default debug certificate was incompatible with
+the QA-signed Redmi install, and the emulator later failed to start Meditation
+under system memory pressure. The final APK build and 175 unit tests passed;
+the cold-start provider query was directly reverified on the Redmi as part of
+physical row 46.
+
+#### Persisted-state comparison (F1)
+
+Before completion, and again after the bound Meditation session completed,
+native SharedPreferences and JS SQLite runtime state retained the same
+Attention Day and gate identity. The final persisted JS state is:
+
+- Attention Day `ad-20260930-0800`; daily cooldown count `5`; highest reading
+  target `3600/36`; `meditationSubstitutionsUsed=1`.
+- Music gate: `gate-ad-20260930-0800-music-o5`, kind
+  `restorative-choice`, status `satisfied`, provider `meditation`,
+  `providerLocked=true`, `meditationSubstitutionConsumed=true`, Reader
+  alternative `1800/11`, Meditation requirement `1800`, and original
+  `cooldownEndsAt=1790759904540`.
+- Provider session `67ec1d42-27dc-492e-9216-df70c28a25ce` is saved by
+  Meditation as `COOLDOWN_RESTORATIVE` / `COMPLETED`, 1800 required and 1800
+  qualified seconds, linked to `gate-ad-20260930-0800-music-o5` and
+  `ad-20260930-0800`.
+- The native projection carries the same gate identity, provider, and satisfied
+  status. JS substitution usage remains `1` after duplicate evidence queries
+  and a stale native-allocation re-import; the cooldown end is unchanged.
 
 ## 17. Acceptance gate status
 

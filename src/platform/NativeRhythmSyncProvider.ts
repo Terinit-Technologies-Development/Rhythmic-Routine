@@ -5,6 +5,42 @@ import { offlineActivities } from '../data/mockData';
 import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
 import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
 import { getLocalDateKey } from '../domain/rhythm/allowance';
+import {
+  requirementKindForCooldownOrdinal,
+  RESTORATIVE_POLICY,
+} from '../domain/rhythm/restorativeGate';
+
+/**
+ * Kind + requirement numbers for one projected cooldown (Pass 5A model):
+ * CD3 carries the baseline; CD4+ carries the discrete restorative choice
+ * (Reader 1800/11 OR Meditation 1800) — never cumulative numbers.
+ */
+function cooldownRequirementProjection(cooldown: {
+  dailyCooldownOrdinal?: number;
+  requirementKind?: string;
+  restorativeReadingSeconds?: number;
+  restorativeReadingPages?: number;
+  requiredMeditationSeconds?: number;
+}) {
+  const kind =
+    cooldown.requirementKind ??
+    (cooldown.dailyCooldownOrdinal
+      ? requirementKindForCooldownOrdinal(cooldown.dailyCooldownOrdinal)
+      : 'none');
+  const restorative = kind === 'restorative-choice';
+  return {
+    requirementKind: kind,
+    restorativeReadingSeconds:
+      cooldown.restorativeReadingSeconds ??
+      (restorative ? RESTORATIVE_POLICY.restorativeChoiceReadingSeconds : 0),
+    restorativeReadingPages:
+      cooldown.restorativeReadingPages ??
+      (restorative ? RESTORATIVE_POLICY.restorativeChoiceQualifiedPages : 0),
+    requiredMeditationSeconds:
+      cooldown.requiredMeditationSeconds ??
+      (restorative ? RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds : 0),
+  };
+}
 
 /** Ordered native-projection stages; the first failure aborts and is recorded. */
 export type NativeSyncStage =
@@ -25,9 +61,10 @@ export interface NativeSyncDiagnostics {
 }
 
 /**
- * Deep-removes keys whose value is `undefined`. The Expo bridge's Kotlin
- * `Map<String, Any?>` conversion rejects `undefined`-valued keys inside nested
- * maps, and a rejected conversion aborted the entire projection chain silently.
+ * Deep-removes keys whose value is `undefined` or `null`. The Expo bridge's
+ * Kotlin map conversion rejects nullable values inside nested maps, and a
+ * rejected conversion aborts the entire projection chain before later policy
+ * stages can run. Native optional fields use omission as their absent value.
  */
 export function sanitizeForNative<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -36,7 +73,7 @@ export function sanitizeForNative<T>(value: T): T {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (item === undefined) continue;
+      if (item === undefined || item === null) continue;
       out[key] = sanitizeForNative(item);
     }
     return out as unknown as T;
@@ -354,6 +391,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal,
                 requiredReadingSeconds: cooldown.requiredReadingSeconds,
                 requiredQualifiedPages: cooldown.requiredQualifiedPages,
+                ...cooldownRequirementProjection(cooldown),
               };
             });
           const attentionState = sanitizeForNative({
@@ -393,6 +431,8 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 requiredReadingSeconds: gate.requiredReadingSeconds ?? null,
                 requiredQualifiedPages: gate.requiredQualifiedPages ?? null,
                 requiredMeditationSeconds: gate.requiredMeditationSeconds ?? null,
+                restorativeReadingSeconds: gate.requiredRestorativeReadingSeconds ?? null,
+                restorativeReadingPages: gate.requiredRestorativeQualifiedPages ?? null,
               })
             ),
             morningMeditation: runtime.morningMeditation?.requirement
@@ -472,6 +512,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 dailyCooldownOrdinal: cd.dailyCooldownOrdinal,
                 requiredReadingSeconds: cd.requiredReadingSeconds,
                 requiredQualifiedPages: cd.requiredQualifiedPages,
+                ...cooldownRequirementProjection(cd),
               };
             })
             .filter((p) => p.packageNames.length > 0)

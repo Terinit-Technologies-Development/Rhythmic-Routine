@@ -15,6 +15,8 @@ import android.view.accessibility.AccessibilityManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
+private const val MEDITATION_RECOVERY_REQUEST_CODE = 0x52A
+
 internal fun finishNativePolicyReset(cleared: Boolean, resetRuntime: () -> Unit): Boolean {
   if (!cleared) return false
   resetRuntime()
@@ -329,6 +331,29 @@ class RhythmDeviceModule : Module() {
         result["activeReadingRequiredSeconds"] = primaryGate.requiredReadingSeconds
         result["activeReadingRequiredPages"] = primaryGate.requiredQualifiedPages
       }
+      // Pass 5A: restorative requirement truth (kind, identity, provider,
+      // and every requirement number) — for physical rows 44-46 evidence.
+      val activeCooldown = cooldowns.firstOrNull { it.endsAt > System.currentTimeMillis() }
+      if (activeCooldown != null) {
+        result["activeCooldownGroupId"] = activeCooldown.groupId
+        result["activeCooldownOrdinal"] = activeCooldown.dailyCooldownOrdinal
+        result["cooldownRequirementKind"] = activeCooldown.requirementKind
+      }
+      val restorative = RestorativeEnforcement.load(context)
+      val restorativeGate = restorative.restorativeGates.values.maxByOrNull { it.dailyCooldownOrdinal }
+      if (restorativeGate != null) {
+        result["restorativeGateId"] = restorativeGate.gateId
+        result["restorativeGateGroupId"] = restorativeGate.groupId
+        result["restorativeGateOrdinal"] = restorativeGate.dailyCooldownOrdinal
+        result["restorativeGateKind"] = restorativeGate.requirementKind
+        result["restorativeGateStatus"] = restorativeGate.status
+        result["restorativeSelectedProvider"] = restorativeGate.selectedProviderLabel()
+        result["baselineRequiredSeconds"] = restorativeGate.requiredReadingSeconds
+        result["baselineRequiredPages"] = restorativeGate.requiredQualifiedPages
+        result["restorativeReaderSeconds"] = restorativeGate.restorativeReadingSeconds
+        result["restorativeReaderPages"] = restorativeGate.restorativeReadingPages
+        result["requiredMeditationSeconds"] = restorativeGate.requiredMeditationSeconds
+      }
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
       }
@@ -504,12 +529,17 @@ class RhythmDeviceModule : Module() {
 
     AsyncFunction("startMeditationRecoverySession") { request: Map<String, Any?> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
+      val activity = appContext.currentActivity ?: return@AsyncFunction false
       if (CompanionTrust.verify(context, MeditationContract.MEDITATION_PACKAGE) != CompanionTrustResult.TRUSTED) {
         return@AsyncFunction false
       }
       try {
         val intent = MeditationContract.buildRecoveryIntent(request) ?: return@AsyncFunction false
-        context.startActivity(intent)
+        // Meditation verifies the caller via Activity.getCallingPackage().
+        // Starting for a result is what lets Android attest our package; a
+        // Context.startActivity() call leaves the caller unknown and is
+        // correctly rejected by Meditation's deny-by-default trust policy.
+        activity.startActivityForResult(intent, MEDITATION_RECOVERY_REQUEST_CODE)
         true
       } catch (_: Exception) {
         false

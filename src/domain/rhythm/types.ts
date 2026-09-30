@@ -58,8 +58,18 @@ export interface ActiveCooldown {
   endsAt: number;
   dailyCooldownOrdinal?: number;
   attentionDateKey?: string;
+  /**
+   * Pass 5A requirement kind wire label ('none' | 'baseline-reading' |
+   * 'restorative-choice' | 'legacy-reading').
+   */
+  requirementKind?: string;
+  /** Baseline/legacy compatibility numbers (CD3 aggregate + migrated v1.2). */
   requiredReadingSeconds?: number;
   requiredQualifiedPages?: number;
+  /** CD4+ restorative choice numbers. */
+  restorativeReadingSeconds?: number;
+  restorativeReadingPages?: number;
+  requiredMeditationSeconds?: number;
   recoverySessionId?: string;
   recoveryRequired?: boolean;
   cycleNumber?: number;

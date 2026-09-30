@@ -76,7 +76,7 @@ export default function RootLayout() {
             <Stack.Screen name="accountability" />
           </Stack>
 
-          {/* Web-only interactive state simulation switcher */}
+          {/* Development-only interactive state simulation switcher */}
           {(Platform.OS === 'web' || __DEV__) && <DemoStateSwitcher />}
 
           {/* Global Modals */}

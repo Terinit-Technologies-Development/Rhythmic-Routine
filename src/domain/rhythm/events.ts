@@ -39,6 +39,10 @@ import {
   deterministicGateId,
   evaluateRestorativeGate,
   isMeditationPathAllowed,
+  migrateLegacyReadingGate,
+  readingRequirementForKind,
+  requirementKindForCooldownOrdinal,
+  RESTORATIVE_POLICY,
   selectGateProvider,
   type ActiveRestorativeGate,
 } from './restorativeGate';
@@ -427,9 +431,33 @@ export function processRhythmEvent(
 
     case 'SYNC_NATIVE_ATTENTION_EXCHANGE': {
       nextNativeAttentionAuthority = true;
-      nextDailyAttentionExchange = event.dailyAttentionExchange.dateKey === currentDateKey
-        ? { ...event.dailyAttentionExchange }
-        : createDailyAttentionExchangeState(currentDateKey, nowMs);
+      if (event.dailyAttentionExchange.dateKey === currentDateKey) {
+        const priorSubstitutionsUsed =
+          nextDailyAttentionExchange.attentionDayId === attentionDay.id
+            ? nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0
+            : 0;
+        const incomingSubstitutionsUsed =
+          event.dailyAttentionExchange.meditationSubstitutionsUsed;
+        nextDailyAttentionExchange = {
+          ...event.dailyAttentionExchange,
+          attentionDayId: attentionDay.id,
+          // Native currently owns cooldown ordinals, not the Meditation cap.
+          // A stale/native snapshot must not reset JS's same-Attention-Day
+          // substitution ledger after verified provider completion.
+          meditationSubstitutionsUsed: Math.max(
+            priorSubstitutionsUsed,
+            Number.isInteger(incomingSubstitutionsUsed) && incomingSubstitutionsUsed! >= 0
+              ? incomingSubstitutionsUsed!
+              : 0
+          ),
+        };
+      } else {
+        nextDailyAttentionExchange = createDailyAttentionExchangeState(
+          currentDateKey,
+          nowMs,
+          attentionDay.id
+        );
+      }
       replaceRecord(nextReadingGates, Object.fromEntries(
         Object.entries(event.activeReadingGates)
           .filter(([groupId, gate]) => groupId === gate.groupId && gate.attentionDateKey === currentDateKey)
@@ -452,6 +480,9 @@ export function processRhythmEvent(
           ordinal: number;
           createdAt: number;
           cooldownEndsAt: number;
+          requirementKind?: string;
+          requiredReadingSeconds: number;
+          requiredQualifiedPages: number;
         }[] = [];
         for (const cooldown of Object.values(event.activeCooldowns)) {
           if (
@@ -464,6 +495,9 @@ export function processRhythmEvent(
               ordinal: cooldown.dailyCooldownOrdinal,
               createdAt: cooldown.startedAt ?? 0,
               cooldownEndsAt: cooldown.endsAt,
+              requirementKind: cooldown.requirementKind,
+              requiredReadingSeconds: cooldown.requiredReadingSeconds ?? 0,
+              requiredQualifiedPages: cooldown.requiredQualifiedPages ?? 0,
             });
           }
         }
@@ -479,16 +513,45 @@ export function processRhythmEvent(
               ordinal: gate.dailyCooldownOrdinal,
               createdAt: gate.createdAt,
               cooldownEndsAt: gate.cooldownEndsAt,
+              requiredReadingSeconds: gate.requiredReadingSeconds ?? 0,
+              requiredQualifiedPages: gate.requiredQualifiedPages ?? 0,
             });
           }
         }
         for (const cycle of nativeCycles) {
+          const existing = nextRestorativeGates[cycle.groupId];
+          const kind = requirementKindForCooldownOrdinal(cycle.ordinal);
+          const kindRequirement = readingRequirementForKind(kind);
+          // A migrated v1.2 obligation carries historical numbers (e.g.
+          // 5400/47 at ordinal 4) and must stay LEGACY_READING with those
+          // exact numbers until it naturally completes. Only exact kind
+          // matches are created canonically; CD4+ new allocations carry no
+          // baseline numbers (0/0) and are created from the kind table.
+          const hasStaleNumbers =
+            (cycle.requiredReadingSeconds > 0 || cycle.requiredQualifiedPages > 0) &&
+            (cycle.requiredReadingSeconds !== kindRequirement.activeSeconds ||
+              cycle.requiredQualifiedPages !== kindRequirement.qualifiedPages);
+          if (hasStaleNumbers || cycle.requirementKind === 'legacy-reading') {
+            const legacyId = `legacy-gate-${cycle.groupId}`;
+            if (existing && existing.gateId === legacyId) continue;
+            nextRestorativeGates[cycle.groupId] = migrateLegacyReadingGate({
+              groupId: cycle.groupId,
+              attentionDateKey: currentDateKey,
+              dailyCooldownOrdinal: cycle.ordinal,
+              createdAt: cycle.createdAt,
+              cooldownEndsAt: cycle.cooldownEndsAt,
+              requiredReadingSeconds: cycle.requiredReadingSeconds,
+              requiredQualifiedPages: cycle.requiredQualifiedPages,
+              attentionDayId: attentionDay.id,
+              gateId: legacyId,
+            });
+            continue;
+          }
           const gateId = deterministicGateId({
             attentionDayId: attentionDay.id,
             groupId: cycle.groupId,
             dailyCooldownOrdinal: cycle.ordinal,
           });
-          const existing = nextRestorativeGates[cycle.groupId];
           if (existing && existing.gateId === gateId) continue;
           const gate = createRestorativeGateForOrdinal({
             groupId: cycle.groupId,
@@ -727,33 +790,34 @@ export function processRhythmEvent(
       if (reconciledGate) nextReadingGates[groupId] = reconciledGate;
       else delete nextReadingGates[groupId];
     }
+  }
 
-    // Pass 3: Restorative Gate reconciliation — kind-aware, fail-closed.
-    // A meditation substitution is consumed exactly once, only when a bound
-    // session is verified complete and satisfies its gate.
-    for (const [groupId, gate] of Object.entries(nextRestorativeGates)) {
-      const evaluation = evaluateRestorativeGate({
-        gate,
-        now: nowMs,
-        attentionDayId: attentionDay.id,
-        currentDateKey,
-        acceptedEvidenceDateKeys: [currentDateKey, getLocalDateKey(gate.createdAt)],
-        readerDailyEvidence: nextReadingEvidence,
-        readerSessionEvidence: nextReaderSessionEvidence,
-        meditationEvidence: nextMeditationEvidence,
-        meditationSubstitutionsUsed: nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0,
-      });
-      if (!evaluation.gate) {
-        delete nextRestorativeGates[groupId];
-        continue;
-      }
-      nextRestorativeGates[groupId] = evaluation.gate;
-      if (evaluation.substitutionConsumed) {
-        nextDailyAttentionExchange = consumeMeditationSubstitution(
-          nextDailyAttentionExchange,
-          nowMs
-        );
-      }
+  // Restorative completion is reconciled from bound provider evidence even
+  // when native owns cooldown allocation. Native authority must not suppress
+  // a verified Reader/Meditation completion; the completed gate and its
+  // one-time Meditation substitution are projected back to native below.
+  for (const [groupId, gate] of Object.entries(nextRestorativeGates)) {
+    const evaluation = evaluateRestorativeGate({
+      gate,
+      now: nowMs,
+      attentionDayId: attentionDay.id,
+      currentDateKey,
+      acceptedEvidenceDateKeys: [currentDateKey, getLocalDateKey(gate.createdAt)],
+      readerDailyEvidence: nextReadingEvidence,
+      readerSessionEvidence: nextReaderSessionEvidence,
+      meditationEvidence: nextMeditationEvidence,
+      meditationSubstitutionsUsed: nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0,
+    });
+    if (!evaluation.gate) {
+      delete nextRestorativeGates[groupId];
+      continue;
+    }
+    nextRestorativeGates[groupId] = evaluation.gate;
+    if (evaluation.substitutionConsumed) {
+      nextDailyAttentionExchange = consumeMeditationSubstitution(
+        nextDailyAttentionExchange,
+        nowMs
+      );
     }
   }
 
@@ -966,14 +1030,23 @@ function allocateAttentionCooldown(
   const allocation = allocateCooldownRequirement(state, allocationAt);
   const resolvedAttentionDayId =
     attentionDayId ?? allocation.nextState.attentionDayId ?? `ad-${allocation.nextState.dateKey}`;
+  const requirementKind = requirementKindForCooldownOrdinal(allocation.ordinal);
   const cooldown: ActiveCooldown = {
     groupId,
     startedAt,
     endsAt,
     dailyCooldownOrdinal: allocation.ordinal,
     attentionDateKey: allocation.nextState.dateKey,
+    requirementKind,
     requiredReadingSeconds: allocation.requirement.activeSeconds,
     requiredQualifiedPages: allocation.requirement.qualifiedPages,
+    ...(requirementKind === 'restorative-choice'
+      ? {
+          restorativeReadingSeconds: RESTORATIVE_POLICY.restorativeChoiceReadingSeconds,
+          restorativeReadingPages: RESTORATIVE_POLICY.restorativeChoiceQualifiedPages,
+          requiredMeditationSeconds: RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds,
+        }
+      : {}),
   };
 
   // Reader v1.2 compatibility view (quota screens / Reader preview keep working).

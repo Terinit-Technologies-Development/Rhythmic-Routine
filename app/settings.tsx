@@ -309,7 +309,7 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionHeader}>Quick Actions</Text>
 
-          {Platform.OS === 'web' && (
+          {(Platform.OS === 'web' || __DEV__) && (
             <TouchableOpacity
               style={styles.actionRow}
               onPress={() => setDemoSwitcherVisible(true)}

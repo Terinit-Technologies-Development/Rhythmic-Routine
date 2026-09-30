@@ -140,8 +140,15 @@ export interface NativeCooldownPolicyInput {
   endsAt: number;
   attentionDateKey?: string;
   dailyCooldownOrdinal?: number;
+  /** Pass 5A requirement kind wire label. */
+  requirementKind?: string;
+  /** Baseline/legacy compatibility numbers (CD3 + migrated v1.2). */
   requiredReadingSeconds?: number;
   requiredQualifiedPages?: number;
+  /** CD4+ restorative choice numbers. */
+  restorativeReadingSeconds?: number;
+  restorativeReadingPages?: number;
+  requiredMeditationSeconds?: number;
 }
 
 /**
@@ -162,6 +169,9 @@ export interface NativeRestorativeGateInput {
   requiredReadingSeconds: number | null;
   requiredQualifiedPages: number | null;
   requiredMeditationSeconds: number | null;
+  /** CD4+ restorative choice numbers (Reader bound recovery session). */
+  restorativeReadingSeconds: number | null;
+  restorativeReadingPages: number | null;
 }
 
 export interface NativeAttentionDayInput {

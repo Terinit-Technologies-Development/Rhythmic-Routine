@@ -1,5 +1,10 @@
 package expo.modules.rhythmdevice
 
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
 data class NativeReadingAttentionPolicy(
     val freeCooldownCount: Int = 2,
     val baselineActiveSeconds: Long = 60L * 60L,
@@ -17,6 +22,42 @@ data class NativeReadingAttentionPolicy(
 }
 
 data class NativeReadingRequirement(val activeSeconds: Long, val qualifiedPages: Int)
+
+/**
+ * Pass 3 requirement kinds. Wire labels match the persisted
+ * `restorative_gates_json` / JS `ActiveRestorativeGate` schema exactly.
+ *
+ * The v1.2 cumulative escalation is preserved ONLY for migrated
+ * LEGACY_READING obligations; every new allocation uses the frozen table
+ * (ordinal 1-2 none, ordinal 3 baseline, ordinal 4+ restorative choice).
+ */
+enum class NativeRestorativeRequirementKind(val wireLabel: String) {
+    NONE("none"),
+    BASELINE_READING("baseline-reading"),
+    RESTORATIVE_CHOICE("restorative-choice"),
+    LEGACY_READING("legacy-reading");
+
+    companion object {
+        fun fromWire(value: String?): NativeRestorativeRequirementKind =
+            entries.firstOrNull { it.wireLabel == value } ?: NONE
+    }
+}
+
+/**
+ * Explicit requirement specification per cooldown ordinal (Pass 3 policy,
+ * frozen). CD3 = BASELINE_READING satisfied from aggregate Daily Reader
+ * Evidence V2. CD4+ = RESTORATIVE_CHOICE: exactly one discrete requirement —
+ * a bound Reader recovery session (1800 s / 11 pages) OR a bound Meditation
+ * session (1800 qualified s). Never another cumulative reading gate.
+ */
+data class NativeRestorativeRequirement(
+    val kind: NativeRestorativeRequirementKind,
+    val baselineReadingSeconds: Long = 0L,
+    val baselineReadingPages: Int = 0,
+    val restorativeReadingSeconds: Long = 0L,
+    val restorativeReadingPages: Int = 0,
+    val meditationSeconds: Long = 0L,
+)
 
 data class NativeRoutineReadingTargetPreview(
     val dateKey: String,
@@ -77,6 +118,8 @@ data class NativeCooldownAllocation(
     val cooldowns: Map<String, NativeCooldownPolicy>,
     val readingGates: Map<String, NativeReadingGate>,
     val allocated: Boolean,
+    /** Pass 3: CD4+ allocations carry a provider-neutral Restorative Gate. */
+    val restorativeGates: Map<String, NativeRestorativeGateState> = emptyMap(),
 )
 
 enum class NativeCooldownExpiryAction {
@@ -107,13 +150,27 @@ object NativeAttentionExchangeLogic {
             dailyState.cooldownsTriggered.coerceAtLeast(0) + 1
         }
         val requirement = requirementForCooldownOrdinal(ordinal, policy)
+        // Compatibility columns carry the kind's READING requirement — never
+        // the obsolete cumulative escalation (ordinal 4 is 1800/11, not 5400/47).
         return NativeRoutineReadingTargetPreview(
             dateKey = dateKey,
             nextCooldownOrdinal = ordinal,
-            requiredActiveSeconds = requirement.activeSeconds,
-            requiredQualifiedPages = requirement.qualifiedPages,
+            requiredActiveSeconds = readingRequirementOf(requirement).first,
+            requiredQualifiedPages = readingRequirementOf(requirement).second,
         )
     }
+
+    /** The reading requirement a legacy/v1 surface would show for this kind. */
+    private fun readingRequirementOf(requirement: NativeRestorativeRequirement): Pair<Long, Int> =
+        when (requirement.kind) {
+            NativeRestorativeRequirementKind.NONE -> 0L to 0
+            NativeRestorativeRequirementKind.BASELINE_READING ->
+                requirement.baselineReadingSeconds to requirement.baselineReadingPages
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE ->
+                requirement.restorativeReadingSeconds to requirement.restorativeReadingPages
+            NativeRestorativeRequirementKind.LEGACY_READING ->
+                requirement.baselineReadingSeconds to requirement.baselineReadingPages
+        }
 
     fun newDailyState(dateKey: String, now: Long) = NativeDailyAttentionExchangeState(
         dateKey = dateKey,
@@ -123,7 +180,56 @@ object NativeAttentionExchangeLogic {
         updatedAt = now,
     )
 
+    /** The frozen Pass 3 policy table: which requirement kind an ordinal carries. */
+    fun requirementKindForOrdinal(ordinal: Int): NativeRestorativeRequirementKind {
+        val safeOrdinal = ordinal.coerceAtLeast(0)
+        return when {
+            safeOrdinal <= 2 -> NativeRestorativeRequirementKind.NONE
+            safeOrdinal == 3 -> NativeRestorativeRequirementKind.BASELINE_READING
+            else -> NativeRestorativeRequirementKind.RESTORATIVE_CHOICE
+        }
+    }
+
+    /**
+     * The requirement for a NEWLY allocated cooldown (Pass 3, frozen):
+     * ordinal 1-2 none, ordinal 3 the Daily Reader baseline (3600/36),
+     * ordinal 4+ ONE discrete restorative choice (Reader 1800/11 OR
+     * Meditation 1800 qualified s). The v1.2 cumulative escalation never
+     * applies to new allocations.
+     */
     fun requirementForCooldownOrdinal(
+        ordinal: Int,
+        policy: NativeReadingAttentionPolicy = DEFAULT_POLICY,
+    ): NativeRestorativeRequirement {
+        val normalized = policy.normalized()
+        return when (requirementKindForOrdinal(ordinal)) {
+            NativeRestorativeRequirementKind.NONE ->
+                NativeRestorativeRequirement(NativeRestorativeRequirementKind.NONE)
+            NativeRestorativeRequirementKind.BASELINE_READING ->
+                NativeRestorativeRequirement(
+                    kind = NativeRestorativeRequirementKind.BASELINE_READING,
+                    baselineReadingSeconds = normalized.baselineActiveSeconds,
+                    baselineReadingPages = normalized.baselineQualifiedPages,
+                )
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE ->
+                NativeRestorativeRequirement(
+                    kind = NativeRestorativeRequirementKind.RESTORATIVE_CHOICE,
+                    restorativeReadingSeconds = RestorativeEnforcement.RESTORATIVE_READING_SECONDS,
+                    restorativeReadingPages = RestorativeEnforcement.RESTORATIVE_QUALIFIED_PAGES,
+                    meditationSeconds = RestorativeEnforcement.RESTORATIVE_MEDITATION_SECONDS,
+                )
+            // Migrated obligations keep their STORED numbers; never re-derive.
+            NativeRestorativeRequirementKind.LEGACY_READING ->
+                NativeRestorativeRequirement(NativeRestorativeRequirementKind.LEGACY_READING)
+        }
+    }
+
+    /**
+     * The obsolete v1.2 cumulative escalation. Kept ONLY so migration and
+     * legacy gate audits can reproduce historical requirements (e.g. an active
+     * 5400s/47p obligation at ordinal 4). Never use this for new cooldowns.
+     */
+    fun legacyReadingRequirementForOrdinal(
         ordinal: Int,
         policy: NativeReadingAttentionPolicy = DEFAULT_POLICY,
     ): NativeReadingRequirement {
@@ -132,7 +238,6 @@ object NativeAttentionExchangeLogic {
         if (safeOrdinal <= normalized.freeCooldownCount) {
             return NativeReadingRequirement(0L, 0)
         }
-
         val increments = safeOrdinal.toLong() - normalized.freeCooldownCount.toLong() - 1L
         return NativeReadingRequirement(
             activeSeconds = saturatedAdd(
@@ -144,6 +249,68 @@ object NativeAttentionExchangeLogic {
                 saturatedIntMultiply(increments, normalized.incrementalQualifiedPages),
             ),
         )
+    }
+
+    /** `ad-<yyyyMMdd>-<HHmm>` — the SAME id formula as the JS engine. */
+    fun attentionDayIdForBoundary(boundaryEpochMs: Long): String {
+        val format = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)
+        return "ad-${format.format(Date(boundaryEpochMs))}"
+    }
+
+    /**
+     * Resolves the current Attention Day id exactly like JS `resolveAttentionDay`:
+     * the Morning Buffer END time opens the day (walking back to the most
+     * recent active boundary); no usable window falls back to the local
+     * calendar day. Deterministic — native allocation and JS reconciliation
+     * must derive the SAME gate identity from it.
+     */
+    fun resolveAttentionDayId(now: Long, schedule: NativeRoutineSchedule): String {
+        val morning = schedule.windows.firstOrNull {
+            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
+        }
+        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
+        if (morning != null && minutes != null) {
+            for (back in 0..7) {
+                val candidate = boundaryAt(now, minutes, back)
+                if (candidate <= now && isActiveOnDay(morning, candidate)) {
+                    return attentionDayIdForBoundary(candidate)
+                }
+            }
+        }
+        return attentionDayIdForBoundary(localMidnight(now))
+    }
+
+    /** Local midnight of (now - daysBack) plus minutesIntoDay. */
+    private fun boundaryAt(now: Long, minutesIntoDay: Int, daysBack: Int): Long {
+        val calendar = Calendar.getInstance().apply {
+            timeInMillis = now
+            add(Calendar.DAY_OF_YEAR, -daysBack)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        return calendar.timeInMillis + minutesIntoDay * 60_000L
+    }
+
+    private fun localMidnight(now: Long): Long = boundaryAt(now, 0, 0)
+
+    /** ISO weekday (Monday=1 .. Sunday=7) — matches JS `getIsoWeekday`. */
+    private fun isActiveOnDay(window: NativeRoutineWindow, epochMs: Long): Boolean {
+        if (window.activeDays.isEmpty()) return true
+        val calendar = Calendar.getInstance().apply { timeInMillis = epochMs }
+        val iso = when (calendar.get(Calendar.DAY_OF_WEEK)) {
+            Calendar.SUNDAY -> 7
+            else -> calendar.get(Calendar.DAY_OF_WEEK) - 1
+        }
+        return iso in window.activeDays
+    }
+
+    private fun parseTimeToMinutes(value: String): Int? {
+        val parts = value.split(":")
+        val hours = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val minutes = parts.getOrNull(1)?.toIntOrNull() ?: return null
+        return hours * 60 + minutes
     }
 
     /** One global ordinal per accepted exhaustion; existing timer/gate/ledger state makes retries idempotent. */
@@ -158,11 +325,14 @@ object NativeAttentionExchangeLogic {
         existingCooldowns: Map<String, NativeCooldownPolicy>,
         existingGates: Map<String, NativeReadingGate>,
         alreadyExhausted: Boolean,
+        attentionDayId: String = "ad-$dateKey",
+        existingRestorativeGates: Map<String, NativeRestorativeGateState> = emptyMap(),
     ): NativeCooldownAllocation {
         if (
             alreadyExhausted ||
             existingCooldowns.containsKey(groupId) ||
-            existingGates[groupId]?.attentionDateKey == dateKey
+            existingGates[groupId]?.attentionDateKey == dateKey ||
+            existingRestorativeGates.containsKey(groupId)
         ) {
             return NativeCooldownAllocation(state, existingCooldowns, existingGates, allocated = false)
         }
@@ -177,38 +347,76 @@ object NativeAttentionExchangeLogic {
             endsAt = endsAt,
             attentionDateKey = dateKey,
             dailyCooldownOrdinal = ordinal,
-            requiredReadingSeconds = requirement.activeSeconds,
-            requiredQualifiedPages = requirement.qualifiedPages,
+            requirementKind = requirement.kind.wireLabel,
+            requiredReadingSeconds = requirement.baselineReadingSeconds,
+            requiredQualifiedPages = requirement.baselineReadingPages,
+            restorativeReadingSeconds = requirement.restorativeReadingSeconds,
+            restorativeReadingPages = requirement.restorativeReadingPages,
+            requiredMeditationSeconds = requirement.meditationSeconds,
         )
         val nextCooldowns = existingCooldowns.toMutableMap().apply { put(groupId, cooldown) }
-        val nextGates = existingGates.toMutableMap().apply {
-            remove(groupId)
-            if (requirement.activeSeconds > 0L || requirement.qualifiedPages > 0) {
-                put(
-                    groupId,
-                    NativeReadingGate(
+
+        // CD3 = BASELINE_READING: the aggregate Daily Reader Evidence gate.
+        // CD4+ = RESTORATIVE_CHOICE: NOT another reading gate — a provider-
+        // neutral Restorative Gate (Pass 3 schema) instead.
+        val nextGates = existingGates.toMutableMap().apply { remove(groupId) }
+        val nextRestorativeGates = existingRestorativeGates.toMutableMap().apply { remove(groupId) }
+        when (requirement.kind) {
+            NativeRestorativeRequirementKind.BASELINE_READING -> {
+                if (requirement.baselineReadingSeconds > 0L || requirement.baselineReadingPages > 0) {
+                    nextGates[groupId] = NativeReadingGate(
                         groupId = groupId,
                         attentionDateKey = dateKey,
                         dailyCooldownOrdinal = ordinal,
                         createdAt = startedAt,
                         cooldownEndsAt = endsAt,
-                        requiredReadingSeconds = requirement.activeSeconds,
-                        requiredQualifiedPages = requirement.qualifiedPages,
-                    ),
+                        requiredReadingSeconds = requirement.baselineReadingSeconds,
+                        requiredQualifiedPages = requirement.baselineReadingPages,
+                    )
+                }
+            }
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE -> {
+                nextRestorativeGates[groupId] = NativeRestorativeGateState(
+                    gateId = RestorativeEnforcement.gateIdFor(attentionDayId, groupId, ordinal),
+                    groupId = groupId,
+                    attentionDayId = attentionDayId,
+                    requirementKind = NativeRestorativeRequirementKind.RESTORATIVE_CHOICE.wireLabel,
+                    status = "pending-selection",
+                    selectedProvider = null,
+                    dailyCooldownOrdinal = ordinal,
+                    requiredReadingSeconds = 0L,
+                    requiredQualifiedPages = 0,
+                    restorativeReadingSeconds = requirement.restorativeReadingSeconds,
+                    restorativeReadingPages = requirement.restorativeReadingPages,
+                    requiredMeditationSeconds = requirement.meditationSeconds,
                 )
             }
+            else -> Unit
         }
 
+        // Pass 3 (item: highestRequired* is a migration/compatibility
+        // projection only). CD3 may establish 3600/36; RESTORATIVE_CHOICE must
+        // never mutate these (no 5400/47, no 7200/58).
+        val requirementEstablishesBaseline = requirement.kind == NativeRestorativeRequirementKind.BASELINE_READING
         return NativeCooldownAllocation(
             dailyAttentionExchange = daily.copy(
                 cooldownsTriggered = ordinal,
-                highestRequiredActiveSeconds = maxOf(daily.highestRequiredActiveSeconds, requirement.activeSeconds),
-                highestRequiredQualifiedPages = maxOf(daily.highestRequiredQualifiedPages, requirement.qualifiedPages),
+                highestRequiredActiveSeconds = if (requirementEstablishesBaseline) {
+                    maxOf(daily.highestRequiredActiveSeconds, requirement.baselineReadingSeconds)
+                } else {
+                    daily.highestRequiredActiveSeconds
+                },
+                highestRequiredQualifiedPages = if (requirementEstablishesBaseline) {
+                    maxOf(daily.highestRequiredQualifiedPages, requirement.baselineReadingPages)
+                } else {
+                    daily.highestRequiredQualifiedPages
+                },
                 updatedAt = startedAt,
             ),
             cooldowns = nextCooldowns,
             readingGates = nextGates,
             allocated = true,
+            restorativeGates = nextRestorativeGates,
         )
     }
 

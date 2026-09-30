@@ -26,7 +26,14 @@ data class NativeRestorativeGateState(
     val requirementKind: String,
     val status: String,
     val selectedProvider: String? = null,
-    val dailyCooldownOrdinal: Int = 0
+    val dailyCooldownOrdinal: Int = 0,
+    /** Baseline/legacy compatibility numbers (CD3 aggregate evidence + migrated v1.2). */
+    val requiredReadingSeconds: Long = 0L,
+    val requiredQualifiedPages: Int = 0,
+    /** CD4+ restorative choice numbers. */
+    val restorativeReadingSeconds: Long = 0L,
+    val restorativeReadingPages: Int = 0,
+    val requiredMeditationSeconds: Long = 0L,
 ) {
     val satisfied: Boolean get() = status == "satisfied"
     val holdsGroup: Boolean get() = requirementKind != "none" && !satisfied
@@ -79,16 +86,25 @@ object RestorativeEnforcement {
     const val RESTORATIVE_READING_SECONDS = 1800L
     const val RESTORATIVE_QUALIFIED_PAGES = 11
 
+    /** CD4+ Meditation path requirement (per bound recovery session). */
+    const val RESTORATIVE_MEDITATION_SECONDS = 1800L
+
     /** CD3 daily Reader baseline (cumulative Daily Evidence V2 target). */
     const val BASELINE_READING_SECONDS = 3600L
     const val BASELINE_QUALIFIED_PAGES = 36
 
-    /** Kotlin mirror of the Pass 3 policy (spec 2: frozen). */
-    fun requirementKindForOrdinal(ordinal: Int): String = when {
-        ordinal <= 2 -> "none"
-        ordinal == 3 -> "baseline-reading"
-        else -> "restorative-choice"
-    }
+    /**
+     * Deterministic gate identity — the SAME formula the JS engine uses
+     * (`deterministicGateId`): one gate per (Attention Day, group, ordinal),
+     * so a native allowance exhaustion and the later JS reconciliation refer
+     * to the same logical gate. Never two gates for one cooldown.
+     */
+    fun gateIdFor(attentionDayId: String, groupId: String, ordinal: Int): String =
+        "gate-$attentionDayId-$groupId-o$ordinal"
+
+    /** Kotlin mirror of the Pass 3 policy (spec 2: frozen; single authority). */
+    fun requirementKindForOrdinal(ordinal: Int): String =
+        NativeAttentionExchangeLogic.requirementKindForOrdinal(ordinal).wireLabel
 
     /**
      * The gate a preview should describe: the gate matching the next ordinal
@@ -123,7 +139,12 @@ object RestorativeEnforcement {
                     requirementKind = requirementKind,
                     status = status,
                     selectedProvider = map["selectedProvider"] as? String,
-                    dailyCooldownOrdinal = (map["dailyCooldownOrdinal"] as? Number)?.toInt() ?: 0
+                    dailyCooldownOrdinal = (map["dailyCooldownOrdinal"] as? Number)?.toInt() ?: 0,
+                    requiredReadingSeconds = (map["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
+                    requiredQualifiedPages = (map["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
+                    restorativeReadingSeconds = (map["restorativeReadingSeconds"] as? Number)?.toLong() ?: 0L,
+                    restorativeReadingPages = (map["restorativeReadingPages"] as? Number)?.toInt() ?: 0,
+                    requiredMeditationSeconds = (map["requiredMeditationSeconds"] as? Number)?.toLong() ?: 0L,
                 )
             }
         }
@@ -174,6 +195,11 @@ object RestorativeEnforcement {
                     .put("status", gate.status)
                     .put("selectedProvider", gate.selectedProvider)
                     .put("dailyCooldownOrdinal", gate.dailyCooldownOrdinal)
+                    .put("requiredReadingSeconds", gate.requiredReadingSeconds)
+                    .put("requiredQualifiedPages", gate.requiredQualifiedPages)
+                    .put("restorativeReadingSeconds", gate.restorativeReadingSeconds)
+                    .put("restorativeReadingPages", gate.restorativeReadingPages)
+                    .put("requiredMeditationSeconds", gate.requiredMeditationSeconds)
             )
         }
         root.put("restorativeGates", gates)
@@ -210,7 +236,12 @@ object RestorativeEnforcement {
                             "requirementKind" to obj.optString("requirementKind"),
                             "status" to obj.optString("status"),
                             "selectedProvider" to obj.optString("selectedProvider", "none"),
-                            "dailyCooldownOrdinal" to obj.optInt("dailyCooldownOrdinal")
+                            "dailyCooldownOrdinal" to obj.optInt("dailyCooldownOrdinal"),
+                            "requiredReadingSeconds" to obj.optLong("requiredReadingSeconds", 0L),
+                            "requiredQualifiedPages" to obj.optInt("requiredQualifiedPages", 0),
+                            "restorativeReadingSeconds" to obj.optLong("restorativeReadingSeconds", 0L),
+                            "restorativeReadingPages" to obj.optInt("restorativeReadingPages", 0),
+                            "requiredMeditationSeconds" to obj.optLong("requiredMeditationSeconds", 0L),
                         )
                     )
                 }
@@ -238,6 +269,44 @@ object RestorativeEnforcement {
         } catch (_: Throwable) {
             parse(emptyMap())
         }
+    }
+
+    /**
+     * Native <-> JS reconciliation (Pass 5A): the native store and the JS
+     * projection converge on ONE gate per (Attention Day, group, ordinal) with
+     * the SAME deterministic identity. JS may add provider selection and
+     * session binding; a completed (satisfied) gate is never downgraded; a
+     * native-created gate survives until the JS projection catches up. A new
+     * Attention Day replaces the store wholesale.
+     */
+    fun reconcileIncoming(
+        existing: RestorativeEnforcementSnapshot,
+        incoming: RestorativeEnforcementSnapshot,
+    ): RestorativeEnforcementSnapshot {
+        val sameAttentionDay = existing.attentionDay?.id != null &&
+            existing.attentionDay.id == incoming.attentionDay?.id
+        if (!sameAttentionDay) return incoming
+
+        val merged = LinkedHashMap<String, NativeRestorativeGateState>()
+        for ((groupId, gate) in existing.restorativeGates) {
+            merged[groupId] = gate
+        }
+        for ((groupId, gate) in incoming.restorativeGates) {
+            val current = merged[groupId]
+            merged[groupId] = when {
+                current == null -> gate
+                current.gateId == gate.gateId &&
+                    current.status == "satisfied" &&
+                    gate.status != "satisfied" -> current
+                else -> gate
+            }
+        }
+        return incoming.copy(restorativeGates = merged)
+    }
+
+    /** Persists an incoming projection without losing native gate truth. */
+    fun persistMerged(context: Context, incoming: RestorativeEnforcementSnapshot) {
+        persist(context, reconcileIncoming(load(context), incoming))
     }
 
     fun persist(context: Context, snapshot: RestorativeEnforcementSnapshot) {

@@ -1427,7 +1427,9 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     } catch {
       started = false;
     }
-    await get().openRhythmicReader();
+    // startRecoverySession starts Reader's RecoveryEntryActivity with the
+    // bound-session payload. Launching Reader's generic main activity after it
+    // would replace that entry flow with an unbound preview.
     return started;
   },
 

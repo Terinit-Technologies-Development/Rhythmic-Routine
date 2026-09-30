@@ -31,8 +31,15 @@ data class NativeCooldownPolicy(
     val startedAt: Long = 0L,
     val attentionDateKey: String? = null,
     val dailyCooldownOrdinal: Int? = null,
+    /** Pass 3 requirement kind (wire label); NONE for pre-Pass-3 timers. */
+    val requirementKind: String = "none",
+    /** Baseline/legacy compatibility only (CD3 aggregate evidence + migrated v1.2). */
     val requiredReadingSeconds: Long = 0L,
     val requiredQualifiedPages: Int = 0,
+    /** CD4+ restorative choice requirements. */
+    val restorativeReadingSeconds: Long = 0L,
+    val restorativeReadingPages: Int = 0,
+    val requiredMeditationSeconds: Long = 0L,
 )
 data class NativeRoutineWindow(val id: String, val type: String, val startTime: String, val endTime: String, val activeDays: Set<Int>, val protectedPackages: Set<String>, val enabled: Boolean)
 data class NativeRoutineSchedule(val windows: List<NativeRoutineWindow>, val allRiskPackages: Set<String>)
@@ -192,6 +199,11 @@ class RhythmEnforcementService : AccessibilityService() {
         ledger[policy.groupId] = exhaustion.usage
         val endsAt = now + policy.cooldownMinutes * 60_000L
         val attention = loadAttentionExchangeState(applicationContext, now)
+        val attentionDayId = NativeAttentionExchangeLogic.resolveAttentionDayId(
+            now,
+            loadRoutineSchedule(applicationContext),
+        )
+        val existingRestorativeGates = RestorativeEnforcement.load(applicationContext).restorativeGates
         val allocation = NativeAttentionExchangeLogic.allocateCooldown(
             state = attention,
             policy = loadAttentionPolicy(applicationContext),
@@ -203,6 +215,8 @@ class RhythmEnforcementService : AccessibilityService() {
             existingCooldowns = cooldowns,
             existingGates = gates,
             alreadyExhausted = false,
+            attentionDayId = attentionDayId,
+            existingRestorativeGates = existingRestorativeGates,
         )
         if (!allocation.allocated) return
         val updatedCooldowns = allocation.cooldowns.values.toList()
@@ -218,6 +232,16 @@ class RhythmEnforcementService : AccessibilityService() {
             Log.e(TAG, "Failed to persist exhaustion accounting for ${policy.groupId}")
             return
         }
+        // CD4+ allocations carry a provider-neutral Restorative Gate (Pass 3
+        // schema, deterministic identity shared with JS). Persist it with the
+        // same no-downgrade reconciliation the JS projection uses.
+        RestorativeEnforcement.persistMerged(
+            applicationContext,
+            RestorativeEnforcement.load(applicationContext).copy(
+                restorativeGates = allocation.restorativeGates,
+                attentionDay = NativeAttentionDayState(attentionDayId),
+            ),
+        )
         activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null
         scheduleNearestCooldownExpiry(now)
         if (lastForegroundPackage == foregroundPackage && !hasActiveAccessLease(applicationContext, foregroundPackage, now)) presentIntervention(foregroundPackage, policy, endsAt)
@@ -1108,9 +1132,12 @@ class RhythmEnforcementService : AccessibilityService() {
                 ),
             )
             return persistAttentionMutation(context, loadGroupUsageLedger(context), cooldownsByGroup.values.toList(), completedState, nextGates).also {
-                // Pass 3: persist the Restorative/Morning enforcement projection
-                // (additive; survives JS/app process death).
-                RestorativeEnforcement.persist(context, RestorativeEnforcement.parse(snapshot))
+                // Pass 3: persist the Restorative/Morning enforcement projection.
+                // Pass 5A reconciliation: converge on one gate per identity, JS
+                // may add provider/session binding, completed state is never
+                // downgraded, and native-created gates survive until the JS
+                // projection catches up.
+                RestorativeEnforcement.persistMerged(context, RestorativeEnforcement.parse(snapshot))
             }
         }
 
@@ -1142,8 +1169,12 @@ class RhythmEnforcementService : AccessibilityService() {
                 endsAt = values.maxOf { it.endsAt },
                 attentionDateKey = if (hasNativeAttention) native.attentionDateKey else null,
                 dailyCooldownOrdinal = if (hasNativeAttention) native.dailyCooldownOrdinal else null,
+                requirementKind = if (hasNativeAttention) native.requirementKind else "none",
                 requiredReadingSeconds = if (hasNativeAttention) native.requiredReadingSeconds else 0L,
                 requiredQualifiedPages = if (hasNativeAttention) native.requiredQualifiedPages else 0,
+                restorativeReadingSeconds = if (hasNativeAttention) native.restorativeReadingSeconds else 0L,
+                restorativeReadingPages = if (hasNativeAttention) native.restorativeReadingPages else 0,
+                requiredMeditationSeconds = if (hasNativeAttention) native.requiredMeditationSeconds else 0L,
             )
         }
 
@@ -1191,8 +1222,12 @@ class RhythmEnforcementService : AccessibilityService() {
                 endsAt = endsAt,
                 attentionDateKey = item["attentionDateKey"] as? String,
                 dailyCooldownOrdinal = (item["dailyCooldownOrdinal"] as? Number)?.toInt(),
+                requirementKind = item["requirementKind"] as? String ?: "none",
                 requiredReadingSeconds = (item["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
                 requiredQualifiedPages = (item["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
+                restorativeReadingSeconds = (item["restorativeReadingSeconds"] as? Number)?.toLong() ?: 0L,
+                restorativeReadingPages = (item["restorativeReadingPages"] as? Number)?.toInt() ?: 0,
+                requiredMeditationSeconds = (item["requiredMeditationSeconds"] as? Number)?.toLong() ?: 0L,
             )
         }
 
@@ -1216,8 +1251,12 @@ class RhythmEnforcementService : AccessibilityService() {
                         endsAt = value.optLong("endsAt", 0L).coerceAtLeast(0L),
                         attentionDateKey = attentionDate.takeIf { hasMetadata },
                         dailyCooldownOrdinal = ordinal.takeIf { hasMetadata },
+                        requirementKind = value.optString("requirementKind", "none").takeIf { hasMetadata } ?: "none",
                         requiredReadingSeconds = seconds.takeIf { hasMetadata } ?: 0L,
                         requiredQualifiedPages = pages.takeIf { hasMetadata } ?: 0,
+                        restorativeReadingSeconds = value.optLong("restorativeReadingSeconds", 0L).coerceAtLeast(0L).takeIf { hasMetadata } ?: 0L,
+                        restorativeReadingPages = value.optInt("restorativeReadingPages", 0).coerceAtLeast(0).takeIf { hasMetadata } ?: 0,
+                        requiredMeditationSeconds = value.optLong("requiredMeditationSeconds", 0L).coerceAtLeast(0L).takeIf { hasMetadata } ?: 0L,
                     )
                 }
             } catch (_: Exception) {
@@ -1236,8 +1275,12 @@ class RhythmEnforcementService : AccessibilityService() {
                     if (cooldown.attentionDateKey != null && cooldown.dailyCooldownOrdinal != null) {
                         put("attentionDateKey", cooldown.attentionDateKey)
                         put("dailyCooldownOrdinal", cooldown.dailyCooldownOrdinal)
+                        put("requirementKind", cooldown.requirementKind)
                         put("requiredReadingSeconds", cooldown.requiredReadingSeconds)
                         put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
+                        put("restorativeReadingSeconds", cooldown.restorativeReadingSeconds)
+                        put("restorativeReadingPages", cooldown.restorativeReadingPages)
+                        put("requiredMeditationSeconds", cooldown.requiredMeditationSeconds)
                     }
                 })
             }

@@ -2,6 +2,7 @@ package expo.modules.rhythmdevice
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -39,24 +40,63 @@ class NativeAttentionExchangeLogicTest {
     )
 
     @Test
-    fun `policy thresholds use the global ordinal and both reading dimensions`() {
-        assertEquals(NativeReadingRequirement(0, 0), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(2))
-        assertEquals(NativeReadingRequirement(3600, 36), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(3))
-        assertEquals(NativeReadingRequirement(5400, 47), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(4))
-        assertEquals(NativeReadingRequirement(7200, 58), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(5))
+    fun `policy thresholds use the frozen Pass 3 kind table - never cumulative`() {
+        assertEquals(NativeRestorativeRequirementKind.NONE, NativeAttentionExchangeLogic.requirementKindForOrdinal(1))
+        assertEquals(NativeRestorativeRequirementKind.NONE, NativeAttentionExchangeLogic.requirementKindForOrdinal(2))
+        assertEquals(
+            NativeRestorativeRequirementKind.BASELINE_READING,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(3),
+        )
+        assertEquals(
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(4),
+        )
+        assertEquals(
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(5),
+        )
 
-        val third = gate()
+        val third = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(3)
+        assertEquals(NativeRestorativeRequirementKind.BASELINE_READING, third.kind)
+        assertEquals(3600L, third.baselineReadingSeconds)
+        assertEquals(36, third.baselineReadingPages)
+
+        // CD4+ is ONE discrete restorative choice - explicitly NOT 5400/47.
+        val fourth = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(4)
+        assertEquals(NativeRestorativeRequirementKind.RESTORATIVE_CHOICE, fourth.kind)
+        assertEquals(1800L, fourth.restorativeReadingSeconds)
+        assertEquals(11, fourth.restorativeReadingPages)
+        assertEquals(1800L, fourth.meditationSeconds)
+        assertEquals(0L, fourth.baselineReadingSeconds)
+        assertNotEquals(5400L, fourth.restorativeReadingSeconds)
+        assertNotEquals(47, fourth.restorativeReadingPages)
+
+        // CD5+ stays the same discrete choice - explicitly NOT 7200/58.
+        val fifth = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(5)
+        assertEquals(NativeRestorativeRequirementKind.RESTORATIVE_CHOICE, fifth.kind)
+        assertEquals(1800L, fifth.restorativeReadingSeconds)
+        assertEquals(11, fifth.restorativeReadingPages)
+        assertEquals(1800L, fifth.meditationSeconds)
+        assertNotEquals(7200L, fifth.restorativeReadingSeconds)
+        assertNotEquals(58, fifth.restorativeReadingPages)
+
+        // The cumulative model survives ONLY as the legacy audit for migrated
+        // v1.2 obligations (e.g. an active 5400/47 gate at ordinal 4).
+        assertEquals(NativeReadingRequirement(5400, 47), NativeAttentionExchangeLogic.legacyReadingRequirementForOrdinal(4))
+        assertEquals(NativeReadingRequirement(7200, 58), NativeAttentionExchangeLogic.legacyReadingRequirementForOrdinal(5))
+
+        val thirdGate = gate()
         assertEquals(
             NativeAttentionGatePhase.READING_REQUIRED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(seconds = 3600, pages = 35), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(seconds = 3600, pages = 35), now, today).phase,
         )
         assertEquals(
             NativeAttentionGatePhase.READING_REQUIRED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(seconds = 3599, pages = 80), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(seconds = 3599, pages = 80), now, today).phase,
         )
         assertEquals(
             NativeAttentionGatePhase.SATISFIED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(), now, today).phase,
         )
     }
 
@@ -83,8 +123,10 @@ class NativeAttentionExchangeLogicTest {
             today,
         )
         assertEquals(4, laterTarget.nextCooldownOrdinal)
-        assertEquals(5400L, laterTarget.requiredActiveSeconds)
-        assertEquals(47, laterTarget.requiredQualifiedPages)
+        // Reader Preview v2 compatibility columns show the restorative choice's
+        // reading requirement (1800/11) - never the obsolete cumulative 5400/47.
+        assertEquals(1800L, laterTarget.requiredActiveSeconds)
+        assertEquals(11, laterTarget.requiredQualifiedPages)
 
         val nextDay = NativeAttentionExchangeLogic.nextReadingTargetPreview(
             NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now),

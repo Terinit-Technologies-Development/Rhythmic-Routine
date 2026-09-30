@@ -53,6 +53,13 @@ export class RhythmEngine {
             .filter(([, gate]) => gate.attentionDateKey === todayKey)
             .map(([groupId, gate]) => [groupId, { ...gate }])
         ),
+        activeRestorativeGates: Object.fromEntries(
+          Object.entries(normalized.activeRestorativeGates ?? {})
+            .filter(([, gate]) =>
+              gate.requirementKind !== 'legacy-reading' || gate.attentionDateKey === todayKey
+            )
+            .map(([groupId, gate]) => [groupId, { ...gate }])
+        ),
         ...(normalized.readingEvidence?.dateKey === todayKey
           ? { readingEvidence: { ...normalized.readingEvidence } }
           : {}),
@@ -145,6 +152,9 @@ export class RhythmEngine {
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
+      activeRestorativeGates: Object.fromEntries(
+        Object.entries(this.runtime.activeRestorativeGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
       nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
       nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
       readingEvidence: this.runtime.readingEvidence ? { ...this.runtime.readingEvidence } : undefined,
@@ -205,6 +215,9 @@ export class RhythmEngine {
         : createDailyAttentionExchangeState(getLocalDateKey(now), now),
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
+      activeRestorativeGates: Object.fromEntries(
+        Object.entries(this.runtime.activeRestorativeGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
       nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
       nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,

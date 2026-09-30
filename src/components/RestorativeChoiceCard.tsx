@@ -21,9 +21,9 @@ import type { RestorativeStatusView, RestorativeProvider } from '../domain/rhyth
 export interface RestorativeChoiceCardProps {
   view: RestorativeStatusView;
   /** Provider selection (binds an opaque provider session before launch). */
-  onSelectProvider: (provider: RestorativeProvider) => void;
+  onSelectProvider: (provider: RestorativeProvider) => void | Promise<void>;
   /** Begin/resume the selected provider flow. */
-  onBeginProvider: (provider: RestorativeProvider) => void;
+  onBeginProvider: (provider: RestorativeProvider) => void | Promise<void>;
   /** Optional provider availability, e.g. 'not-installed' | 'untrusted-signature'. */
   meditationUnavailableReason?: string;
   readerUnavailable?: boolean;
@@ -112,9 +112,9 @@ export function RestorativeChoiceCard({
                   !meditationSelectable && styles.pathButtonDisabled,
                 ]}
                 disabled={!meditationSelectable}
-                onPress={() => {
-                  onSelectProvider('meditation');
-                  onBeginProvider('meditation');
+                onPress={async () => {
+                  await onSelectProvider('meditation');
+                  await onBeginProvider('meditation');
                 }}
               >
                 <Text style={styles.pathButtonPrimaryLabel}>Begin Meditation</Text>
@@ -137,9 +137,9 @@ export function RestorativeChoiceCard({
                   !readerSelectable && styles.pathButtonDisabled,
                 ]}
                 disabled={!readerSelectable}
-                onPress={() => {
-                  onSelectProvider('reader');
-                  onBeginProvider('reader');
+                onPress={async () => {
+                  await onSelectProvider('reader');
+                  await onBeginProvider('reader');
                 }}
               >
                 <Text style={styles.pathButtonSecondaryLabel}>Open Reader</Text>

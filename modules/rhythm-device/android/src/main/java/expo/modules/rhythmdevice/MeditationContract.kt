@@ -50,7 +50,6 @@ object MeditationContract {
         return Intent(ACTION_START_MEDITATION_RECOVERY).apply {
             setClassName(MEDITATION_PACKAGE, MEDITATION_ACTIVITY)
             putExtra(EXTRA_REQUEST_PAYLOAD, payload)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
     }
 

@@ -21,6 +21,10 @@ import { getLocalDateKey } from '../allowance';
 import type {
   ActiveRestorativeGate,
 } from '../restorativeGate';
+import {
+  createRestorativeGateForOrdinal,
+  evaluateRestorativeGate,
+} from '../restorativeGate';
 import type { RhythmConfiguration, RhythmEvent, RhythmRuntime } from '../types';
 
 /**
@@ -82,18 +86,27 @@ describe('Pass 5 — Native Enforcement Blocker Remediation', () => {
   // 1. Bridge payload sanitation + write verification
   // ---------------------------------------------------------------------
   describe('1. Bridge payloads and write verification', () => {
-    it('sanitizeForNative drops undefined-valued keys the bridge map conversion rejects', () => {
+    it('sanitizeForNative drops undefined and null keys the bridge map conversion rejects', () => {
       const payload = {
         groupId: 'social',
         packageNames: ['com.block.juggle'],
         attentionDateKey: undefined,
-        nested: { a: 1, b: undefined, list: [{ x: 1, y: undefined }] },
+        nullable: null,
+        nested: {
+          a: 1,
+          b: undefined,
+          c: null,
+          list: [{ x: 1, y: undefined, z: null }],
+        },
       };
       const clean = sanitizeForNative(payload) as any;
       assert.equal('attentionDateKey' in clean, false);
+      assert.equal('nullable' in clean, false);
       assert.deepEqual(clean.packageNames, ['com.block.juggle']);
       assert.equal('b' in clean.nested, false);
+      assert.equal('c' in clean.nested, false);
       assert.equal('y' in clean.nested.list[0], false);
+      assert.equal('z' in clean.nested.list[0], false);
       assert.equal(clean.nested.a, 1);
     });
 
@@ -361,6 +374,210 @@ describe('Pass 5 — Native Enforcement Blocker Remediation', () => {
       const after = runtime.activeRestorativeGates?.['qa-3'] as ActiveRestorativeGate;
       assert.equal(after.gateId, before.gateId, 'Re-import must not regenerate gate identity');
       assert.equal(runtime.dailyAttentionExchange?.cooldownsTriggered, 3, 'Re-import must not allocate twice');
+    });
+
+    it('aggregate Daily Reader Evidence never satisfies a CD4+ restorative-choice gate', () => {
+      const config = buildConfig({ classification: 'risk' });
+      const now = new Date(2026, 8, 29, 10, 0, 0).getTime();
+      const today = getLocalDateKey(now);
+      const attentionDayId = resolveAttentionDay(now, config.routineWindows).id;
+      const gate = createRestorativeGateForOrdinal({
+        groupId: 'qa-4',
+        attentionDayId,
+        dailyCooldownOrdinal: 4,
+        createdAt: now,
+        cooldownEndsAt: now + 3600_000,
+      });
+      assert.equal(gate?.requirementKind, 'restorative-choice');
+
+      // Today's general reading is far beyond 1800/11 — the CD4 gate must
+      // still be pending: only the EXACT bound session may satisfy it.
+      const evaluation = evaluateRestorativeGate({
+        gate: gate!,
+        now,
+        attentionDayId,
+        currentDateKey: today,
+        acceptedEvidenceDateKeys: [today],
+        readerDailyEvidence: {
+          dateKey: today,
+          providerAvailable: true,
+          protocolCompatible: true,
+          verifiedActiveSeconds: 7200,
+          qualifiedPages: 80,
+        },
+        readerSessionEvidence: null,
+        meditationEvidence: null,
+        meditationSubstitutionsUsed: 0,
+      });
+      assert.equal(evaluation.gate?.status, 'pending-selection', 'Aggregate evidence must not satisfy CD4+');
+      assert.notEqual(evaluation.phase, 'complete');
+      assert.equal(evaluation.gate?.satisfiedAt, undefined);
+    });
+
+    it('a migrated legacy obligation imports as LEGACY_READING with its historical numbers', () => {
+      const config = buildConfig({ classification: 'risk' });
+      const now = new Date(2026, 8, 29, 10, 0, 0).getTime();
+      const today = getLocalDateKey(now);
+
+      // A v1.2 obligation observed post-restart: ordinal 4 reading gate with
+      // the historical cumulative numbers 5400/47.
+      const event = buildNativeAttentionImport(now, today, {
+        groupId: 'legacy',
+        ordinal: 4,
+        seconds: 5400,
+        pages: 47,
+      });
+      const runtime = processRhythmEvent(
+        {
+          state: 'available',
+          activeRoutineWindowIds: [],
+          activeCooldowns: {},
+          activeAccessLeases: {},
+          activeRestrictions: [],
+        },
+        event,
+        config
+      ).nextRuntime;
+
+      const gate = runtime.activeRestorativeGates?.['legacy'] as ActiveRestorativeGate;
+      assert.ok(gate, 'The legacy obligation must remain represented');
+      assert.equal(gate.requirementKind, 'legacy-reading');
+      assert.equal(gate.requiredReadingSeconds, 5400, 'Historical numbers must be preserved exactly');
+      assert.equal(gate.requiredQualifiedPages, 47);
+      assert.equal(gate.gateId, 'legacy-gate-legacy', 'Migrated obligations use the deterministic legacy id');
+    });
+
+    it('reconciliation keeps one gate per identity and preserves provider binding', () => {
+      const config = buildConfig({ classification: 'risk' });
+      const now = new Date(2026, 8, 29, 10, 0, 0).getTime();
+      const today = getLocalDateKey(now);
+      const attentionDayId = resolveAttentionDay(now, config.routineWindows).id;
+      const importEvent = buildNativeAttentionImport(now, today, {
+        groupId: 'qa-4',
+        ordinal: 4,
+        seconds: 0,
+        pages: 0,
+      });
+
+      let runtime = processRhythmEvent(
+        {
+          state: 'available',
+          activeRoutineWindowIds: [],
+          activeCooldowns: {},
+          activeAccessLeases: {},
+          activeRestrictions: [],
+        },
+        importEvent,
+        config
+      ).nextRuntime;
+
+      const expectedGateId = `gate-${attentionDayId}-qa-4-o4`;
+      assert.equal(runtime.activeRestorativeGates?.['qa-4']?.gateId, expectedGateId);
+
+      // JS adds provider selection/session binding (G4 <-> R4).
+      runtime = processRhythmEvent(
+        runtime,
+        {
+          type: 'SELECT_RESTORATIVE_PROVIDER',
+          groupId: 'qa-4',
+          provider: 'reader',
+          providerSessionId: 'r4',
+          timestamp: now,
+        },
+        config
+      ).nextRuntime;
+      assert.equal(runtime.activeRestorativeGates?.['qa-4']?.providerSessionId, 'r4');
+
+      // Re-import of the same native cycle: one gate, same identity, binding
+      // preserved (no duplicate gate, no regenerated session).
+      runtime = processRhythmEvent(runtime, importEvent, config).nextRuntime;
+      const gate = runtime.activeRestorativeGates?.['qa-4'] as ActiveRestorativeGate;
+      assert.equal(gate.gateId, expectedGateId);
+      assert.equal(gate.providerSessionId, 'r4', 'Reconciliation must not regenerate provider sessions');
+      assert.equal(
+        Object.values(runtime.activeRestorativeGates ?? {}).filter((g) => g.groupId === 'qa-4').length,
+        1,
+        'Exactly one gate per identity'
+      );
+      assert.equal(runtime.dailyAttentionExchange?.cooldownsTriggered, 4);
+    });
+
+    it('native cooldown authority still persists verified bound Meditation completion exactly once', () => {
+      const config = buildConfig({ classification: 'risk' });
+      const now = new Date(2026, 8, 29, 10, 0, 0).getTime();
+      const today = getLocalDateKey(now);
+      const sessionId = 'meditation-bound-qa-4';
+      const nativeImport = buildNativeAttentionImport(now, today, {
+        groupId: 'qa-4',
+        ordinal: 4,
+        seconds: 0,
+        pages: 0,
+      });
+
+      let runtime = processRhythmEvent(
+        {
+          state: 'available',
+          activeRoutineWindowIds: [],
+          activeCooldowns: {},
+          activeAccessLeases: {},
+          activeRestrictions: [],
+        },
+        nativeImport,
+        config
+      ).nextRuntime;
+      const cooldownEndsAt = runtime.activeCooldowns?.['qa-4']?.endsAt;
+      assert.equal(runtime.nativeAttentionAuthority, true);
+
+      runtime = processRhythmEvent(
+        runtime,
+        {
+          type: 'SELECT_RESTORATIVE_PROVIDER',
+          groupId: 'qa-4',
+          provider: 'meditation',
+          providerSessionId: sessionId,
+          timestamp: now + 1,
+        },
+        config
+      ).nextRuntime;
+
+      const evidenceTimestamp = now + 31 * 60_000;
+      const evidence = {
+        sessionId,
+        protocolVersion: 1,
+        status: 'COMPLETED' as const,
+        requiredQualifiedSeconds: 1800,
+        completedQualifiedSeconds: 1800,
+        completedAtEpochMs: evidenceTimestamp,
+        lastUpdatedAtEpochMs: evidenceTimestamp,
+      };
+      const completionEvent: RhythmEvent = {
+        type: 'SYNC_MEDITATION_EVIDENCE',
+        evidence,
+        timestamp: evidenceTimestamp,
+      };
+      runtime = processRhythmEvent(runtime, completionEvent, config).nextRuntime;
+
+      let gate = runtime.activeRestorativeGates?.['qa-4'] as ActiveRestorativeGate;
+      assert.equal(gate.status, 'satisfied');
+      assert.equal(gate.providerLocked, true);
+      assert.equal(gate.meditationSubstitutionConsumed, true);
+      assert.equal(runtime.dailyAttentionExchange?.meditationSubstitutionsUsed, 1);
+      assert.equal(runtime.activeCooldowns?.['qa-4']?.endsAt, cooldownEndsAt);
+
+      // Duplicate status-provider polling is idempotent.
+      runtime = processRhythmEvent(runtime, {
+        ...completionEvent,
+        timestamp: evidenceTimestamp + 1,
+      }, config).nextRuntime;
+      assert.equal(runtime.dailyAttentionExchange?.meditationSubstitutionsUsed, 1);
+
+      // A stale native allocation snapshot cannot erase either completion or
+      // the per-Attention-Day Meditation substitution already consumed in JS.
+      runtime = processRhythmEvent(runtime, nativeImport, config).nextRuntime;
+      gate = runtime.activeRestorativeGates?.['qa-4'] as ActiveRestorativeGate;
+      assert.equal(gate.status, 'satisfied');
+      assert.equal(runtime.dailyAttentionExchange?.meditationSubstitutionsUsed, 1);
+      assert.equal(runtime.activeCooldowns?.['qa-4']?.endsAt, cooldownEndsAt);
     });
   });
 });

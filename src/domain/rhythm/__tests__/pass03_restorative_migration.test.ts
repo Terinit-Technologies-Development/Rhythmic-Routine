@@ -9,6 +9,8 @@ import {
 import { RhythmEngine } from '../RhythmEngine';
 import { initialApps, initialRiskGroups } from '../../../data/mockData';
 import type { ActiveRestorativeGate } from '../restorativeGate';
+import { getLocalDateKey } from '../allowance';
+import { resolveAttentionDay } from '../attentionDay';
 
 /**
  * Pass 3 — v1.2 activeReadingGate migration (spec 41-42, 54) and parallel
@@ -19,6 +21,7 @@ const NOW = 1_700_000_000_000;
 
 /** A v1.2 persisted state with an active cumulative gate (ordinal 4 / 5400 / 47). */
 function seedV12Runtime(): Record<string, unknown> {
+  const dateKey = getLocalDateKey(NOW);
   return {
     state: 'cooldown',
     activeCooldowns: {
@@ -27,7 +30,7 @@ function seedV12Runtime(): Record<string, unknown> {
         startedAt: NOW - 60_000,
         endsAt: NOW + 89 * 60_000,
         dailyCooldownOrdinal: 4,
-        attentionDateKey: '2026-09-27',
+        attentionDateKey: dateKey,
         requiredReadingSeconds: 5400,
         requiredQualifiedPages: 47,
       },
@@ -35,7 +38,7 @@ function seedV12Runtime(): Record<string, unknown> {
     activeAccessLeases: {},
     activeRoutineWindowIds: [],
     dailyAttentionExchange: {
-      dateKey: '2026-09-27',
+      dateKey,
       cooldownsTriggered: 4,
       highestRequiredActiveSeconds: 5400,
       highestRequiredQualifiedPages: 47,
@@ -44,7 +47,7 @@ function seedV12Runtime(): Record<string, unknown> {
     activeReadingGates: {
       social: {
         groupId: 'social',
-        attentionDateKey: '2026-09-27',
+        attentionDateKey: dateKey,
         dailyCooldownOrdinal: 4,
         createdAt: NOW - 60_000,
         cooldownEndsAt: NOW + 89 * 60_000,
@@ -129,6 +132,91 @@ describe('Pass 3 — v1.2 activeReadingGate migration (spec 41, 54)', () => {
       first.activeRestorativeGates?.social?.gateId,
       second.activeRestorativeGates?.social?.gateId
     );
+  });
+
+  test('a bound CD4 Reader gate survives the engine persistence round trip', () => {
+    const config: RhythmConfiguration = {
+      apps: initialApps,
+      riskGroups: initialRiskGroups,
+      routineWindows: [
+        {
+          id: 'morning-buffer',
+          name: 'Morning Buffer',
+          type: 'morning-buffer',
+          startTime: '06:30',
+          endTime: '07:30',
+          activeDays: [1, 2, 3, 4, 5, 6, 7],
+          protectedGroupIds: [],
+          enabled: true,
+          tagline: 'Morning Buffer',
+          description: 'Attention Day boundary fixture',
+        },
+      ],
+    };
+    const dateKey = getLocalDateKey(NOW);
+    const attentionDayId = resolveAttentionDay(NOW, config.routineWindows).id;
+    const cooldownEndsAt = NOW + 90 * 60_000;
+    const gate: ActiveRestorativeGate = {
+      gateId: `gate-${attentionDayId}-videos-o4`,
+      groupId: 'videos',
+      attentionDayId,
+      dailyCooldownOrdinal: 4,
+      createdAt: NOW,
+      cooldownEndsAt,
+      requirementKind: 'restorative-choice',
+      selectedProvider: 'reader',
+      providerSessionId: 'reader-session-cd4',
+      status: 'in-progress',
+      providerLocked: true,
+      requiredRestorativeReadingSeconds: 1800,
+      requiredRestorativeQualifiedPages: 11,
+      requiredMeditationSeconds: 1800,
+    };
+    const persisted: PersistedRuntime = {
+      state: 'cooldown',
+      activeCooldowns: {
+        videos: {
+          groupId: 'videos',
+          startedAt: NOW,
+          endsAt: cooldownEndsAt,
+          attentionDateKey: dateKey,
+          dailyCooldownOrdinal: 4,
+          requirementKind: 'restorative-choice',
+          requiredReadingSeconds: 0,
+          requiredQualifiedPages: 0,
+          restorativeReadingSeconds: 1800,
+          restorativeReadingPages: 11,
+          requiredMeditationSeconds: 1800,
+        },
+      },
+      activeAccessLeases: {},
+      activeRoutineWindowIds: [],
+      dailyAttentionExchange: {
+        dateKey,
+        cooldownsTriggered: 4,
+        highestRequiredActiveSeconds: 3600,
+        highestRequiredQualifiedPages: 36,
+        updatedAt: NOW,
+        meditationSubstitutionsUsed: 0,
+        attentionDayId,
+      },
+      activeReadingGates: {},
+      activeRestorativeGates: { videos: gate },
+      restorativeMigrationVersion: RESTORATIVE_MIGRATION_VERSION,
+      nativeAttentionAuthority: true,
+      lastReconciledAt: NOW,
+    };
+
+    const firstEngine = new RhythmEngine(config, persisted, NOW);
+    const saved = firstEngine.toPersistedRuntime(NOW);
+    assert.deepEqual(saved.activeRestorativeGates?.videos, gate);
+
+    const restartedEngine = new RhythmEngine(
+      config,
+      JSON.parse(JSON.stringify(saved)) as PersistedRuntime,
+      NOW + 1000
+    );
+    assert.deepEqual(restartedEngine.getRuntime().activeRestorativeGates?.videos, gate);
   });
 });
 

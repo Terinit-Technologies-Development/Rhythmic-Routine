@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
+  AppState,
   View,
   Text,
   StyleSheet,
@@ -38,6 +39,28 @@ export default function TouchGrassScreen() {
     : undefined;
   const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
   const recovery = group?.cooldownMinutes;
+
+  // A bound Meditation session can finish while Routine is backgrounded. Its
+  // completion is authoritative only after querying that exact session again;
+  // refresh when this screen returns to the foreground rather than relaunching
+  // the recovery request (which could alter an already-completed record).
+  useEffect(() => {
+    const groupId = restorativeStatus?.groupId;
+    if (!groupId || restorativeStatus.selectedProvider !== 'meditation') return;
+
+    const refresh = () => {
+      void refreshMeditationEvidence(groupId).catch(() => undefined);
+    };
+    refresh();
+
+    let previousState = AppState.currentState;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const resumed = nextState === 'active' && previousState !== 'active';
+      previousState = nextState;
+      if (resumed) refresh();
+    });
+    return () => subscription?.remove();
+  }, [restorativeStatus?.groupId, restorativeStatus?.selectedProvider, refreshMeditationEvidence]);
 
   const configuredActivity = group?.recoveryActivityId
     ? offlineActivities.find((a) => a.id === group.recoveryActivityId)
@@ -183,15 +206,15 @@ export default function TouchGrassScreen() {
           <View style={styles.restorativeSection}>
             <RestorativeChoiceCard
               view={restorativeStatus}
-              onSelectProvider={(provider) => {
-                void selectRestorativeProvider(restorativeStatus.groupId, provider);
+              onSelectProvider={async (provider) => {
+                await selectRestorativeProvider(restorativeStatus.groupId, provider);
               }}
-              onBeginProvider={(provider) => {
+              onBeginProvider={async (provider) => {
                 if (provider === 'meditation') {
-                  void launchMeditationForGate(restorativeStatus.groupId);
-                  void refreshMeditationEvidence(restorativeStatus.groupId);
+                  const started = await launchMeditationForGate(restorativeStatus.groupId);
+                  if (started) await refreshMeditationEvidence(restorativeStatus.groupId);
                 } else {
-                  void launchReaderForGate(restorativeStatus.groupId);
+                  await launchReaderForGate(restorativeStatus.groupId);
                 }
               }}
               meditationUnavailableReason={
