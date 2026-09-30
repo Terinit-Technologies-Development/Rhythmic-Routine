@@ -14,8 +14,10 @@ import {
   createDailyAttentionExchangeState,
   deriveAttentionGateStatus,
   reconcileAttentionExchangeDate,
+  reconcileAttentionExchangeForAttentionDay,
 } from './attentionExchange';
 import { getLocalDateKey } from './allowance';
+import { resolveAttentionDay } from './attentionDay';
 
 export class RhythmEngine {
   private runtime: RhythmRuntime;
@@ -30,8 +32,29 @@ export class RhythmEngine {
 
     const normalized = normalizePersistedRuntime(persistedState, now);
     const todayKey = getLocalDateKey(now);
+    const resolvedAttentionDay = resolveAttentionDay(now, config.routineWindows);
 
     if (normalized) {
+      let restoredAttentionExchange = reconcileAttentionExchangeDate(
+        normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
+        now
+      );
+      if (!Number.isFinite(restoredAttentionExchange.attentionDayNextBoundaryAt)) {
+        if (
+          restoredAttentionExchange.attentionDayId &&
+          restoredAttentionExchange.attentionDayId !== resolvedAttentionDay.id
+        ) {
+          restoredAttentionExchange = reconcileAttentionExchangeForAttentionDay(
+            restoredAttentionExchange,
+            resolvedAttentionDay.id,
+            now
+          );
+        }
+        restoredAttentionExchange = {
+          ...restoredAttentionExchange,
+          attentionDayNextBoundaryAt: resolvedAttentionDay.nextBoundaryAt,
+        };
+      }
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
       const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
       const restoredDailyUsage = normalized.dailyAppUsage ? { ...normalized.dailyAppUsage } : {};
@@ -44,10 +67,7 @@ export class RhythmEngine {
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
         dailyAppUsage: restoredDailyUsage,
         groupAllowanceUsage: restoredGroupUsage,
-        dailyAttentionExchange: reconcileAttentionExchangeDate(
-          normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
-          now
-        ),
+        dailyAttentionExchange: restoredAttentionExchange,
         activeReadingGates: Object.fromEntries(
           Object.entries(normalized.activeReadingGates ?? {})
             .filter(([, gate]) => gate.attentionDateKey === todayKey)
@@ -113,6 +133,27 @@ export class RhythmEngine {
    * Updates configuration (e.g. after user edits) and returns the resulting restriction/state effects immediately.
    */
   public updateConfiguration(nextConfig: RhythmConfiguration, now: number = Date.now()): RhythmEffect[] {
+    if (JSON.stringify(this.config.routineWindows) !== JSON.stringify(nextConfig.routineWindows)) {
+      const previousDay = resolveAttentionDay(now, this.config.routineWindows);
+      const priorState = this.runtime.dailyAttentionExchange ??
+        createDailyAttentionExchangeState(getLocalDateKey(now), now, previousDay.id);
+      const currentAttentionDayId =
+        priorState.attentionDayId &&
+        Number.isFinite(priorState.attentionDayNextBoundaryAt) &&
+        priorState.attentionDayNextBoundaryAt! > now
+          ? priorState.attentionDayId
+          : previousDay.id;
+      const reconciledState = reconcileAttentionExchangeForAttentionDay(
+        priorState,
+        currentAttentionDayId,
+        now
+      );
+      const nextScheduleDay = resolveAttentionDay(now, nextConfig.routineWindows);
+      this.runtime.dailyAttentionExchange = {
+        ...reconciledState,
+        attentionDayNextBoundaryAt: nextScheduleDay.nextBoundaryAt,
+      };
+    }
     this.config = { ...nextConfig };
 
     // If an active session's app was reclassified to non-risk, finalize/clear active pointer safely

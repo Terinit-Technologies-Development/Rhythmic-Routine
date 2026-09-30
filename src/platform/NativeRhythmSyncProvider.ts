@@ -413,7 +413,8 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
               ? {
                   id: runtime.dailyAttentionExchange.attentionDayId,
                   startedAt: 0,
-                  nextBoundaryAt: 0,
+                  nextBoundaryAt:
+                    runtime.dailyAttentionExchange.attentionDayNextBoundaryAt ?? 0,
                 }
               : null,
             activeRestorativeGates: Object.values(runtime.activeRestorativeGates || {}).map(

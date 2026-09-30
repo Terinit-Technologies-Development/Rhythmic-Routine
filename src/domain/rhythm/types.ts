@@ -387,6 +387,9 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
         ...(typeof raw.dailyAttentionExchange.attentionDayId === 'string'
           ? { attentionDayId: raw.dailyAttentionExchange.attentionDayId }
           : {}),
+        ...(Number.isFinite(raw.dailyAttentionExchange.attentionDayNextBoundaryAt)
+          ? { attentionDayNextBoundaryAt: raw.dailyAttentionExchange.attentionDayNextBoundaryAt }
+          : {}),
       }
     : migrateDailyAttentionExchange(activeCooldowns, now, res.activeReadingGates);
 

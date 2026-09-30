@@ -72,6 +72,7 @@ data class NativeDailyAttentionExchangeState(
     val highestRequiredActiveSeconds: Long,
     val highestRequiredQualifiedPages: Int,
     val updatedAt: Long,
+    val attentionDayId: String? = null,
 )
 
 data class NativeReadingGate(
@@ -172,12 +173,13 @@ object NativeAttentionExchangeLogic {
                 requirement.baselineReadingSeconds to requirement.baselineReadingPages
         }
 
-    fun newDailyState(dateKey: String, now: Long) = NativeDailyAttentionExchangeState(
+    fun newDailyState(dateKey: String, now: Long, attentionDayId: String? = null) = NativeDailyAttentionExchangeState(
         dateKey = dateKey,
         cooldownsTriggered = 0,
         highestRequiredActiveSeconds = 0L,
         highestRequiredQualifiedPages = 0,
         updatedAt = now,
+        attentionDayId = attentionDayId,
     )
 
     /** The frozen Pass 3 policy table: which requirement kind an ordinal carries. */
@@ -277,7 +279,25 @@ object NativeAttentionExchangeLogic {
                 }
             }
         }
-        return attentionDayIdForBoundary(localMidnight(now))
+        return "ad-${localDateKey(now)}"
+    }
+
+    /** Resolves the current identity and the next scheduled boundary. */
+    fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState {
+        val id = resolveAttentionDayId(now, schedule)
+        val morning = schedule.windows.firstOrNull {
+            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
+        }
+        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
+        if (morning != null && minutes != null && Regex("^ad-\\d{8}-\\d{4}$").matches(id)) {
+            for (daysAhead in 0..7) {
+                val candidate = boundaryAt(now, minutes, -daysAhead)
+                if (candidate > now && isActiveOnDay(morning, candidate)) {
+                    return NativeAttentionDayState(id, candidate)
+                }
+            }
+        }
+        return NativeAttentionDayState(id, boundaryAt(now, 0, -1))
     }
 
     /** Local midnight of (now - daysBack) plus minutesIntoDay. */
@@ -307,11 +327,13 @@ object NativeAttentionExchangeLogic {
     }
 
     private fun parseTimeToMinutes(value: String): Int? {
+        if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(value)) return null
         val parts = value.split(":")
-        val hours = parts.getOrNull(0)?.toIntOrNull() ?: return null
-        val minutes = parts.getOrNull(1)?.toIntOrNull() ?: return null
-        return hours * 60 + minutes
+        return parts[0].toInt() * 60 + parts[1].toInt()
     }
+
+    private fun localDateKey(now: Long): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
 
     /** One global ordinal per accepted exhaustion; existing timer/gate/ledger state makes retries idempotent. */
     fun allocateCooldown(
@@ -332,12 +354,21 @@ object NativeAttentionExchangeLogic {
             alreadyExhausted ||
             existingCooldowns.containsKey(groupId) ||
             existingGates[groupId]?.attentionDateKey == dateKey ||
-            existingRestorativeGates.containsKey(groupId)
+            existingRestorativeGates[groupId]?.let {
+                it.attentionDayId == attentionDayId && it.holdsGroup
+            } == true
         ) {
             return NativeCooldownAllocation(state, existingCooldowns, existingGates, allocated = false)
         }
 
-        val daily = if (state.dateKey == dateKey) state else newDailyState(dateKey, startedAt)
+        val daily = if (
+            state.attentionDayId == attentionDayId ||
+            (state.attentionDayId == null && state.dateKey == dateKey)
+        ) {
+            state.copy(dateKey = dateKey, attentionDayId = attentionDayId)
+        } else {
+            newDailyState(dateKey, startedAt, attentionDayId)
+        }
         val ordinal = if (daily.cooldownsTriggered == Int.MAX_VALUE) Int.MAX_VALUE else daily.cooldownsTriggered + 1
         val requirement = requirementForCooldownOrdinal(ordinal, policy)
         val cooldown = NativeCooldownPolicy(
@@ -508,16 +539,21 @@ object NativeAttentionExchangeLogic {
         incomingGates: Map<String, NativeReadingGate>,
         today: String,
         now: Long,
+        attentionDayId: String = "ad-$today",
     ): Pair<NativeDailyAttentionExchangeState, Map<String, NativeReadingGate>> {
         if (nativeState == null) {
-            val seeded = incomingState?.takeIf { it.dateKey == today } ?: newDailyState(today, now)
+            val seeded = incomingState?.takeIf { it.dateKey == today }?.let {
+                it.copy(attentionDayId = attentionDayId)
+            } ?: newDailyState(today, now, attentionDayId)
             val persistedGates = nativeGates.filterValues { it.attentionDateKey == today }
             val gates = if (persistedGates.isNotEmpty()) persistedGates else incomingGates.filterValues { it.attentionDateKey == today }
             return withGateRequirements(seeded, gates) to gates
         }
-        if (nativeState.dateKey != today) return newDailyState(today, now) to emptyMap()
+        val sameAttentionDay = nativeState.attentionDayId == attentionDayId ||
+            (nativeState.attentionDayId == null && nativeState.dateKey == today)
+        if (!sameAttentionDay) return newDailyState(today, now, attentionDayId) to emptyMap()
         val gates = nativeGates.filterValues { it.attentionDateKey == today }
-        return withGateRequirements(nativeState, gates) to gates
+        return withGateRequirements(nativeState.copy(dateKey = today, attentionDayId = attentionDayId), gates) to gates
     }
 
     fun isEffectivelyRestricted(

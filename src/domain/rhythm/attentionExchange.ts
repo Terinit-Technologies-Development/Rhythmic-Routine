@@ -34,8 +34,13 @@ export interface DailyAttentionExchangeState {
    * Pass 3: the behavioral-day identity (Morning-Buffer-boundary day). Gates,
    * cooldowns, and the meditation substitution counter reset ONLY at this
    * boundary — never at midnight.
-   */
+  */
   attentionDayId?: string;
+  /**
+   * Persisted close boundary for the active Attention Day. This freezes the
+   * current cycle when the schedule is edited and survives midnight/restart.
+   */
+  attentionDayNextBoundaryAt?: number;
   /**
    * Pass 3: cooldown Meditation substitutions consumed in this Attention Day.
    * Capped (2/day). Morning/Evening/Standalone meditation never consume it.
@@ -137,7 +142,8 @@ export function legacyReadingRequirementForCooldownOrdinal(
 export function createDailyAttentionExchangeState(
   dateKey: string,
   updatedAt: number,
-  attentionDayId?: string
+  attentionDayId?: string,
+  attentionDayNextBoundaryAt?: number
 ): DailyAttentionExchangeState {
   return {
     dateKey,
@@ -147,6 +153,9 @@ export function createDailyAttentionExchangeState(
     updatedAt,
     meditationSubstitutionsUsed: 0,
     ...(attentionDayId ? { attentionDayId } : {}),
+    ...(Number.isFinite(attentionDayNextBoundaryAt)
+      ? { attentionDayNextBoundaryAt }
+      : {}),
   };
 }
 
@@ -156,7 +165,28 @@ export function reconcileAttentionExchangeDate(
 ): DailyAttentionExchangeState {
   const dateKey = getLocalDateKey(now);
   if (state.dateKey !== dateKey) {
-    return createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+    const sameAttentionDay =
+      typeof state.attentionDayId === 'string' &&
+      (!Number.isFinite(state.attentionDayNextBoundaryAt) ||
+        state.attentionDayNextBoundaryAt! > now);
+    if (!sameAttentionDay) {
+      return createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+    }
+    // `dateKey` remains calendar-day scoped for Reader compatibility. Cooldown
+    // ordinals and substitutions are Attention-Day scoped and must carry over
+    // midnight when a Morning Buffer is active.
+    return {
+      dateKey,
+      cooldownsTriggered: nonNegativeInteger(state.cooldownsTriggered),
+      highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
+      highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
+      updatedAt: now,
+      meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+      ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
+      ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+        ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+        : {}),
+    };
   }
   return {
     dateKey,
@@ -166,6 +196,9 @@ export function reconcileAttentionExchangeDate(
     updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
     meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
     ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
+    ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+      ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+      : {}),
   };
 }
 
@@ -191,6 +224,9 @@ export function reconcileAttentionExchangeForAttentionDay(
       updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
       meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
       attentionDayId,
+      ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+        ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+        : {}),
     };
   }
   return createDailyAttentionExchangeState(dateKey, now, attentionDayId);

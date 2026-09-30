@@ -598,6 +598,7 @@ class RhythmDeviceModule : Module() {
   private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {
     val dateKey = RhythmEnforcementService.getLocalDateKey(now)
     val state = RhythmEnforcementService.loadAttentionExchangeState(context, now)
+    val attentionDay = RhythmEnforcementService.loadAttentionDayState(context, now)
     val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
       .filter { it.endsAt > now }
       .map { cooldown ->
@@ -632,6 +633,11 @@ class RhythmDeviceModule : Module() {
       "cooldownsTriggered" to state.cooldownsTriggered,
       "highestRequiredActiveSeconds" to state.highestRequiredActiveSeconds.toDouble(),
       "highestRequiredQualifiedPages" to state.highestRequiredQualifiedPages,
+      "attentionDay" to mapOf(
+        "id" to attentionDay.id,
+        "startedAt" to 0L,
+        "nextBoundaryAt" to attentionDay.nextBoundaryAt.toDouble(),
+      ),
       "cooldowns" to cooldowns,
       "readingGates" to gates,
       "groupUsage" to groupSnapshots(context),

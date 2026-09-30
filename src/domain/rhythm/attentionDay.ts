@@ -1,6 +1,6 @@
 import type { RoutineWindow } from '../../types/domain';
 import { getLocalDateKey } from './allowance';
-import { getIsoWeekday, parseTimeToMinutes } from './routine';
+import { getIsoWeekday } from './routine';
 
 /**
  * Attention Day — the behavioral-day boundary for the Restorative policy.
@@ -66,6 +66,11 @@ function boundaryAt(base: number, minutesIntoDay: number): number {
   return date.getTime() + minutesIntoDay * 60 * 1000;
 }
 
+function parseBoundaryMinutes(value: string): number | null {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(value);
+  return match ? Number(match[0].slice(0, 2)) * 60 + Number(match[0].slice(3, 5)) : null;
+}
+
 /**
  * Resolves the Attention Day containing `now`.
  *
@@ -78,7 +83,7 @@ function boundaryAt(base: number, minutesIntoDay: number): number {
  */
 export function resolveAttentionDay(now: number, schedule: RoutineWindow[]): AttentionDay {
   const buffer = findMorningBuffer(schedule);
-  const minutes = buffer ? parseTimeToMinutes(buffer.endTime as string) : null;
+  const minutes = buffer ? parseBoundaryMinutes(buffer.endTime as string) : null;
 
   if (buffer && minutes !== null && Number.isFinite(minutes)) {
     let startedAt: number | undefined;

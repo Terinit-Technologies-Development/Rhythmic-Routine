@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
 
 class NativeAttentionExchangeLogicTest {
     private val today = "2026-09-24"
@@ -181,6 +182,45 @@ class NativeAttentionExchangeLogicTest {
     }
 
     @Test
+    fun `stale restorative gate from a prior Attention Day does not block a new allocation`() {
+        val currentDayId = "ad-20260925-0730"
+        val previousDayGate = NativeRestorativeGateState(
+            gateId = "gate-ad-20260924-0730-social-o4",
+            groupId = "social",
+            attentionDayId = "ad-20260924-0730",
+            requirementKind = "restorative-choice",
+            status = "pending-selection",
+        )
+        val state = NativeDailyAttentionExchangeState(
+            dateKey = tomorrow,
+            cooldownsTriggered = 3,
+            highestRequiredActiveSeconds = 0L,
+            highestRequiredQualifiedPages = 0,
+            updatedAt = now,
+            attentionDayId = currentDayId,
+        )
+
+        val allocation = NativeAttentionExchangeLogic.allocateCooldown(
+            state = state,
+            policy = NativeAttentionExchangeLogic.DEFAULT_POLICY,
+            groupId = "social",
+            packageNames = setOf("social.app"),
+            startedAt = now,
+            endsAt = now + 60_000,
+            dateKey = tomorrow,
+            existingCooldowns = emptyMap(),
+            existingGates = emptyMap(),
+            alreadyExhausted = false,
+            attentionDayId = currentDayId,
+            existingRestorativeGates = mapOf("social" to previousDayGate),
+        )
+
+        assertTrue(allocation.allocated)
+        assertEquals(4, allocation.dailyAttentionExchange.cooldownsTriggered)
+        assertEquals(currentDayId, allocation.restorativeGates["social"]?.attentionDayId)
+    }
+
+    @Test
     fun `cooldown expiry keeps an unsatisfied gate and completes only after both thresholds`() {
         val activeCooldown = NativeCooldownPolicy(
             "social", setOf("social.app"), now + 60_000, now,
@@ -301,6 +341,77 @@ class NativeAttentionExchangeLogicTest {
             NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE,
             NativeAttentionExchangeLogic.decideCooldownExpiry(crossMidnight, null, null, now + 86_400_001, tomorrow).action,
         )
+    }
+
+    @Test
+    fun `attention-day ordinal survives midnight but resets at the saved morning boundary`() {
+        val attentionDayId = "ad-20260924-0730"
+        val oldGate = gate(dateKey = today, ordinal = 4)
+        val state = NativeDailyAttentionExchangeState(
+            today, 4, 3600L, 36, now, attentionDayId,
+        )
+
+        val (afterMidnight, dateScopedGates) = NativeAttentionExchangeLogic.reconcileIncomingState(
+            nativeState = state,
+            nativeGates = mapOf("social" to oldGate),
+            incomingState = null,
+            incomingGates = emptyMap(),
+            today = tomorrow,
+            now = now + 60_000,
+            attentionDayId = attentionDayId,
+        )
+        assertEquals(4, afterMidnight.cooldownsTriggered)
+        assertEquals(tomorrow, afterMidnight.dateKey)
+        assertEquals(attentionDayId, afterMidnight.attentionDayId)
+        // The CD3 Daily Reader baseline remains calendar-date scoped.
+        assertTrue(dateScopedGates.isEmpty())
+
+        val (nextAttentionDay, _) = NativeAttentionExchangeLogic.reconcileIncomingState(
+            nativeState = afterMidnight,
+            nativeGates = emptyMap(),
+            incomingState = null,
+            incomingGates = emptyMap(),
+            today = tomorrow,
+            now = now + 8 * 60 * 60_000,
+            attentionDayId = "ad-20260925-0730",
+        )
+        assertEquals(0, nextAttentionDay.cooldownsTriggered)
+        assertEquals("ad-20260925-0730", nextAttentionDay.attentionDayId)
+    }
+
+    @Test
+    fun `native attention-day resolver matches morning and calendar fallback boundaries`() {
+        val morning = NativeRoutineWindow(
+            id = "morning-buffer",
+            type = "morning-buffer",
+            startTime = "06:30",
+            endTime = "07:30",
+            activeDays = (1..7).toSet(),
+            protectedPackages = emptySet(),
+            enabled = true,
+        )
+        val schedule = NativeRoutineSchedule(listOf(morning), emptySet())
+        val at = Calendar.getInstance().apply {
+            set(2026, Calendar.SEPTEMBER, 24, 23, 59, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val day = NativeAttentionExchangeLogic.resolveAttentionDayState(at, schedule)
+        assertEquals("ad-20260924-0730", day.id)
+        val nextBoundary = Calendar.getInstance().apply {
+            timeInMillis = at
+            add(Calendar.DAY_OF_YEAR, 1)
+            set(Calendar.HOUR_OF_DAY, 7)
+            set(Calendar.MINUTE, 30)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        assertEquals(nextBoundary, day.nextBoundaryAt)
+
+        val fallback = NativeAttentionExchangeLogic.resolveAttentionDayState(
+            at,
+            NativeRoutineSchedule(emptyList(), emptySet()),
+        )
+        assertEquals("ad-2026-09-24", fallback.id)
     }
 
     @Test

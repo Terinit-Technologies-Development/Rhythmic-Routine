@@ -52,6 +52,21 @@ class RestorativeEnforcementTest {
     }
 
     @Test
+    fun `restorative hold expires only when the active attention day changes`() {
+        val snapshot = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to listOf(gateMap(status = "in-progress")),
+                "attentionDay" to mapOf(
+                    "id" to "ad-20260927-0730",
+                    "nextBoundaryAt" to 1_790_000_000_000L,
+                ),
+            )
+        )
+        assertTrue(snapshot.hasRestorativeHold("social", "ad-20260927-0730"))
+        assertFalse(snapshot.hasRestorativeHold("social", "ad-20260928-0730"))
+    }
+
+    @Test
     fun `kind none never holds and unknown kinds are rejected`() {
         val none = RestorativeEnforcement.parse(
             mapOf("activeRestorativeGates" to listOf(gateMap(requirementKind = "none")))
@@ -125,7 +140,10 @@ class RestorativeEnforcementTest {
         val original = RestorativeEnforcement.parse(
             mapOf(
                 "activeRestorativeGates" to listOf(gateMap()),
-                "attentionDay" to mapOf("id" to "ad-20260927-0730"),
+                "attentionDay" to mapOf(
+                    "id" to "ad-20260927-0730",
+                    "nextBoundaryAt" to 1_790_000_000_000L,
+                ),
                 "morningMeditation" to mapOf(
                     "attentionDayId" to "ad-20260928-0730",
                     "sessionId" to "morning-ad-20260928-0730",
@@ -140,6 +158,7 @@ class RestorativeEnforcementTest {
         )
         assertEquals(original.restorativeGates, restored.restorativeGates)
         assertEquals(original.attentionDay?.id, restored.attentionDay?.id)
+        assertEquals(original.attentionDay?.nextBoundaryAt, restored.attentionDay?.nextBoundaryAt)
         assertEquals(original.morningMeditation?.sessionId, restored.morningMeditation?.sessionId)
         assertEquals(original.companionPackages, restored.companionPackages)
         assertTrue(restored.hasRestorativeHold("social"))

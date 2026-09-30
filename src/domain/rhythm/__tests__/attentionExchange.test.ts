@@ -18,6 +18,7 @@ import {
 import { getLocalDateKey } from '../allowance';
 import { RhythmConfiguration } from '../types';
 import { ReadingEvidenceSnapshot } from '../readingEvidence';
+import { resolveAttentionDay } from '../attentionDay';
 
 const config: RhythmConfiguration = {
   apps: initialApps,
@@ -409,23 +410,86 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     assert.equal(engine.getRuntime().activeCooldowns.social?.dailyCooldownOrdinal, 1);
   });
 
-  test('date reconciliation creates a zeroed daily state', () => {
+  test('calendar-date reconciliation preserves Attention Day counters across midnight', () => {
     const firstDay = localTime(2026, 9, 24, 12);
-    const nextDay = localTime(2026, 9, 25, 12);
+    const nextDay = localTime(2026, 9, 25, 0, 1);
     const state = {
       dateKey: getLocalDateKey(firstDay),
       cooldownsTriggered: 4,
       highestRequiredActiveSeconds: 5400,
       highestRequiredQualifiedPages: 47,
       updatedAt: firstDay,
+      attentionDayId: 'ad-20260924-0730',
+      attentionDayNextBoundaryAt: localTime(2026, 9, 25, 7, 30),
+      meditationSubstitutionsUsed: 2,
     };
     assert.deepEqual(reconcileAttentionExchangeDate(state, nextDay), {
       dateKey: getLocalDateKey(nextDay),
-      cooldownsTriggered: 0,
-      highestRequiredActiveSeconds: 0,
-      highestRequiredQualifiedPages: 0,
+      cooldownsTriggered: 4,
+      highestRequiredActiveSeconds: 5400,
+      highestRequiredQualifiedPages: 47,
       updatedAt: nextDay,
-      meditationSubstitutionsUsed: 0,
+      attentionDayId: 'ad-20260924-0730',
+      attentionDayNextBoundaryAt: localTime(2026, 9, 25, 7, 30),
+      meditationSubstitutionsUsed: 2,
     });
+  });
+
+  test('editing Morning Buffer time keeps the active gate and counters until the next edited boundary', () => {
+    const start = localTime(2026, 9, 27, 12);
+    const morningBuffer = (endTime: string) => ({
+      id: 'morning-buffer',
+      name: 'Morning Buffer',
+      type: 'morning-buffer' as const,
+      startTime: '06:30',
+      endTime,
+      activeDays: [1, 2, 3, 4, 5, 6, 7],
+      protectedGroupIds: [],
+      enabled: true,
+      tagline: '',
+      description: '',
+    });
+    const beforeEdit: RhythmConfiguration = {
+      ...config,
+      routineWindows: [morningBuffer('07:30')],
+    };
+    const engine = new RhythmEngine(beforeEdit, null, start);
+    ['social', 'entertainment', 'social', 'social'].forEach((groupId, index) => {
+      engine.dispatch({
+        type: 'COOLDOWN_STARTED',
+        groupId,
+        endsAt: start + 90 * 60_000 + index,
+        timestamp: start + index,
+      });
+    });
+
+    const original = engine.getRuntime();
+    const originalGate = original.activeRestorativeGates?.social;
+    assert.ok(originalGate);
+    assert.equal(originalGate.dailyCooldownOrdinal, 4);
+    assert.equal(originalGate.requirementKind, 'restorative-choice');
+
+    const editedSchedule: RhythmConfiguration = {
+      ...beforeEdit,
+      routineWindows: [morningBuffer('08:30')],
+    };
+    engine.updateConfiguration(editedSchedule, start + 5);
+
+    let afterEdit = engine.getRuntime();
+    assert.equal(afterEdit.dailyAttentionExchange?.attentionDayId, originalGate.attentionDayId);
+    assert.equal(afterEdit.dailyAttentionExchange?.cooldownsTriggered, 4);
+    assert.deepEqual(afterEdit.activeRestorativeGates?.social, originalGate);
+
+    const nextBoundary = resolveAttentionDay(start + 5, editedSchedule.routineWindows).nextBoundaryAt;
+    engine.reconcile(nextBoundary - 1);
+    afterEdit = engine.getRuntime();
+    assert.equal(afterEdit.dailyAttentionExchange?.attentionDayId, originalGate.attentionDayId);
+    assert.deepEqual(afterEdit.activeRestorativeGates?.social, originalGate);
+
+    engine.reconcile(nextBoundary);
+    const nextDay = engine.getRuntime();
+    assert.equal(nextDay.dailyAttentionExchange?.attentionDayId, resolveAttentionDay(nextBoundary, editedSchedule.routineWindows).id);
+    assert.equal(nextDay.dailyAttentionExchange?.cooldownsTriggered, 0);
+    assert.equal(nextDay.activeRestorativeGates?.social, undefined);
   });
 });

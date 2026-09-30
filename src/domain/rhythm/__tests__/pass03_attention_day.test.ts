@@ -114,6 +114,10 @@ describe('Pass 3 — Attention Day boundary algorithm (spec 51)', () => {
     const disabled: RoutineWindow[] = [{ ...morningBuffer, enabled: false }];
     const fallback = resolveAttentionDay(localTime(2026, 9, 27, 23, 59), disabled);
     assert.equal(fallback.id, 'ad-2026-09-27');
+
+    const malformed: RoutineWindow[] = [{ ...morningBuffer, endTime: 'not-a-time' }];
+    const malformedFallback = resolveAttentionDay(localTime(2026, 9, 27, 23, 59), malformed);
+    assert.equal(malformedFallback.id, 'ad-2026-09-27');
   });
 
   test('ids are opaque, stable, and chronological', () => {

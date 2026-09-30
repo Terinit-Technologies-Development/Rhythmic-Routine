@@ -1,11 +1,14 @@
 # Rhythmic Routine — Pass 03: Restorative-Gate Integration
 
-Status: **Pass 3 is implemented and committed; Pass 05A remediation is physically verified and ready for local commit on `feat/pass-03-restorative-gates`.**
-This document is the Pass 3 handoff (spec section 58) with the completed Pass
-05A continuation. Core automated verification is green. On the Redmi Note 13 Pro+ 5G
-(Android 16/API 36), the native projection/enforcement blocker is resolved and
-physical CD4+ rows 44–46 pass. No merge, tag, release, or store submission is
-part of this handoff.
+Status: **Pass 3 and the Pass 05A remediation are implemented.** The Attention
+Day rollover/schedule-edit hardening and native stale-gate allocation fix are
+automated-test green; the v1.2 Routine migration was also exercised in-place on
+the Redmi Note 13 Pro+ 5G without clearing app data. Earlier physical evidence
+for the native enforcement blocker and CD4+ provider paths remains recorded
+below. Full SW-2026-004 owner acceptance is **on hold** for the remaining
+physical matrix rows listed in
+`docs/releases/SW-2026-004-CLOSEOUT.md`. No merge, tag, release, or store
+submission is part of this handoff.
 
 ---
 
@@ -544,3 +547,43 @@ Native Risk Policy count > 0 with `com.block.juggle` projected; Accessibility
 foreground detection and a real intervention on `com.block.juggle` under an
 active restriction; and the production-equivalent path allocated ordinals 1, 2,
 3 with the real baseline-reading gate (3600 s / 36 pages) at ordinal 3.
+
+## 18. SW-2026-004 final closeout — 2026-09-30
+
+### In-place Routine v1.2 migration check
+
+- Physical device: Xiaomi Redmi Note 13 Pro+ 5G (`23129RN51X`), Android 16/API
+  36, ADB serial `P7J7TGKNAY8DKJ5P`; device ABI is `armeabi-v7a`.
+- Installed the baseline APK built from Routine commit
+  `93d3a8d15ef861dc0fa7cac2ba806df927d358e1` (versionCode 4, versionName
+  `1.2.0`) with `adb install -r`. The current working-tree build used the same
+  package/version metadata and signer SHA-256
+  `fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c`.
+- Seeded a representative active v1.2 CD4 gate in the app-private persisted
+  state after baseline installation: ordinal 4, legacy Reader requirement
+  5400 seconds / 47 pages, and a fixed `cooldownEndsAt`. Only fixture fields
+  were changed; no uninstall or clear-data operation was used.
+- Replaced the baseline APK in-place, loaded the current JS bundle, and
+  verified the current runtime and native projection. The gate migrated to
+  `LEGACY_READING` / `in-progress` with the same 5400/47 values, ordinal 4,
+  daily count 4, and the exact original `cooldownEndsAt`. The current
+  Attention-Day identity and future boundary were saved. A force-stop/relaunch
+  produced the same gate ID, requirement, status, ordinal, and cooldown end.
+- The fixture does not claim to have completed a 5400/47 reading session. The
+  original device-data archive is preserved outside the repository and was
+  restored after testing.
+
+### Final checks
+
+| Check | Result |
+| --- | --- |
+| Routine `npm test` | **420 / 420**, 82 suites, 0 failures |
+| Routine `npm run typecheck` / `npm run lint` | pass / pass |
+| Routine native unit tests / Kotlin compile / release manifest processing | pass (final test count recorded in the closeout report) |
+| Routine ARM64 and ARMv7 debug APK builds | pass |
+| Reader `test` / `assembleDebug` / `lintDebug` | pass |
+| Meditation `:app:testDebugUnitTest` / `assembleDebug` / `lintDebug` | pass |
+| Reader and Routine in-place data-retention checks | pass; detailed evidence in the SW-2026-004 closeout and Reader upgrade record |
+
+The consolidated status, manifest/IPC audit, remaining physical matrix, and
+owner-acceptance blocker are in `docs/releases/SW-2026-004-CLOSEOUT.md`.

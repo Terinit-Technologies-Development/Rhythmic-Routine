@@ -76,7 +76,17 @@ export function processRhythmEvent(
 
   // Pass 3: the Attention Day (Morning-Buffer boundary) is the reset boundary
   // for the restorative policy — never midnight.
-  const attentionDay = resolveAttentionDay(nowMs, config.routineWindows);
+  const scheduledAttentionDay = resolveAttentionDay(nowMs, config.routineWindows);
+  const persistedAttentionDay = currentRuntime.dailyAttentionExchange;
+  const attentionDay =
+    persistedAttentionDay?.attentionDayId &&
+    Number.isFinite(persistedAttentionDay.attentionDayNextBoundaryAt) &&
+    persistedAttentionDay.attentionDayNextBoundaryAt! > nowMs
+      ? {
+          id: persistedAttentionDay.attentionDayId,
+          nextBoundaryAt: persistedAttentionDay.attentionDayNextBoundaryAt!,
+        }
+      : scheduledAttentionDay;
 
   let nextSession = currentRuntime.activeSession ? { ...currentRuntime.activeSession } : undefined;
   const nextCooldowns: Record<string, ActiveCooldown> = { ...(currentRuntime.activeCooldowns || {}) };
@@ -431,7 +441,10 @@ export function processRhythmEvent(
 
     case 'SYNC_NATIVE_ATTENTION_EXCHANGE': {
       nextNativeAttentionAuthority = true;
-      if (event.dailyAttentionExchange.dateKey === currentDateKey) {
+      const nativeAttentionDayMatches =
+        !event.dailyAttentionExchange.attentionDayId ||
+        event.dailyAttentionExchange.attentionDayId === attentionDay.id;
+      if (event.dailyAttentionExchange.dateKey === currentDateKey && nativeAttentionDayMatches) {
         const priorSubstitutionsUsed =
           nextDailyAttentionExchange.attentionDayId === attentionDay.id
             ? nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0
@@ -441,6 +454,11 @@ export function processRhythmEvent(
         nextDailyAttentionExchange = {
           ...event.dailyAttentionExchange,
           attentionDayId: attentionDay.id,
+          attentionDayNextBoundaryAt:
+            event.dailyAttentionExchange.attentionDayId === attentionDay.id &&
+            Number.isFinite(event.dailyAttentionExchange.attentionDayNextBoundaryAt)
+              ? event.dailyAttentionExchange.attentionDayNextBoundaryAt
+              : attentionDay.nextBoundaryAt,
           // Native currently owns cooldown ordinals, not the Meditation cap.
           // A stale/native snapshot must not reset JS's same-Attention-Day
           // substitution ledger after verified provider completion.
@@ -451,12 +469,20 @@ export function processRhythmEvent(
               : 0
           ),
         };
-      } else {
+      } else if (event.dailyAttentionExchange.dateKey !== currentDateKey) {
         nextDailyAttentionExchange = createDailyAttentionExchangeState(
           currentDateKey,
           nowMs,
           attentionDay.id
         );
+      } else {
+        // A native snapshot from a different Attention Day must not roll the
+        // current ordinal or substitution ledger backward/forward.
+        nextDailyAttentionExchange = {
+          ...nextDailyAttentionExchange,
+          attentionDayId: attentionDay.id,
+          attentionDayNextBoundaryAt: attentionDay.nextBoundaryAt,
+        };
       }
       replaceRecord(nextReadingGates, Object.fromEntries(
         Object.entries(event.activeReadingGates)
@@ -983,6 +1009,12 @@ export function processRhythmEvent(
     nextCooldowns,
     nextSession
   );
+
+  nextDailyAttentionExchange = {
+    ...nextDailyAttentionExchange,
+    attentionDayId: attentionDay.id,
+    attentionDayNextBoundaryAt: attentionDay.nextBoundaryAt,
+  };
 
   const nextRuntime: RhythmRuntime = {
     state: nextState,

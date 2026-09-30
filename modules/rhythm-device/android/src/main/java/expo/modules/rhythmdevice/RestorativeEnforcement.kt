@@ -45,7 +45,7 @@ data class NativeRestorativeGateState(
     }
 }
 
-data class NativeAttentionDayState(val id: String)
+data class NativeAttentionDayState(val id: String, val nextBoundaryAt: Long = 0L)
 
 data class NativeMorningMeditationState(
     val attentionDayId: String,
@@ -73,6 +73,12 @@ data class RestorativeEnforcementSnapshot(
      */
     fun hasRestorativeHold(groupId: String): Boolean =
         restorativeGates[groupId]?.holdsGroup == true
+
+    fun hasRestorativeHold(groupId: String, currentAttentionDayId: String): Boolean =
+        attentionDay?.id == currentAttentionDayId &&
+            restorativeGates[groupId]?.let {
+                it.attentionDayId == currentAttentionDayId && it.holdsGroup
+            } == true
 }
 
 object RestorativeEnforcement {
@@ -150,7 +156,12 @@ object RestorativeEnforcement {
         }
 
         val attentionDay = (snapshot["attentionDay"] as? Map<*, *>)?.let { map ->
-            (map["id"] as? String)?.let { NativeAttentionDayState(it) }
+            (map["id"] as? String)?.let {
+                NativeAttentionDayState(
+                    id = it,
+                    nextBoundaryAt = (map["nextBoundaryAt"] as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L,
+                )
+            }
         }
 
         val morning = (snapshot["morningMeditation"] as? Map<*, *>)?.let { map ->
@@ -203,7 +214,11 @@ object RestorativeEnforcement {
             )
         }
         root.put("restorativeGates", gates)
-        root.put("attentionDay", snapshot.attentionDay?.let { JSONObject().put("id", it.id) })
+        root.put("attentionDay", snapshot.attentionDay?.let {
+            JSONObject()
+                .put("id", it.id)
+                .put("nextBoundaryAt", it.nextBoundaryAt)
+        })
         root.put(
             "morningMeditation",
             snapshot.morningMeditation?.let {
@@ -248,7 +263,10 @@ object RestorativeEnforcement {
             }
             map["activeRestorativeGates"] = gateList
             root.optJSONObject("attentionDay")?.let {
-                map["attentionDay"] = mapOf("id" to it.optString("id"))
+                map["attentionDay"] = mapOf(
+                    "id" to it.optString("id"),
+                    "nextBoundaryAt" to it.optLong("nextBoundaryAt", 0L),
+                )
             }
             root.optJSONObject("morningMeditation")?.let {
                 map["morningMeditation"] = mapOf(

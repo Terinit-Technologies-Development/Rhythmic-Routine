@@ -39,9 +39,10 @@ class RestorativeReconciliationTest {
     private fun snapshot(
         gates: Map<String, NativeRestorativeGateState>,
         dayId: String = attentionDayId,
+        nextBoundaryAt: Long = 0L,
     ) = RestorativeEnforcementSnapshot(
         restorativeGates = gates,
-        attentionDay = NativeAttentionDayState(dayId),
+        attentionDay = NativeAttentionDayState(dayId, nextBoundaryAt),
         morningMeditation = null,
         companionPackages = RestorativeEnforcement.DEFAULT_COMPANION_PACKAGES,
     )
@@ -126,6 +127,18 @@ class RestorativeReconciliationTest {
         val merged = RestorativeEnforcement.reconcileIncoming(previous, newDay)
         assertTrue(merged.restorativeGates.isEmpty())
         assertEquals("ad-20260930-0800", merged.attentionDay?.id)
+    }
+
+    @Test
+    fun `schedule edits update the next boundary without replacing the active day or gate`() {
+        val gate = gate(status = "in-progress", provider = "reader")
+        val beforeEdit = snapshot(mapOf("social" to gate), nextBoundaryAt = 100L)
+        val afterEdit = snapshot(mapOf("social" to gate), nextBoundaryAt = 200L)
+
+        val merged = RestorativeEnforcement.reconcileIncoming(beforeEdit, afterEdit)
+        assertEquals(attentionDayId, merged.attentionDay?.id)
+        assertEquals(200L, merged.attentionDay?.nextBoundaryAt)
+        assertEquals(gate, merged.restorativeGates["social"])
     }
 
     @Test

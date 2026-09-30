@@ -199,10 +199,8 @@ class RhythmEnforcementService : AccessibilityService() {
         ledger[policy.groupId] = exhaustion.usage
         val endsAt = now + policy.cooldownMinutes * 60_000L
         val attention = loadAttentionExchangeState(applicationContext, now)
-        val attentionDayId = NativeAttentionExchangeLogic.resolveAttentionDayId(
-            now,
-            loadRoutineSchedule(applicationContext),
-        )
+        val attentionDay = loadAttentionDayState(applicationContext, now)
+        val attentionDayId = attentionDay.id
         val existingRestorativeGates = RestorativeEnforcement.load(applicationContext).restorativeGates
         val allocation = NativeAttentionExchangeLogic.allocateCooldown(
             state = attention,
@@ -239,7 +237,7 @@ class RhythmEnforcementService : AccessibilityService() {
             applicationContext,
             RestorativeEnforcement.load(applicationContext).copy(
                 restorativeGates = allocation.restorativeGates,
-                attentionDay = NativeAttentionDayState(attentionDayId),
+                attentionDay = attentionDay,
             ),
         )
         activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null
@@ -832,6 +830,7 @@ class RhythmEnforcementService : AccessibilityService() {
                     highestRequiredActiveSeconds = value.optLong("highestRequiredActiveSeconds", 0L).coerceAtLeast(0L),
                     highestRequiredQualifiedPages = value.optInt("highestRequiredQualifiedPages", 0).coerceAtLeast(0),
                     updatedAt = value.optLong("updatedAt", 0L).coerceAtLeast(0L),
+                    attentionDayId = value.optString("attentionDayId", "").takeIf { it.isNotBlank() },
                 )
             } catch (_: Exception) {
                 null
@@ -840,8 +839,15 @@ class RhythmEnforcementService : AccessibilityService() {
 
         fun loadAttentionExchangeState(context: Context, now: Long = System.currentTimeMillis()): NativeDailyAttentionExchangeState {
             val today = getLocalDateKey(now)
-            val state = loadStoredAttentionExchangeState(context)?.takeIf { it.dateKey == today }
-                ?: NativeAttentionExchangeLogic.newDailyState(today, now)
+            val attentionDay = loadAttentionDayState(context, now)
+            val stored = loadStoredAttentionExchangeState(context)
+            val state = when {
+                stored?.attentionDayId == attentionDay.id ->
+                    stored.copy(dateKey = today)
+                stored != null && stored.attentionDayId == null && stored.dateKey == today ->
+                    stored.copy(dateKey = today, attentionDayId = attentionDay.id)
+                else -> NativeAttentionExchangeLogic.newDailyState(today, now, attentionDay.id)
+            }
             val gateOrdinals = loadReadingGates(context).values.filter { it.attentionDateKey == today }
             val cooldowns = loadCooldownPolicies(context).filter { it.attentionDateKey == today }
             return state.copy(
@@ -861,6 +867,15 @@ class RhythmEnforcementService : AccessibilityService() {
                     cooldowns.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
                 ),
             )
+        }
+
+        fun loadAttentionDayState(context: Context, now: Long = System.currentTimeMillis()): NativeAttentionDayState {
+            val scheduled = NativeAttentionExchangeLogic.resolveAttentionDayState(
+                now,
+                loadRoutineSchedule(context),
+            )
+            val projected = RestorativeEnforcement.load(context).attentionDay
+            return projected?.takeIf { it.nextBoundaryAt > now } ?: scheduled
         }
 
         fun nextReadingTargetPreview(
@@ -1063,6 +1078,10 @@ class RhythmEnforcementService : AccessibilityService() {
             val incomingState = parseAttentionState(snapshot["dailyAttentionExchange"] as? Map<*, *>)
             val incomingGates = parseReadingGates(snapshot["activeReadingGates"] as? List<*>)
             val incomingCooldowns = parseCooldownInput(snapshot["activeCooldowns"] as? List<*>)
+            val incomingRestorative = RestorativeEnforcement.parse(snapshot)
+            val attentionDay = incomingRestorative.attentionDay
+                ?.takeIf { it.nextBoundaryAt > now }
+                ?: loadAttentionDayState(context, now)
             val nativeState = loadStoredAttentionExchangeState(context)
             val nativeGates = loadReadingGates(context)
             val (nextState, reconciledGates) = NativeAttentionExchangeLogic.reconcileIncomingState(
@@ -1072,6 +1091,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 incomingGates = incomingGates,
                 today = today,
                 now = now,
+                attentionDayId = attentionDay.id,
             )
             val nextGates = reconciledGates.toMutableMap()
             val cooldownsByGroup = loadCooldownPolicies(context).associateBy { it.groupId }.toMutableMap()
@@ -1189,6 +1209,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 highestRequiredActiveSeconds = ((raw["highestRequiredActiveSeconds"] as? Number)?.toLong() ?: 0L).coerceAtLeast(0L),
                 highestRequiredQualifiedPages = ((raw["highestRequiredQualifiedPages"] as? Number)?.toInt() ?: 0).coerceAtLeast(0),
                 updatedAt = ((raw["updatedAt"] as? Number)?.toLong() ?: 0L).coerceAtLeast(0L),
+                attentionDayId = (raw["attentionDayId"] as? String)?.takeIf { it.isNotBlank() },
             )
         }
 
@@ -1292,6 +1313,7 @@ class RhythmEnforcementService : AccessibilityService() {
             put("highestRequiredActiveSeconds", state.highestRequiredActiveSeconds)
             put("highestRequiredQualifiedPages", state.highestRequiredQualifiedPages)
             put("updatedAt", state.updatedAt)
+            state.attentionDayId?.let { put("attentionDayId", it) }
         }.toString()
 
         private fun readingGateJson(gate: NativeReadingGate) = JSONObject().apply {
@@ -1402,8 +1424,11 @@ class RhythmEnforcementService : AccessibilityService() {
                 loadReadingGates(context)[groupId]?.attentionDateKey == getLocalDateKey(now) ||
                 // Pass 3: an unsatisfied Restorative Gate keeps its group held
                 // after the timer expires (canReenter = cooldownElapsed &&
-                // gateSatisfiedOrAbsent).
-                RestorativeEnforcement.load(context).hasRestorativeHold(groupId)
+                // gateSatisfiedOrAbsent), but only for its Attention Day.
+                RestorativeEnforcement.load(context).hasRestorativeHold(
+                    groupId,
+                    loadAttentionDayState(context, now).id,
+                )
 
         /**
          * Pass 3 — Morning Meditation Focus hold for one package.
@@ -1415,7 +1440,11 @@ class RhythmEnforcementService : AccessibilityService() {
          */
         fun hasMorningFocusHold(context: Context, packageName: String): Boolean {
             val restorative = RestorativeEnforcement.load(context)
-            if (!restorative.morningFocusActive) return false
+            val currentAttentionDayId = loadAttentionDayState(context).id
+            if (
+                !restorative.morningFocusActive ||
+                restorative.morningMeditation?.attentionDayId != currentAttentionDayId
+            ) return false
             if (restorative.isCompanionPackage(packageName)) return false
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
             val managed = HashSet<String>()
