@@ -140,7 +140,13 @@ Device-private-data archives and logs are retained outside the repository under
 `C:\Users\Xcerpt\AppData\Local\Temp\opencode\sw-2026-004\device-backup-final`
 and `C:\Users\Xcerpt\AppData\Local\Temp\opencode\sw-2026-004`. Routine and
 Reader private data were restored from their original archives after evidence
-capture. The original Meditation archive remains intact on the host and in
-`/data/local/tmp`; the shared-signer APK is reinstalled, but app-private data
-restoration and verification are pending renewed ADB authorization. No release,
-tag, store submission, production promotion, or merge was performed.
+capture. The connected-test setup left Meditation absent after its signer-
+mismatch failure, so the current debug APK was reinstalled with the shared
+ecosystem debug key and its pre-test archive restored. The restored Meditation
+database passes `PRAGMA integrity_check`; it contains both prior sessions,
+including bound session `67ec1d42-27dc-492e-9216-df70c28a25ce` at 1800/1800
+completed seconds, plus its interval rows. A cold launch rendered the restored
+Morning Meditation Required state. All three installed APKs were verified with
+the same signer SHA-256
+`fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c`. No
+release, tag, store submission, production promotion, or merge was performed.
