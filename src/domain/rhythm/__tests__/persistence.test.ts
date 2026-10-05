@@ -34,6 +34,7 @@ describe('Rhythm Engine — Local Persistence Adapter & Migration', () => {
       highestRequiredActiveSeconds: 3600,
       highestRequiredQualifiedPages: 36,
       updatedAt: 1700000000000,
+      meditationSubstitutionsUsed: 0,
     },
     activeReadingGates: {
       social: {
@@ -46,6 +47,28 @@ describe('Rhythm Engine — Local Persistence Adapter & Migration', () => {
         requiredQualifiedPages: 36,
       },
     },
+    // Pass 3: normalized runtime always carries the migrated Restorative Gate
+    // (deterministic id, LEGACY_READING keeps the original numbers) and the
+    // migration marker.
+    activeRestorativeGates: {
+      social: {
+        gateId: 'legacy-gate-social',
+        groupId: 'social',
+        attentionDayId: 'ad-2023-11-14',
+        attentionDateKey: '2023-11-14',
+        dailyCooldownOrdinal: 3,
+        createdAt: 1700000000000,
+        cooldownEndsAt: 1700005400000,
+        requirementKind: 'legacy-reading',
+        selectedProvider: 'reader',
+        providerLocked: true,
+        status: 'in-progress',
+        requiredReadingSeconds: 3600,
+        requiredQualifiedPages: 36,
+        meditationSubstitutionConsumed: false,
+      },
+    },
+    restorativeMigrationVersion: 2,
     readingEvidence: {
       dateKey: '2023-11-14',
       providerAvailable: true,

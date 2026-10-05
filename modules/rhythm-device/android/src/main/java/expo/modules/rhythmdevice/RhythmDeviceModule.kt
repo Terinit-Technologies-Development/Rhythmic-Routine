@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -13,6 +14,8 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+
+private const val MEDITATION_RECOVERY_REQUEST_CODE = 0x52A
 
 internal fun finishNativePolicyReset(cleared: Boolean, resetRuntime: () -> Unit): Boolean {
   if (!cleared) return false
@@ -148,9 +151,10 @@ class RhythmDeviceModule : Module() {
     AsyncFunction("setBaseRestrictions") { packageNames: List<String> ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).apply()
+      val saved = prefs.edit().putStringSet(RhythmNativePolicyKeys.BASE_RESTRICTED_PACKAGES, packageNames.toSet()).commit()
       RhythmEnforcementService.instance?.onBaseRestrictionsChanged()
-      return@AsyncFunction checkAccessibilityPermission(context)
+      // Honest save semantics: the write result, not a capability report.
+      return@AsyncFunction saved
     }
 
     AsyncFunction("resetEnforcementState") {
@@ -288,10 +292,14 @@ class RhythmDeviceModule : Module() {
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
       val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
       val attentionState = RhythmEnforcementService.loadAttentionExchangeState(context)
-      val gates = RhythmEnforcementService.loadReadingGates(context).values
-        .filter { it.attentionDateKey == RhythmEnforcementService.getLocalDateKey() }
+      val gates = RhythmEnforcementService.loadCurrentAttentionReadingGates(context).values
       val evidence = RhythmEnforcementService.loadDailyReadingEvidence(context)
         ?.takeIf { it.dateKey == RhythmEnforcementService.getLocalDateKey() }
+      // Blocker remediation: projection-proof of what native enforcement
+      // actually holds (bounded sample only; never the installed-app inventory).
+      val riskPolicies = RhythmEnforcementService.loadRiskGroupPolicies(context)
+      val riskPackages = riskPolicies.flatMap { it.packageNames }.toSet()
+      val routineRiskPackages = schedule.allRiskPackages
 
       val result = mutableMapOf<String, Any?>(
         "serviceRunning" to RhythmEnforcementService.isRunning,
@@ -306,6 +314,10 @@ class RhythmDeviceModule : Module() {
         "readingGateCount" to gates.size,
         "readerProviderAvailable" to evidence?.providerAvailable,
         "readerProtocolCompatible" to evidence?.protocolCompatible,
+        "riskPolicyCount" to riskPolicies.size,
+        "riskPackageCount" to riskPackages.size,
+        "routineRiskPackageCount" to routineRiskPackages.size,
+        "riskPackageSample" to riskPackages.sorted().take(10),
       )
       val foregroundPolicy = service?.lastForegroundPackage?.let { pkg ->
         RhythmEnforcementService.loadRiskGroupPolicies(context).firstOrNull { pkg in it.packageNames }
@@ -317,6 +329,31 @@ class RhythmDeviceModule : Module() {
         result["activeReadingGateOrdinal"] = primaryGate.dailyCooldownOrdinal
         result["activeReadingRequiredSeconds"] = primaryGate.requiredReadingSeconds
         result["activeReadingRequiredPages"] = primaryGate.requiredQualifiedPages
+      }
+      // Pass 5A: restorative requirement truth (kind, identity, provider,
+      // and every requirement number) — for physical rows 44-46 evidence.
+      val activeCooldown = cooldowns.firstOrNull { it.endsAt > System.currentTimeMillis() }
+      if (activeCooldown != null) {
+        result["activeCooldownGroupId"] = activeCooldown.groupId
+        result["activeCooldownOrdinal"] = activeCooldown.dailyCooldownOrdinal
+        result["cooldownRequirementKind"] = activeCooldown.requirementKind
+      }
+      val restorative = RestorativeEnforcement.load(context).copy(
+        restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(context)
+      )
+      val restorativeGate = restorative.restorativeGates.values.maxByOrNull { it.dailyCooldownOrdinal }
+      if (restorativeGate != null) {
+        result["restorativeGateId"] = restorativeGate.gateId
+        result["restorativeGateGroupId"] = restorativeGate.groupId
+        result["restorativeGateOrdinal"] = restorativeGate.dailyCooldownOrdinal
+        result["restorativeGateKind"] = restorativeGate.requirementKind
+        result["restorativeGateStatus"] = restorativeGate.status
+        result["restorativeSelectedProvider"] = restorativeGate.selectedProviderLabel()
+        result["baselineRequiredSeconds"] = restorativeGate.requiredReadingSeconds
+        result["baselineRequiredPages"] = restorativeGate.requiredQualifiedPages
+        result["restorativeReaderSeconds"] = restorativeGate.restorativeReadingSeconds
+        result["restorativeReaderPages"] = restorativeGate.restorativeReadingPages
+        result["requiredMeditationSeconds"] = restorativeGate.requiredMeditationSeconds
       }
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
@@ -358,6 +395,24 @@ class RhythmDeviceModule : Module() {
         result["accountedWatermarkCount"] = watermarks.size
       }
       return@AsyncFunction result
+    }
+
+    /**
+     * QA-only (debuggable builds): seeds the group usage ledger to its allowance
+     * boundary and re-enters the PRODUCTION allowance-exhaustion transition.
+     * Every returned field is read back from production-allocated state — the
+     * hook never constructs cooldowns, ordinals, gates, or evidence.
+     */
+    AsyncFunction("seedGroupAllowanceExhaustionForQa") { groupId: String, packageName: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction mapOf<String, Any?>(
+        "enabled" to false,
+        "error" to "no-react-context"
+      )
+      val service = RhythmEnforcementService.instance ?: return@AsyncFunction mapOf<String, Any?>(
+        "enabled" to false,
+        "error" to "enforcement-service-not-bound"
+      )
+      return@AsyncFunction service.runQaAllowanceExhaustion(groupId, packageName)
     }
 
     AsyncFunction("applyShieldRestrictions") { _: List<String> ->
@@ -466,6 +521,38 @@ class RhythmDeviceModule : Module() {
       }
     }
 
+    AsyncFunction("isMeditationAvailable") {
+      val context = appContext.reactContext ?: return@AsyncFunction "unavailable"
+      return@AsyncFunction MeditationStatusProviderClient.availabilityString(
+        MeditationStatusProviderClient.checkAvailability(context)
+      )
+    }
+
+    AsyncFunction("startMeditationRecoverySession") { request: Map<String, Any?> ->
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val activity = appContext.currentActivity ?: return@AsyncFunction false
+      if (CompanionTrust.verify(context, MeditationContract.MEDITATION_PACKAGE) != CompanionTrustResult.TRUSTED) {
+        return@AsyncFunction false
+      }
+      try {
+        val intent = MeditationContract.buildRecoveryIntent(request) ?: return@AsyncFunction false
+        // Meditation verifies the caller via Activity.getCallingPackage().
+        // Starting for a result is what lets Android attest our package; a
+        // Context.startActivity() call leaves the caller unknown and is
+        // correctly rejected by Meditation's deny-by-default trust policy.
+        activity.startActivityForResult(intent, MEDITATION_RECOVERY_REQUEST_CODE)
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    AsyncFunction("queryMeditationStatus") { sessionId: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      val result = MeditationStatusProviderClient.query(context, sessionId)
+      return@AsyncFunction result.evidence?.let { meditationEvidenceMap(it) }
+    }
+
     AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableDailyEvidence(dateKey)
@@ -499,9 +586,20 @@ class RhythmDeviceModule : Module() {
     put("updatedAtEpochMs", evidence.updatedAtEpochMs.toDouble())
   }
 
+  private fun meditationEvidenceMap(evidence: NativeMeditationSessionEvidence): Map<String, Any?> = buildMap {
+    put(MeditationContract.COLUMN_SESSION_ID, evidence.sessionId)
+    put(MeditationContract.COLUMN_PROTOCOL_VERSION, evidence.protocolVersion)
+    put(MeditationContract.COLUMN_STATUS, evidence.status)
+    put(MeditationContract.COLUMN_REQUIRED_QUALIFIED_SECONDS, evidence.requiredQualifiedSeconds)
+    put(MeditationContract.COLUMN_COMPLETED_QUALIFIED_SECONDS, evidence.completedQualifiedSeconds)
+    put(MeditationContract.COLUMN_COMPLETED_AT_EPOCH_MS, evidence.completedAtEpochMs?.toDouble())
+    put(MeditationContract.COLUMN_LAST_UPDATED_AT_EPOCH_MS, evidence.lastUpdatedAtEpochMs?.toDouble())
+  }
+
   private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {
     val dateKey = RhythmEnforcementService.getLocalDateKey(now)
     val state = RhythmEnforcementService.loadAttentionExchangeState(context, now)
+    val attentionDay = RhythmEnforcementService.loadAttentionDayState(context, now)
     val cooldowns = RhythmEnforcementService.loadCooldownPolicies(context)
       .filter { it.endsAt > now }
       .map { cooldown ->
@@ -516,7 +614,7 @@ class RhythmDeviceModule : Module() {
           put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
         }
       }
-    val gates = RhythmEnforcementService.loadReadingGates(context).values
+    val gates = RhythmEnforcementService.loadCurrentAttentionReadingGates(context, now).values
       .filter { it.attentionDateKey == dateKey }
       .map { gate ->
         mapOf(
@@ -536,6 +634,11 @@ class RhythmDeviceModule : Module() {
       "cooldownsTriggered" to state.cooldownsTriggered,
       "highestRequiredActiveSeconds" to state.highestRequiredActiveSeconds.toDouble(),
       "highestRequiredQualifiedPages" to state.highestRequiredQualifiedPages,
+      "attentionDay" to mapOf(
+        "id" to attentionDay.id,
+        "startedAt" to 0L,
+        "nextBoundaryAt" to attentionDay.nextBoundaryAt.toDouble(),
+      ),
       "cooldowns" to cooldowns,
       "readingGates" to gates,
       "groupUsage" to groupSnapshots(context),
@@ -588,15 +691,65 @@ class RhythmDeviceModule : Module() {
     return mode == AppOpsManager.MODE_ALLOWED
   }
 
+  /**
+   * Verifies that Routine's OWN enforcement service is enabled. Two sources:
+   * the AccessibilityManager service list (primary) and the system secure
+   * settings value (compatibility fallback for OEM builds where the manager
+   * list is filtered while the service is genuinely enabled and bound). Both
+   * must identify Routine's exact service — never "any accessibility service".
+   */
   private fun checkAccessibilityPermission(context: Context): Boolean {
-    val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
-    val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-    val expectedServiceName = "${context.packageName}/${RhythmEnforcementService::class.java.name}"
-    for (service in enabledServices) {
-      if (service.id.equals(expectedServiceName, ignoreCase = true) || service.id.endsWith(RhythmEnforcementService::class.java.simpleName)) {
-        return true
-      }
-    }
-    return false
+    val expected = ComponentName(context, RhythmEnforcementService::class.java)
+
+    val managerMatch = (
+      context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+    )
+      ?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+      ?.any { info ->
+        val serviceInfo = info.resolveInfo?.serviceInfo
+        serviceInfo != null &&
+          ComponentName(serviceInfo.packageName, serviceInfo.name) == expected
+      } == true
+
+    if (managerMatch) return true
+
+    val accessibilityEnabled = Settings.Secure.getInt(
+      context.contentResolver,
+      Settings.Secure.ACCESSIBILITY_ENABLED,
+      0
+    ) == 1
+
+    if (!accessibilityEnabled) return false
+
+    val enabled = Settings.Secure.getString(
+      context.contentResolver,
+      Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ).orEmpty()
+
+    return enabledServiceListContains(enabled, expected.flattenToString())
   }
+}
+
+/**
+ * Normalizes one ENABLED_ACCESSIBILITY_SERVICES entry to "package/class" and
+ * compares against the expected flattened ComponentName. Relative class names
+ * (".Service") are expanded against the entry's package. Pure — unit-testable
+ * without Android framework classes.
+ */
+internal fun enabledServiceListContains(enabledServices: String, expectedFlattened: String): Boolean {
+  val expected = expectedFlattened.trim()
+  return enabledServices.split(':')
+    .mapNotNull { normalizeEnabledServiceEntry(it) }
+    .any { it.equals(expected, ignoreCase = true) }
+}
+
+internal fun normalizeEnabledServiceEntry(entry: String): String? {
+  val trimmed = entry.trim()
+  if (trimmed.isEmpty()) return null
+  val separator = trimmed.indexOf('/')
+  if (separator <= 0 || separator == trimmed.length - 1) return null
+  val pkg = trimmed.substring(0, separator)
+  var cls = trimmed.substring(separator + 1)
+  if (cls.startsWith(".")) cls = pkg + cls
+  return "$pkg/$cls"
 }

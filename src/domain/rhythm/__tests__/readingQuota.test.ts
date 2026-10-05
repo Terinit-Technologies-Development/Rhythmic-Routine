@@ -45,8 +45,8 @@ describe('v1.2 reading quota view', () => {
     const view = resolveReadingQuotaView({ dateKey, dailyAttentionExchange: exchange });
 
     assert.equal(view.nextOrdinal, 4);
-    assert.equal(view.nextRequiredSeconds, 5400);
-    assert.equal(view.nextRequiredPages, 47);
+    assert.equal(view.nextRequiredSeconds, 1800);
+    assert.equal(view.nextRequiredPages, 11);
     assert.equal(view.nextHasReadingQuota, true);
   });
 
@@ -135,8 +135,8 @@ describe('v1.2 reading quota view', () => {
 
     assert.equal(view.cooldownsTriggered, 4);
     assert.equal(view.nextOrdinal, 5);
-    assert.equal(view.nextRequiredSeconds, 7200);
-    assert.equal(view.nextRequiredPages, 58);
+    assert.equal(view.nextRequiredSeconds, 1800);
+    assert.equal(view.nextRequiredPages, 11);
     assert.equal(view.activeTarget?.ordinal, 4);
   });
 });

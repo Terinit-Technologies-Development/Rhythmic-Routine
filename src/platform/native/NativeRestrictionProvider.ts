@@ -102,8 +102,10 @@ export class NativeRestrictionProvider implements RestrictionProvider {
         };
       }
 
-      // Android
-      const isEnforced = perms.hasRestrictionPermission === true;
+      // Android: enforcement capability requires BOTH the real native module
+      // and the Accessibility enforcement service.
+      const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
+      const isEnforced = moduleDiagnostics.available && perms.hasRestrictionPermission === true;
       return {
         status: isEnforced ? 'enforced' : 'foundation-only',
         mode: 'continuous-session',

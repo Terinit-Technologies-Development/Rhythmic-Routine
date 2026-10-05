@@ -14,8 +14,10 @@ import {
   createDailyAttentionExchangeState,
   deriveAttentionGateStatus,
   reconcileAttentionExchangeDate,
+  reconcileAttentionExchangeForAttentionDay,
 } from './attentionExchange';
 import { getLocalDateKey } from './allowance';
+import { resolveAttentionDay } from './attentionDay';
 
 export class RhythmEngine {
   private runtime: RhythmRuntime;
@@ -30,8 +32,53 @@ export class RhythmEngine {
 
     const normalized = normalizePersistedRuntime(persistedState, now);
     const todayKey = getLocalDateKey(now);
+    const resolvedAttentionDay = resolveAttentionDay(now, config.routineWindows);
 
     if (normalized) {
+      const currentDayGates = Object.values(normalized.activeRestorativeGates ?? {})
+        .filter((gate) =>
+          gate.attentionDayId === resolvedAttentionDay.id &&
+          gate.requirementKind !== 'legacy-reading'
+        );
+      const staleCurrentDayGroups = new Set(
+        currentDayGates
+          .filter((gate) =>
+            resolveAttentionDay(gate.createdAt, config.routineWindows).id !== gate.attentionDayId
+          )
+          .map((gate) => gate.groupId)
+      );
+      const allCurrentDayGatesAreStale = currentDayGates.length > 0 &&
+        currentDayGates.every((gate) => staleCurrentDayGroups.has(gate.groupId));
+      let restoredAttentionExchange = reconcileAttentionExchangeDate(
+        normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
+        now
+      );
+      if (allCurrentDayGatesAreStale) {
+        restoredAttentionExchange = createDailyAttentionExchangeState(
+          todayKey,
+          now,
+          resolvedAttentionDay.id,
+          resolvedAttentionDay.nextBoundaryAt
+        );
+      } else if (
+        !Number.isFinite(restoredAttentionExchange.attentionDayNextBoundaryAt) ||
+        restoredAttentionExchange.attentionDayNextBoundaryAt! <= now
+      ) {
+        if (
+          restoredAttentionExchange.attentionDayId &&
+          restoredAttentionExchange.attentionDayId !== resolvedAttentionDay.id
+        ) {
+          restoredAttentionExchange = reconcileAttentionExchangeForAttentionDay(
+            restoredAttentionExchange,
+            resolvedAttentionDay.id,
+            now
+          );
+        }
+        restoredAttentionExchange = {
+          ...restoredAttentionExchange,
+          attentionDayNextBoundaryAt: resolvedAttentionDay.nextBoundaryAt,
+        };
+      }
       const restoredCooldowns = restoreCooldowns(normalized.activeCooldowns, now);
       const restoredLeases = normalized.activeAccessLeases ? { ...normalized.activeAccessLeases } : {};
       const restoredDailyUsage = normalized.dailyAppUsage ? { ...normalized.dailyAppUsage } : {};
@@ -44,13 +91,20 @@ export class RhythmEngine {
         activeRoutineWindowIds: normalized.activeRoutineWindowIds,
         dailyAppUsage: restoredDailyUsage,
         groupAllowanceUsage: restoredGroupUsage,
-        dailyAttentionExchange: reconcileAttentionExchangeDate(
-          normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
-          now
-        ),
+        dailyAttentionExchange: restoredAttentionExchange,
         activeReadingGates: Object.fromEntries(
           Object.entries(normalized.activeReadingGates ?? {})
-            .filter(([, gate]) => gate.attentionDateKey === todayKey)
+            .filter(([groupId, gate]) =>
+              gate.attentionDateKey === todayKey && !staleCurrentDayGroups.has(groupId)
+            )
+            .map(([groupId, gate]) => [groupId, { ...gate }])
+        ),
+        activeRestorativeGates: Object.fromEntries(
+          Object.entries(normalized.activeRestorativeGates ?? {})
+            .filter(([groupId, gate]) =>
+              !staleCurrentDayGroups.has(groupId) &&
+              (gate.requirementKind !== 'legacy-reading' || gate.attentionDateKey === todayKey)
+            )
             .map(([groupId, gate]) => [groupId, { ...gate }])
         ),
         ...(normalized.readingEvidence?.dateKey === todayKey
@@ -106,6 +160,27 @@ export class RhythmEngine {
    * Updates configuration (e.g. after user edits) and returns the resulting restriction/state effects immediately.
    */
   public updateConfiguration(nextConfig: RhythmConfiguration, now: number = Date.now()): RhythmEffect[] {
+    if (JSON.stringify(this.config.routineWindows) !== JSON.stringify(nextConfig.routineWindows)) {
+      const previousDay = resolveAttentionDay(now, this.config.routineWindows);
+      const priorState = this.runtime.dailyAttentionExchange ??
+        createDailyAttentionExchangeState(getLocalDateKey(now), now, previousDay.id);
+      const currentAttentionDayId =
+        priorState.attentionDayId &&
+        Number.isFinite(priorState.attentionDayNextBoundaryAt) &&
+        priorState.attentionDayNextBoundaryAt! > now
+          ? priorState.attentionDayId
+          : previousDay.id;
+      const reconciledState = reconcileAttentionExchangeForAttentionDay(
+        priorState,
+        currentAttentionDayId,
+        now
+      );
+      const nextScheduleDay = resolveAttentionDay(now, nextConfig.routineWindows);
+      this.runtime.dailyAttentionExchange = {
+        ...reconciledState,
+        attentionDayNextBoundaryAt: nextScheduleDay.nextBoundaryAt,
+      };
+    }
     this.config = { ...nextConfig };
 
     // If an active session's app was reclassified to non-risk, finalize/clear active pointer safely
@@ -144,6 +219,9 @@ export class RhythmEngine {
         : undefined,
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
+      activeRestorativeGates: Object.fromEntries(
+        Object.entries(this.runtime.activeRestorativeGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
       nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
       nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
@@ -205,6 +283,9 @@ export class RhythmEngine {
         : createDailyAttentionExchangeState(getLocalDateKey(now), now),
       activeReadingGates: Object.fromEntries(
         Object.entries(this.runtime.activeReadingGates ?? {}).map(([id, gate]) => [id, { ...gate }])
+      ),
+      activeRestorativeGates: Object.fromEntries(
+        Object.entries(this.runtime.activeRestorativeGates ?? {}).map(([id, gate]) => [id, { ...gate }])
       ),
       nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
       nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,

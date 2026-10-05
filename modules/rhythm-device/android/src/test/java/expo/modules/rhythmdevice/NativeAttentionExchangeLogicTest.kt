@@ -2,10 +2,12 @@ package expo.modules.rhythmdevice
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
 
 class NativeAttentionExchangeLogicTest {
     private val today = "2026-09-24"
@@ -39,24 +41,63 @@ class NativeAttentionExchangeLogicTest {
     )
 
     @Test
-    fun `policy thresholds use the global ordinal and both reading dimensions`() {
-        assertEquals(NativeReadingRequirement(0, 0), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(2))
-        assertEquals(NativeReadingRequirement(3600, 36), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(3))
-        assertEquals(NativeReadingRequirement(5400, 47), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(4))
-        assertEquals(NativeReadingRequirement(7200, 58), NativeAttentionExchangeLogic.requirementForCooldownOrdinal(5))
+    fun `policy thresholds use the frozen Pass 3 kind table - never cumulative`() {
+        assertEquals(NativeRestorativeRequirementKind.NONE, NativeAttentionExchangeLogic.requirementKindForOrdinal(1))
+        assertEquals(NativeRestorativeRequirementKind.NONE, NativeAttentionExchangeLogic.requirementKindForOrdinal(2))
+        assertEquals(
+            NativeRestorativeRequirementKind.BASELINE_READING,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(3),
+        )
+        assertEquals(
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(4),
+        )
+        assertEquals(
+            NativeRestorativeRequirementKind.RESTORATIVE_CHOICE,
+            NativeAttentionExchangeLogic.requirementKindForOrdinal(5),
+        )
 
-        val third = gate()
+        val third = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(3)
+        assertEquals(NativeRestorativeRequirementKind.BASELINE_READING, third.kind)
+        assertEquals(3600L, third.baselineReadingSeconds)
+        assertEquals(36, third.baselineReadingPages)
+
+        // CD4+ is ONE discrete restorative choice - explicitly NOT 5400/47.
+        val fourth = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(4)
+        assertEquals(NativeRestorativeRequirementKind.RESTORATIVE_CHOICE, fourth.kind)
+        assertEquals(1800L, fourth.restorativeReadingSeconds)
+        assertEquals(11, fourth.restorativeReadingPages)
+        assertEquals(1800L, fourth.meditationSeconds)
+        assertEquals(0L, fourth.baselineReadingSeconds)
+        assertNotEquals(5400L, fourth.restorativeReadingSeconds)
+        assertNotEquals(47, fourth.restorativeReadingPages)
+
+        // CD5+ stays the same discrete choice - explicitly NOT 7200/58.
+        val fifth = NativeAttentionExchangeLogic.requirementForCooldownOrdinal(5)
+        assertEquals(NativeRestorativeRequirementKind.RESTORATIVE_CHOICE, fifth.kind)
+        assertEquals(1800L, fifth.restorativeReadingSeconds)
+        assertEquals(11, fifth.restorativeReadingPages)
+        assertEquals(1800L, fifth.meditationSeconds)
+        assertNotEquals(7200L, fifth.restorativeReadingSeconds)
+        assertNotEquals(58, fifth.restorativeReadingPages)
+
+        // The cumulative model survives ONLY as the legacy audit for migrated
+        // v1.2 obligations (e.g. an active 5400/47 gate at ordinal 4).
+        assertEquals(NativeReadingRequirement(5400, 47), NativeAttentionExchangeLogic.legacyReadingRequirementForOrdinal(4))
+        assertEquals(NativeReadingRequirement(7200, 58), NativeAttentionExchangeLogic.legacyReadingRequirementForOrdinal(5))
+
+        val thirdGate = gate()
         assertEquals(
             NativeAttentionGatePhase.READING_REQUIRED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(seconds = 3600, pages = 35), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(seconds = 3600, pages = 35), now, today).phase,
         )
         assertEquals(
             NativeAttentionGatePhase.READING_REQUIRED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(seconds = 3599, pages = 80), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(seconds = 3599, pages = 80), now, today).phase,
         )
         assertEquals(
             NativeAttentionGatePhase.SATISFIED,
-            NativeAttentionExchangeLogic.evaluateGate(third, evidence(), now, today).phase,
+            NativeAttentionExchangeLogic.evaluateGate(thirdGate, evidence(), now, today).phase,
         )
     }
 
@@ -83,8 +124,10 @@ class NativeAttentionExchangeLogicTest {
             today,
         )
         assertEquals(4, laterTarget.nextCooldownOrdinal)
-        assertEquals(5400L, laterTarget.requiredActiveSeconds)
-        assertEquals(47, laterTarget.requiredQualifiedPages)
+        // Reader Preview v2 compatibility columns show the restorative choice's
+        // reading requirement (1800/11) - never the obsolete cumulative 5400/47.
+        assertEquals(1800L, laterTarget.requiredActiveSeconds)
+        assertEquals(11, laterTarget.requiredQualifiedPages)
 
         val nextDay = NativeAttentionExchangeLogic.nextReadingTargetPreview(
             NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now),
@@ -136,6 +179,45 @@ class NativeAttentionExchangeLogicTest {
         assertEquals(3, gates["social"]?.dailyCooldownOrdinal)
         assertEquals(3600L, gates["social"]?.requiredReadingSeconds)
         assertEquals(36, gates["social"]?.requiredQualifiedPages)
+    }
+
+    @Test
+    fun `stale restorative gate from a prior Attention Day does not block a new allocation`() {
+        val currentDayId = "ad-20260925-0730"
+        val previousDayGate = NativeRestorativeGateState(
+            gateId = "gate-ad-20260924-0730-social-o4",
+            groupId = "social",
+            attentionDayId = "ad-20260924-0730",
+            requirementKind = "restorative-choice",
+            status = "pending-selection",
+        )
+        val state = NativeDailyAttentionExchangeState(
+            dateKey = tomorrow,
+            cooldownsTriggered = 3,
+            highestRequiredActiveSeconds = 0L,
+            highestRequiredQualifiedPages = 0,
+            updatedAt = now,
+            attentionDayId = currentDayId,
+        )
+
+        val allocation = NativeAttentionExchangeLogic.allocateCooldown(
+            state = state,
+            policy = NativeAttentionExchangeLogic.DEFAULT_POLICY,
+            groupId = "social",
+            packageNames = setOf("social.app"),
+            startedAt = now,
+            endsAt = now + 60_000,
+            dateKey = tomorrow,
+            existingCooldowns = emptyMap(),
+            existingGates = emptyMap(),
+            alreadyExhausted = false,
+            attentionDayId = currentDayId,
+            existingRestorativeGates = mapOf("social" to previousDayGate),
+        )
+
+        assertTrue(allocation.allocated)
+        assertEquals(4, allocation.dailyAttentionExchange.cooldownsTriggered)
+        assertEquals(currentDayId, allocation.restorativeGates["social"]?.attentionDayId)
     }
 
     @Test
@@ -259,6 +341,172 @@ class NativeAttentionExchangeLogicTest {
             NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE,
             NativeAttentionExchangeLogic.decideCooldownExpiry(crossMidnight, null, null, now + 86_400_001, tomorrow).action,
         )
+    }
+
+    @Test
+    fun `attention-day ordinal survives midnight but resets at the saved morning boundary`() {
+        val attentionDayId = "ad-20260924-0730"
+        val oldGate = gate(dateKey = today, ordinal = 4)
+        val state = NativeDailyAttentionExchangeState(
+            today, 4, 3600L, 36, now, attentionDayId,
+        )
+
+        val (afterMidnight, dateScopedGates) = NativeAttentionExchangeLogic.reconcileMidnightRollover(
+            nativeState = state,
+            nativeGates = mapOf("social" to oldGate),
+            today = tomorrow,
+            now = now + 60_000,
+            attentionDayId = attentionDayId,
+        )
+        assertEquals(4, afterMidnight.cooldownsTriggered)
+        assertEquals(tomorrow, afterMidnight.dateKey)
+        assertEquals(attentionDayId, afterMidnight.attentionDayId)
+        // The CD3 Daily Reader baseline remains calendar-date scoped.
+        assertTrue(dateScopedGates.isEmpty())
+
+        val (nextAttentionDay, _) = NativeAttentionExchangeLogic.reconcileIncomingState(
+            nativeState = afterMidnight,
+            nativeGates = emptyMap(),
+            incomingState = null,
+            incomingGates = emptyMap(),
+            today = tomorrow,
+            now = now + 8 * 60 * 60_000,
+            attentionDayId = "ad-20260925-0730",
+        )
+        assertEquals(0, nextAttentionDay.cooldownsTriggered)
+        assertEquals("ad-20260925-0730", nextAttentionDay.attentionDayId)
+    }
+
+    @Test
+    fun `native attention-day resolver matches morning and calendar fallback boundaries`() {
+        val morning = NativeRoutineWindow(
+            id = "morning-buffer",
+            type = "morning-buffer",
+            startTime = "06:30",
+            endTime = "07:30",
+            activeDays = (1..7).toSet(),
+            protectedPackages = emptySet(),
+            enabled = true,
+        )
+        val schedule = NativeRoutineSchedule(listOf(morning), emptySet())
+        val at = Calendar.getInstance().apply {
+            set(2026, Calendar.SEPTEMBER, 24, 23, 59, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val day = NativeAttentionExchangeLogic.resolveAttentionDayState(at, schedule)
+        assertEquals("ad-20260924-0730", day.id)
+        val nextBoundary = Calendar.getInstance().apply {
+            timeInMillis = at
+            add(Calendar.DAY_OF_YEAR, 1)
+            set(Calendar.HOUR_OF_DAY, 7)
+            set(Calendar.MINUTE, 30)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        assertEquals(nextBoundary, day.nextBoundaryAt)
+
+        val fallback = NativeAttentionExchangeLogic.resolveAttentionDayState(
+            at,
+            NativeRoutineSchedule(emptyList(), emptySet()),
+        )
+        assertEquals("ad-2026-09-24", fallback.id)
+    }
+
+    @Test
+    fun `a gate created before the morning boundary is not current-day evidence`() {
+        val morning = NativeRoutineWindow(
+            id = "morning-buffer",
+            type = "morning-buffer",
+            startTime = "06:30",
+            endTime = "07:30",
+            activeDays = (1..7).toSet(),
+            protectedPackages = emptySet(),
+            enabled = true,
+        )
+        val schedule = NativeRoutineSchedule(listOf(morning), emptySet())
+        val beforeBoundary = Calendar.getInstance().apply {
+            set(2026, Calendar.OCTOBER, 1, 7, 29, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val afterBoundary = Calendar.getInstance().apply {
+            set(2026, Calendar.OCTOBER, 1, 9, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val currentDay = NativeAttentionExchangeLogic.resolveAttentionDayState(afterBoundary, schedule)
+
+        assertFalse(NativeAttentionExchangeLogic.wasCreatedInAttentionDay(beforeBoundary, currentDay.id, schedule))
+        assertTrue(NativeAttentionExchangeLogic.wasCreatedInAttentionDay(afterBoundary, currentDay.id, schedule))
+
+        val staleIncomingGate = NativeRestorativeGateState(
+            gateId = "gate-${currentDay.id}-social-o3",
+            groupId = "social",
+            attentionDayId = currentDay.id,
+            requirementKind = "baseline-reading",
+            status = "in-progress",
+            createdAt = beforeBoundary,
+        )
+        assertEquals(
+            setOf("social"),
+            NativeAttentionExchangeLogic.staleCurrentAttentionGateGroups(
+                listOf(staleIncomingGate), currentDay.id, schedule,
+            ),
+        )
+        assertTrue(
+            NativeAttentionExchangeLogic.staleCurrentAttentionGateGroups(
+                listOf(staleIncomingGate.copy(createdAt = afterBoundary)), currentDay.id, schedule,
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun `orphan calendar-date reading gate is filtered by creation Attention Day`() {
+        val morning = NativeRoutineWindow(
+            id = "morning-buffer",
+            type = "morning-buffer",
+            startTime = "06:30",
+            endTime = "07:30",
+            activeDays = (1..7).toSet(),
+            protectedPackages = emptySet(),
+            enabled = true,
+        )
+        val schedule = NativeRoutineSchedule(listOf(morning), emptySet())
+        val beforeBoundary = Calendar.getInstance().apply {
+            set(2026, Calendar.OCTOBER, 1, 7, 29, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val afterBoundary = Calendar.getInstance().apply {
+            set(2026, Calendar.OCTOBER, 1, 9, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val dayId = NativeAttentionExchangeLogic.resolveAttentionDayId(afterBoundary, schedule)
+        val readingGate = NativeReadingGate(
+            groupId = "social",
+            attentionDateKey = "2026-10-01",
+            dailyCooldownOrdinal = 3,
+            createdAt = beforeBoundary,
+            cooldownEndsAt = afterBoundary + 60_000,
+            requiredReadingSeconds = 3600,
+            requiredQualifiedPages = 36,
+        )
+
+        assertFalse(NativeAttentionExchangeLogic.isCurrentAttentionReadingGate(
+            readingGate, dayId, schedule,
+        ))
+        assertTrue(NativeAttentionExchangeLogic.isCurrentAttentionReadingGate(
+            readingGate.copy(createdAt = afterBoundary), dayId, schedule,
+        ))
+        assertTrue(NativeAttentionExchangeLogic.isCurrentAttentionReadingGate(
+            readingGate,
+            dayId,
+            schedule,
+            NativeRestorativeGateState(
+                gateId = "legacy-social-o3",
+                groupId = "social",
+                attentionDayId = "ad-legacy",
+                requirementKind = "legacy-reading",
+                status = "in-progress",
+            ),
+        ))
     }
 
     @Test

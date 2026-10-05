@@ -82,8 +82,12 @@ function createNativeAttentionImportEvent(
         endsAt: cooldown.endsAt,
         ...(cooldown.attentionDateKey ? { attentionDateKey: cooldown.attentionDateKey } : {}),
         ...(cooldown.dailyCooldownOrdinal !== undefined ? { dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal } : {}),
+        ...(cooldown.requirementKind ? { requirementKind: cooldown.requirementKind } : {}),
         requiredReadingSeconds: cooldown.requiredReadingSeconds ?? 0,
         requiredQualifiedPages: cooldown.requiredQualifiedPages ?? 0,
+        restorativeReadingSeconds: cooldown.restorativeReadingSeconds ?? 0,
+        restorativeReadingPages: cooldown.restorativeReadingPages ?? 0,
+        requiredMeditationSeconds: cooldown.requiredMeditationSeconds ?? 0,
       }])
   );
   const activeAccessLeases = Object.fromEntries(
@@ -140,6 +144,18 @@ function createNativeAttentionImportEvent(
       highestRequiredActiveSeconds: Math.floor(snapshot.highestRequiredActiveSeconds),
       highestRequiredQualifiedPages: snapshot.highestRequiredQualifiedPages,
       updatedAt: isFiniteNonNegative(snapshot.updatedAt) ? snapshot.updatedAt : now,
+      ...(snapshot.attentionDay &&
+      typeof snapshot.attentionDay.id === 'string' &&
+      snapshot.attentionDay.id.length > 0
+        ? { attentionDayId: snapshot.attentionDay.id }
+        : {}),
+      ...(snapshot.attentionDay &&
+      typeof snapshot.attentionDay.id === 'string' &&
+      snapshot.attentionDay.id.length > 0 &&
+      isFiniteNonNegative(snapshot.attentionDay.nextBoundaryAt) &&
+      snapshot.attentionDay.nextBoundaryAt > now
+        ? { attentionDayNextBoundaryAt: snapshot.attentionDay.nextBoundaryAt }
+        : {}),
     },
     activeReadingGates,
     activeCooldowns,

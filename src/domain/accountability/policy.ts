@@ -39,6 +39,16 @@ export const PROTECTED_OPERATIONS: readonly AccountabilityOperation[] = [
   'disable-accountability',
   'manage-accountability-partner',
   'edit-ios-risk-group-selection',
+  // Pass 3 — Restorative Gate / Morning Meditation policy can only weaken via
+  // these operations, and every one of them requires partner approval. The
+  // policies themselves are FIXED in this release (no user-facing settings).
+  'disable-morning-meditation',
+  'reduce-morning-requirement',
+  'disable-restorative-gate',
+  'increase-meditation-substitution-max',
+  'reset-attention-day',
+  'reset-restorative-gate',
+  'change-essential-classification',
 ] as const;
 
 /**

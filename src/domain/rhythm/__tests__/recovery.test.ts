@@ -12,6 +12,7 @@ import { startCooldown } from '../cooldowns';
 import { computeEffectiveRestrictions } from '../restrictions';
 import { normalizePersistedRuntime } from '../types';
 import { RiskGroup, DeviceApp } from '../../../types/domain';
+import RhythmDeviceModule from '../../../../modules/rhythm-device';
 
 describe('Pass 03: Recovery Engine & Re-entry Gate', () => {
   test('DEFAULT_READING_RECOVERY_TARGET matches Pass 03 baseline (30m / 10p)', () => {
@@ -252,6 +253,43 @@ describe('Pass 03: Recovery Engine & Re-entry Gate', () => {
   });
 
   describe('RecoveryProviderClient abstraction', () => {
+    test('NativeRecoveryProviderClient passes the bound request as positional native arguments', async () => {
+      const originalStartRecoverySession = RhythmDeviceModule.startRecoverySession;
+      let receivedArguments: unknown[] = [];
+      RhythmDeviceModule.startRecoverySession = async (
+        sessionId,
+        requiredSeconds,
+        requiredPages,
+        createdAt,
+        expiresAt
+      ) => {
+        receivedArguments = [sessionId, requiredSeconds, requiredPages, createdAt, expiresAt];
+        return true;
+      };
+
+      try {
+        const client = new NativeRecoveryProviderClient();
+        const result = await client.startRecoverySession({
+          sessionId: 'bound-reader-session',
+          requiredSeconds: 1800,
+          requiredPages: 11,
+          createdAt: 1234,
+          expiresAt: 5678,
+        });
+
+        assert.equal(result, true);
+        assert.deepEqual(receivedArguments, [
+          'bound-reader-session',
+          1800,
+          11,
+          1234,
+          5678,
+        ]);
+      } finally {
+        RhythmDeviceModule.startRecoverySession = originalStartRecoverySession;
+      }
+    });
+
     test('NativeRecoveryProviderClient safely handles missing native module in test environment', async () => {
       const client: RecoveryProviderClient = new NativeRecoveryProviderClient();
 

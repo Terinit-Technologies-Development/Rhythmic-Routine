@@ -1,3 +1,15 @@
+/**
+ * Truth about how the JS side reached the native layer. The device must report
+ * `available: true` / `source: 'native'` before enforcement can ever be called
+ * READY — a fallback shim must never be presented as enforcement capable.
+ */
+export interface RhythmNativeModuleDiagnostics {
+  available: boolean;
+  source: 'native' | 'fallback';
+  /** Bounded load-failure reason for QA diagnostics (never a stack trace). */
+  loadError?: string;
+}
+
 export interface NativePermissionStatus {
   hasUsagePermission: boolean;
   hasRestrictionPermission: boolean;
@@ -128,8 +140,51 @@ export interface NativeCooldownPolicyInput {
   endsAt: number;
   attentionDateKey?: string;
   dailyCooldownOrdinal?: number;
+  /** Pass 5A requirement kind wire label. */
+  requirementKind?: string;
+  /** Baseline/legacy compatibility numbers (CD3 + migrated v1.2). */
   requiredReadingSeconds?: number;
   requiredQualifiedPages?: number;
+  /** CD4+ restorative choice numbers. */
+  restorativeReadingSeconds?: number;
+  restorativeReadingPages?: number;
+  requiredMeditationSeconds?: number;
+}
+
+/**
+ * Pass 3 — Restorative Gate projection (additive; v1.2 native code ignores it).
+ * Only policy data is shared — never private meditation history.
+ */
+export interface NativeRestorativeGateInput {
+  gateId: string;
+  groupId: string;
+  attentionDayId: string;
+  dailyCooldownOrdinal: number;
+  createdAt: number;
+  cooldownEndsAt: number;
+  requirementKind: 'none' | 'baseline-reading' | 'restorative-choice' | 'legacy-reading';
+  selectedProvider: 'reader' | 'meditation' | null;
+  providerSessionId: string | null;
+  status: 'pending-selection' | 'in-progress' | 'satisfied';
+  requiredReadingSeconds: number | null;
+  requiredQualifiedPages: number | null;
+  requiredMeditationSeconds: number | null;
+  /** CD4+ restorative choice numbers (Reader bound recovery session). */
+  restorativeReadingSeconds: number | null;
+  restorativeReadingPages: number | null;
+}
+
+export interface NativeAttentionDayInput {
+  id: string;
+  startedAt: number;
+  nextBoundaryAt: number;
+}
+
+export interface NativeMorningMeditationInput {
+  attentionDayId: string;
+  sessionId: string;
+  requiredQualifiedSeconds: number;
+  satisfied: boolean;
 }
 
 export interface NativeAttentionExchangeSnapshot {
@@ -145,6 +200,11 @@ export interface NativeAttentionExchangeSnapshot {
   foregroundGroupId?: string;
   evidence?: NativeDailyReadingEvidence;
   updatedAt: number;
+  /** Pass 3 fields (optional: older native builds omit them). */
+  attentionDay?: NativeAttentionDayInput | null;
+  activeRestorativeGates?: NativeRestorativeGateInput[];
+  morningMeditation?: NativeMorningMeditationInput | null;
+  officialCompanionPackages?: string[];
 }
 
 export interface NativeRoutineWindowInput {
@@ -192,6 +252,35 @@ export interface NativeEnforcementDiagnostics {
   activeReadingRequiredPages?: number;
   readerProviderAvailable?: boolean;
   readerProtocolCompatible?: boolean;
+  /** Whether the JS side reached this data through the real native module. */
+  nativeModuleAvailable?: boolean;
+  /** Native policy projection proof (blocker remediation). */
+  riskPolicyCount?: number;
+  riskPackageCount?: number;
+  routineRiskPackageCount?: number;
+  /** Bounded sample for QA builds; never the full installed-app inventory. */
+  riskPackageSample?: string[];
+}
+
+/**
+ * QA-only result of the production-equivalent allowance-exhaustion trigger.
+ * The trigger seeds the usage ledger boundary and re-enters the production
+ * transition; every policy outcome below is READ BACK from what production
+ * allocated — never constructed by the hook itself.
+ */
+export interface NativeQaExhaustionResult {
+  enabled: boolean;
+  error?: string;
+  groupId?: string;
+  seededUsedMillis?: number;
+  productionTransition?: string;
+  cooldownCreated?: boolean;
+  cooldownEndsAt?: number;
+  dailyCooldownOrdinal?: number;
+  attentionDateKey?: string;
+  requiredReadingSeconds?: number;
+  requiredQualifiedPages?: number;
+  attentionCooldownsTriggered?: number;
 }
 
 export interface NativeRecoveryStatus {
@@ -211,5 +300,36 @@ export interface NativeDailyReadingEvidence {
   verifiedActiveSeconds: number;
   qualifiedPages: number;
   updatedAtEpochMs: number;
+}
+
+export type NativeMeditationAvailability =
+  | 'available'
+  | 'not-installed'
+  | 'untrusted-signature'
+  | 'protocol-incompatible'
+  | 'unavailable';
+
+/** Durable session row returned by the Meditation status provider (protocol v1). */
+export interface NativeMeditationSessionEvidence {
+  sessionId: string;
+  protocolVersion: number;
+  status: 'PENDING' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED' | 'INVALID' | string;
+  requiredQualifiedSeconds: number;
+  completedQualifiedSeconds: number;
+  completedAtEpochMs: number | null;
+  lastUpdatedAtEpochMs: number | null;
+}
+
+/** Recovery request fields written into the Meditation Intent payload Bundle. */
+export interface NativeMeditationRecoveryRequestInput {
+  session_id: string;
+  protocol_version: number;
+  session_kind: 'MORNING_REQUIRED' | 'COOLDOWN_RESTORATIVE';
+  required_qualified_seconds: number;
+  created_at_epoch_ms: number;
+  expires_at_epoch_ms?: number;
+  source_cooldown_id?: string;
+  source_risk_group_id?: string;
+  source_rhythmic_day_id?: string;
 }
 

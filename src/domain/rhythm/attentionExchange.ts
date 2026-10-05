@@ -22,11 +22,30 @@ export interface ReadingRequirement {
 }
 
 export interface DailyAttentionExchangeState {
+  /** @deprecated Local calendar date key. Kept for native/Reader compatibility. */
   dateKey: string;
   cooldownsTriggered: number;
+  /** @deprecated v1.2 cumulative projection; kept for native persistence compat. */
   highestRequiredActiveSeconds: number;
+  /** @deprecated v1.2 cumulative projection; kept for native persistence compat. */
   highestRequiredQualifiedPages: number;
   updatedAt: number;
+  /**
+   * Pass 3: the behavioral-day identity (Morning-Buffer-boundary day). Gates,
+   * cooldowns, and the meditation substitution counter reset ONLY at this
+   * boundary — never at midnight.
+  */
+  attentionDayId?: string;
+  /**
+   * Persisted close boundary for the active Attention Day. This freezes the
+   * current cycle when the schedule is edited and survives midnight/restart.
+   */
+  attentionDayNextBoundaryAt?: number;
+  /**
+   * Pass 3: cooldown Meditation substitutions consumed in this Attention Day.
+   * Capped (2/day). Morning/Evening/Standalone meditation never consume it.
+   */
+  meditationSubstitutionsUsed?: number;
 }
 
 export interface ActiveReadingGate {
@@ -83,6 +102,34 @@ export function requirementForCooldownOrdinal(
     return { activeSeconds: 0, qualifiedPages: 0 };
   }
 
+  // Pass 3 policy: cooldown 3 is the daily Reader baseline and every later
+  // cooldown carries ONE discrete restorative requirement. The v1.2 cumulative
+  // escalation (60/36, 90/47, 120/58, ...) is obsolete after cooldown 3.
+  if (safeOrdinal === policy.freeCooldownCount + 1) {
+    return {
+      activeSeconds: policy.baselineActiveSeconds,
+      qualifiedPages: policy.baselineQualifiedPages,
+    };
+  }
+  return {
+    activeSeconds: policy.incrementalActiveSeconds,
+    qualifiedPages: policy.incrementalQualifiedPages,
+  };
+}
+
+/**
+ * The obsolete v1.2 cumulative escalation. Kept ONLY so migration and legacy
+ * gate audits can reproduce historical requirements (e.g. an active
+ * 5400s/47p gate). Never use this for new cooldowns.
+ */
+export function legacyReadingRequirementForCooldownOrdinal(
+  ordinal: number,
+  policy: ReadingAttentionPolicy = DEFAULT_READING_ATTENTION_POLICY
+): ReadingRequirement {
+  const safeOrdinal = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
+  if (safeOrdinal <= policy.freeCooldownCount) {
+    return { activeSeconds: 0, qualifiedPages: 0 };
+  }
   const increments = safeOrdinal - (policy.freeCooldownCount + 1);
   return {
     activeSeconds:
@@ -94,7 +141,9 @@ export function requirementForCooldownOrdinal(
 
 export function createDailyAttentionExchangeState(
   dateKey: string,
-  updatedAt: number
+  updatedAt: number,
+  attentionDayId?: string,
+  attentionDayNextBoundaryAt?: number
 ): DailyAttentionExchangeState {
   return {
     dateKey,
@@ -102,6 +151,11 @@ export function createDailyAttentionExchangeState(
     highestRequiredActiveSeconds: 0,
     highestRequiredQualifiedPages: 0,
     updatedAt,
+    meditationSubstitutionsUsed: 0,
+    ...(attentionDayId ? { attentionDayId } : {}),
+    ...(Number.isFinite(attentionDayNextBoundaryAt)
+      ? { attentionDayNextBoundaryAt }
+      : {}),
   };
 }
 
@@ -111,7 +165,28 @@ export function reconcileAttentionExchangeDate(
 ): DailyAttentionExchangeState {
   const dateKey = getLocalDateKey(now);
   if (state.dateKey !== dateKey) {
-    return createDailyAttentionExchangeState(dateKey, now);
+    const sameAttentionDay =
+      typeof state.attentionDayId === 'string' &&
+      (!Number.isFinite(state.attentionDayNextBoundaryAt) ||
+        state.attentionDayNextBoundaryAt! > now);
+    if (!sameAttentionDay) {
+      return createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+    }
+    // `dateKey` remains calendar-day scoped for Reader compatibility. Cooldown
+    // ordinals and substitutions are Attention-Day scoped and must carry over
+    // midnight when a Morning Buffer is active.
+    return {
+      dateKey,
+      cooldownsTriggered: nonNegativeInteger(state.cooldownsTriggered),
+      highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
+      highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
+      updatedAt: now,
+      meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+      ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
+      ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+        ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+        : {}),
+    };
   }
   return {
     dateKey,
@@ -119,6 +194,60 @@ export function reconcileAttentionExchangeDate(
     highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
     highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
     updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
+    meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+    ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
+    ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+      ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+      : {}),
+  };
+}
+
+/**
+ * Pass 3 daily reconciliation: counters reset ONLY at the Attention Day
+ * boundary (Morning Buffer end), never at midnight. State that predates the
+ * Attention Day (no id yet) adopts the current day WITHOUT losing counters;
+ * only a real day change resets them. The compat `dateKey` still follows the
+ * local calendar day for Reader/legacy consumers.
+ */
+export function reconcileAttentionExchangeForAttentionDay(
+  state: DailyAttentionExchangeState,
+  attentionDayId: string,
+  now: number
+): DailyAttentionExchangeState {
+  const dateKey = getLocalDateKey(now);
+  if (state.attentionDayId === attentionDayId || state.attentionDayId === undefined) {
+    return {
+      dateKey,
+      cooldownsTriggered: nonNegativeInteger(state.cooldownsTriggered),
+      highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
+      highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
+      updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
+      meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+      attentionDayId,
+      ...(Number.isFinite(state.attentionDayNextBoundaryAt)
+        ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
+        : {}),
+    };
+  }
+  return createDailyAttentionExchangeState(dateKey, now, attentionDayId);
+}
+
+/**
+ * Consumes one cooldown-Meditation substitution. Idempotency is enforced by
+ * callers through gate state (substitution is consumed exactly once per gate);
+ * this helper only enforces the Attention Day cap.
+ */
+export function consumeMeditationSubstitution(
+  state: DailyAttentionExchangeState,
+  now: number,
+  maxSubstitutions: number = 2
+): DailyAttentionExchangeState {
+  const used = nonNegativeInteger(state.meditationSubstitutionsUsed);
+  if (used >= maxSubstitutions) return state;
+  return {
+    ...state,
+    meditationSubstitutionsUsed: used + 1,
+    updatedAt: now,
   };
 }
 

@@ -6,6 +6,7 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="com.terinit.rhythmicreader.permission.RECOVERY" />
+    <uses-permission android:name="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
 
     <queries>
         <intent>
@@ -13,6 +14,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <package android:name="com.terinit.rhythmicreader" />
+        <package android:name="com.terinit.rhythmicmeditation" />
     </queries>
 
     <application>
@@ -41,6 +43,18 @@
             android:exported="true"
             android:readPermission="com.terinit.rhythmicreader.permission.RECOVERY"
             android:writePermission="com.terinit.rhythmicreader.permission.RECOVERY" />
+        <provider
+            android:name=".AttentionInsightProvider"
+            android:authorities="${applicationId}.attention-insight"
+            android:exported="true"
+            android:readPermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS"
+            android:writePermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
+        <provider
+            android:name=".EveningSignalProvider"
+            android:authorities="${applicationId}.evening-signal"
+            android:exported="true"
+            android:readPermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS"
+            android:writePermission="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
     </application>
 
 </manifest>
