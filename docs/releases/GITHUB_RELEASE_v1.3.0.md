@@ -5,6 +5,11 @@ release assets are public. No Play Store package or submission is included. The
 APK, package, version, signer, build source, and validation record are listed in
 [`SW-2026-004-DEVICE-DEPLOYMENT.md`](SW-2026-004-DEVICE-DEPLOYMENT.md).
 
+### APK
+
+- [Download Rhythmic-Routine-v1.3.0.apk](https://github.com/Terinit-Technologies-Development/Rhythmic-Routine/releases/download/v1.3.0/Rhythmic-Routine-v1.3.0.apk)
+- SHA-256: `c698b0498545c16ad21b4b92fef42841973d2cd497a4d723e40d274ecdadfdc3`
+
 ### Highlights
 
 - Attention Day allocation and Morning Meditation integration.

@@ -82,7 +82,7 @@ recorded in the release and device-deployment records below.
 
 | Repository | Final checks |
 | --- | --- |
-| Rhythmic Routine | `npm test`: **423 / 423**, 82 suites; `npm run typecheck`; `npm run lint`; `:rhythm-device:testDebugUnitTest` (**80 / 80 test methods**); debug compile/build; release manifest and signed `:app:assembleRelease` — passed. The release manifest contains no Expo DevLauncher components and the APK embeds `assets/index.android.bundle`. |
+| Rhythmic Routine | `npm test`: **423 / 423**, 82 suites; `npm run typecheck`; `npm run lint`; `:rhythm-device:testDebugUnitTest` (**80 / 80 test methods**); debug compile/build; release manifest and signed `:app:assembleRelease` — passed. The merged release manifest has no Expo DevLauncher components and the APK embeds `assets/index.android.bundle`. |
 | Rhythmic Reader | `test`, `assembleDebug`, `assembleRelease`, `assembleDebugAndroidTest`, and `lint` — passed; **106 / 106** unit tests. |
 | Rhythmic Meditation | `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:assembleDebugAndroidTest`, and `:app:lint` — passed; **177 / 177** unit tests. |
 | Instrumentation | A final `:app:connectedDebugAndroidTest` attempt on the Redmi ran **0 tests**: Gradle's default debug key did not match the already-installed shared QA signer (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`). Previous recovery-intent/cursor instrumentation results and the physical cold-start provider query are recorded in the Pass 03/04 handoffs. |
