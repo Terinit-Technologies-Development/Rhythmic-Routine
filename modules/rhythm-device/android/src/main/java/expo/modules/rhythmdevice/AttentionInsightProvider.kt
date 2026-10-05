@@ -107,9 +107,13 @@ class AttentionInsightProvider : ContentProvider() {
         if (columns.any { it !in allowedColumns } || columns.distinct().size != columns.size) return null
 
         val appContext = context?.applicationContext ?: return null
-        val restorative = RestorativeEnforcement.load(appContext)
+        val attentionDay = RhythmEnforcementService.loadAttentionDayState(appContext)
+        val restorative = RestorativeEnforcement.load(appContext).copy(
+            restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext),
+            attentionDay = attentionDay,
+        )
         val state = RhythmEnforcementService.loadAttentionExchangeState(appContext)
-        val currentDayId = restorative.attentionDay?.id ?: state.dateKey
+        val currentDayId = attentionDay.id
 
         // Fail closed for policy, gracefully empty for Insights: only the
         // requested Attention Day's facts are ever returned.

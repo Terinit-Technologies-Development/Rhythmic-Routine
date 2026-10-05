@@ -79,10 +79,12 @@ class RoutineAttentionPreviewProvider : ContentProvider() {
         val appContext = context?.applicationContext ?: return null
         val target = RhythmEnforcementService.nextReadingTargetPreview(appContext)
         val restorative = RestorativeEnforcement.load(appContext)
+            .copy(restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext))
         val kind = RestorativeEnforcement.requirementKindForOrdinal(target.nextCooldownOrdinal)
         val gate = RestorativeEnforcement.selectPreviewGate(
             gates = restorative.restorativeGates.values.toList(),
             nextOrdinal = target.nextCooldownOrdinal,
+            requirementKind = kind,
         )
         val cooldownActive = RhythmEnforcementService.loadCooldownPolicies(appContext)
             .any { it.endsAt > System.currentTimeMillis() }

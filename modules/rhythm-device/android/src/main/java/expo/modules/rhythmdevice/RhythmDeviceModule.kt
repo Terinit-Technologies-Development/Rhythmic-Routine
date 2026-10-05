@@ -292,8 +292,7 @@ class RhythmDeviceModule : Module() {
       val lastReconciledAt = prefs.getLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, 0L)
       val watermarks = RhythmEnforcementService.loadAccountedWatermarks(context)
       val attentionState = RhythmEnforcementService.loadAttentionExchangeState(context)
-      val gates = RhythmEnforcementService.loadReadingGates(context).values
-        .filter { it.attentionDateKey == RhythmEnforcementService.getLocalDateKey() }
+      val gates = RhythmEnforcementService.loadCurrentAttentionReadingGates(context).values
       val evidence = RhythmEnforcementService.loadDailyReadingEvidence(context)
         ?.takeIf { it.dateKey == RhythmEnforcementService.getLocalDateKey() }
       // Blocker remediation: projection-proof of what native enforcement
@@ -339,7 +338,9 @@ class RhythmDeviceModule : Module() {
         result["activeCooldownOrdinal"] = activeCooldown.dailyCooldownOrdinal
         result["cooldownRequirementKind"] = activeCooldown.requirementKind
       }
-      val restorative = RestorativeEnforcement.load(context)
+      val restorative = RestorativeEnforcement.load(context).copy(
+        restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(context)
+      )
       val restorativeGate = restorative.restorativeGates.values.maxByOrNull { it.dailyCooldownOrdinal }
       if (restorativeGate != null) {
         result["restorativeGateId"] = restorativeGate.gateId
@@ -613,7 +614,7 @@ class RhythmDeviceModule : Module() {
           put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
         }
       }
-    val gates = RhythmEnforcementService.loadReadingGates(context).values
+    val gates = RhythmEnforcementService.loadCurrentAttentionReadingGates(context, now).values
       .filter { it.attentionDateKey == dateKey }
       .map { gate ->
         mapOf(

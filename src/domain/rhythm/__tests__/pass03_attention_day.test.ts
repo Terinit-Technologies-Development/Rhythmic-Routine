@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { initialApps, initialRiskGroups } from '../../../data/mockData';
 import type { RoutineWindow } from '../../../types/domain';
+import { RhythmEngine } from '../RhythmEngine';
 import { resolveAttentionDay, attentionDayIdForBoundary, isSameAttentionDay } from '../attentionDay';
 import {
   createDailyAttentionExchangeState,
   consumeMeditationSubstitution,
   reconcileAttentionExchangeForAttentionDay,
 } from '../attentionExchange';
+import type { PersistedRuntime, RhythmConfiguration } from '../types';
 
 /**
  * Pass 3 — Attention Day boundary tests (spec 7-9, 51).
@@ -33,6 +36,11 @@ const morningBuffer: RoutineWindow = {
 };
 
 const schedule: RoutineWindow[] = [morningBuffer];
+const engineConfig: RhythmConfiguration = {
+  apps: initialApps,
+  riskGroups: initialRiskGroups,
+  routineWindows: schedule,
+};
 
 function localTime(year: number, month: number, day: number, hour: number, minute = 0): number {
   return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
@@ -87,6 +95,89 @@ describe('Pass 3 — Attention Day boundary algorithm (spec 51)', () => {
     assert.equal(reset.meditationSubstitutionsUsed, 0);
     assert.equal(reset.cooldownsTriggered, 0);
     assert.equal(reset.attentionDayId, nextMorning.id);
+  });
+
+  test('cold start after the saved morning boundary resets stale ordinals and substitutions', () => {
+    const beforeBoundary = localTime(2026, 10, 1, 7, 29);
+    const afterBoundary = localTime(2026, 10, 1, 9, 0);
+    const priorDay = resolveAttentionDay(beforeBoundary, schedule);
+    const persisted: PersistedRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeRoutineWindowIds: [],
+      dailyAttentionExchange: {
+        ...createDailyAttentionExchangeState('2026-10-01', beforeBoundary, priorDay.id),
+        cooldownsTriggered: 4,
+        highestRequiredActiveSeconds: 3600,
+        highestRequiredQualifiedPages: 36,
+        meditationSubstitutionsUsed: 1,
+        attentionDayNextBoundaryAt: priorDay.nextBoundaryAt,
+      },
+      lastReconciledAt: beforeBoundary,
+    };
+
+    const resumed = new RhythmEngine(engineConfig, persisted, afterBoundary)
+      .getRuntime().dailyAttentionExchange!;
+    const currentDay = resolveAttentionDay(afterBoundary, schedule);
+
+    assert.equal(resumed.attentionDayId, currentDay.id);
+    assert.equal(resumed.attentionDayNextBoundaryAt, currentDay.nextBoundaryAt);
+    assert.equal(resumed.cooldownsTriggered, 0);
+    assert.equal(resumed.highestRequiredActiveSeconds, 0);
+    assert.equal(resumed.highestRequiredQualifiedPages, 0);
+    assert.equal(resumed.meditationSubstitutionsUsed, 0);
+  });
+
+  test('cold start discards a current-day gate mis-tagged from before the boundary', () => {
+    const beforeBoundary = localTime(2026, 10, 1, 7, 29);
+    const afterBoundary = localTime(2026, 10, 1, 9, 0);
+    const currentDay = resolveAttentionDay(afterBoundary, schedule);
+    const persisted: PersistedRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeRoutineWindowIds: [],
+      dailyAttentionExchange: {
+        ...createDailyAttentionExchangeState('2026-10-01', afterBoundary, currentDay.id),
+        cooldownsTriggered: 4,
+        highestRequiredActiveSeconds: 3600,
+        highestRequiredQualifiedPages: 36,
+        attentionDayNextBoundaryAt: currentDay.nextBoundaryAt,
+      },
+      activeReadingGates: {
+        music: {
+          groupId: 'music',
+          attentionDateKey: '2026-10-01',
+          dailyCooldownOrdinal: 3,
+          createdAt: beforeBoundary,
+          cooldownEndsAt: beforeBoundary + 90 * 60_000,
+          requiredReadingSeconds: 3600,
+          requiredQualifiedPages: 36,
+        },
+      },
+      activeRestorativeGates: {
+        music: {
+          gateId: `gate-${currentDay.id}-music-o3`,
+          groupId: 'music',
+          attentionDayId: currentDay.id,
+          dailyCooldownOrdinal: 3,
+          createdAt: beforeBoundary,
+          cooldownEndsAt: beforeBoundary + 90 * 60_000,
+          requirementKind: 'baseline-reading',
+          status: 'in-progress',
+          requiredReadingSeconds: 3600,
+          requiredQualifiedPages: 36,
+        },
+      },
+      lastReconciledAt: afterBoundary,
+    };
+
+    const resumed = new RhythmEngine(engineConfig, persisted, afterBoundary).getRuntime();
+
+    assert.equal(resumed.dailyAttentionExchange?.attentionDayId, currentDay.id);
+    assert.equal(resumed.dailyAttentionExchange?.cooldownsTriggered, 0);
+    assert.equal(resumed.dailyAttentionExchange?.highestRequiredActiveSeconds, 0);
+    assert.deepEqual(resumed.activeReadingGates, {});
+    assert.deepEqual(resumed.activeRestorativeGates, {});
   });
 
   test('state without an Attention Day id adopts it without losing counters', () => {

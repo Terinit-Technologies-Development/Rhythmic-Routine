@@ -300,6 +300,57 @@ object NativeAttentionExchangeLogic {
         return NativeAttentionDayState(id, boundaryAt(now, 0, -1))
     }
 
+    /** A new-pass gate cannot belong to an Attention Day that began after it was created. */
+    fun wasCreatedInAttentionDay(
+        createdAt: Long,
+        attentionDayId: String,
+        schedule: NativeRoutineSchedule,
+    ): Boolean = resolveAttentionDayId(createdAt, schedule) == attentionDayId
+
+    fun isCurrentAttentionReadingGate(
+        gate: NativeReadingGate,
+        attentionDayId: String,
+        schedule: NativeRoutineSchedule,
+        restorativeGate: NativeRestorativeGateState? = null,
+    ): Boolean {
+        if (restorativeGate?.requirementKind == NativeRestorativeRequirementKind.LEGACY_READING.wireLabel) {
+            return true
+        }
+        return wasCreatedInAttentionDay(gate.createdAt, attentionDayId, schedule)
+    }
+
+    fun isCurrentRestorativeGate(
+        gate: NativeRestorativeGateState,
+        attentionDayId: String,
+        schedule: NativeRoutineSchedule,
+        fallbackCreatedAt: Long = 0L,
+    ): Boolean {
+        if (gate.requirementKind == NativeRestorativeRequirementKind.LEGACY_READING.wireLabel) return true
+        if (gate.attentionDayId != attentionDayId) return false
+        val createdAt = gate.createdAt.takeIf { it > 0L } ?: fallbackCreatedAt
+        return createdAt <= 0L || wasCreatedInAttentionDay(createdAt, attentionDayId, schedule)
+    }
+
+    fun staleCurrentAttentionGateGroups(
+        gates: Collection<NativeRestorativeGateState>,
+        attentionDayId: String,
+        schedule: NativeRoutineSchedule,
+        readingGates: Map<String, NativeReadingGate> = emptyMap(),
+    ): Set<String> = gates.asSequence()
+        .filter {
+            it.attentionDayId == attentionDayId &&
+                it.requirementKind != NativeRestorativeRequirementKind.LEGACY_READING.wireLabel
+        }
+        .filterNot { gate ->
+            isCurrentRestorativeGate(
+                gate,
+                attentionDayId,
+                schedule,
+                fallbackCreatedAt = readingGates[gate.groupId]?.createdAt ?: 0L,
+            )
+        }
+        .mapTo(linkedSetOf()) { it.groupId }
+
     /** Local midnight of (now - daysBack) plus minutesIntoDay. */
     private fun boundaryAt(now: Long, minutesIntoDay: Int, daysBack: Int): Long {
         val calendar = Calendar.getInstance().apply {
@@ -420,6 +471,7 @@ object NativeAttentionExchangeLogic {
                     restorativeReadingSeconds = requirement.restorativeReadingSeconds,
                     restorativeReadingPages = requirement.restorativeReadingPages,
                     requiredMeditationSeconds = requirement.meditationSeconds,
+                    createdAt = startedAt,
                 )
             }
             else -> Unit
@@ -555,6 +607,28 @@ object NativeAttentionExchangeLogic {
         val gates = nativeGates.filterValues { it.attentionDateKey == today }
         return withGateRequirements(nativeState.copy(dateKey = today, attentionDayId = attentionDayId), gates) to gates
     }
+
+    /**
+     * Local midnight starts a new calendar date, but does not end the active
+     * Attention Day. Keep its cooldown ordinal until the saved morning
+     * boundary while expiring calendar-date-scoped reading gates.
+     */
+    fun reconcileMidnightRollover(
+        nativeState: NativeDailyAttentionExchangeState?,
+        nativeGates: Map<String, NativeReadingGate>,
+        today: String,
+        now: Long,
+        attentionDayId: String,
+    ): Pair<NativeDailyAttentionExchangeState, Map<String, NativeReadingGate>> =
+        reconcileIncomingState(
+            nativeState = nativeState,
+            nativeGates = nativeGates,
+            incomingState = null,
+            incomingGates = emptyMap(),
+            today = today,
+            now = now,
+            attentionDayId = attentionDayId,
+        )
 
     fun isEffectivelyRestricted(
         baseOrRoutineRestricted: Boolean,

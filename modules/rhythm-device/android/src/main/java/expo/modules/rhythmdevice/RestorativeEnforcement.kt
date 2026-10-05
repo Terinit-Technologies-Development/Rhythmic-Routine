@@ -30,6 +30,7 @@ data class NativeRestorativeGateState(
     /** Baseline/legacy compatibility numbers (CD3 aggregate evidence + migrated v1.2). */
     val requiredReadingSeconds: Long = 0L,
     val requiredQualifiedPages: Int = 0,
+    val createdAt: Long = 0L,
     /** CD4+ restorative choice numbers. */
     val restorativeReadingSeconds: Long = 0L,
     val restorativeReadingPages: Int = 0,
@@ -114,15 +115,22 @@ object RestorativeEnforcement {
 
     /**
      * The gate a preview should describe: the gate matching the next ordinal
-     * if one exists, else the oldest unsatisfied gate, else none.
+     * if one exists, else the oldest unsatisfied gate of the same requirement
+     * kind, else none. A prior baseline gate must never lend its provider or
+     * status to a later restorative-choice preview (or vice versa).
      */
     fun selectPreviewGate(
         gates: List<NativeRestorativeGateState>,
-        nextOrdinal: Int
-    ): NativeRestorativeGateState? =
-        gates.firstOrNull { it.dailyCooldownOrdinal == nextOrdinal && it.requirementKind != "none" }
-            ?: gates.filter { it.holdsGroup }.minByOrNull { it.dailyCooldownOrdinal }
-            ?: gates.firstOrNull { it.requirementKind != "none" }
+        nextOrdinal: Int,
+        requirementKind: String? = null,
+    ): NativeRestorativeGateState? {
+        val compatibleGates = gates.filter {
+            it.requirementKind != "none" &&
+                (requirementKind == null || it.requirementKind == requirementKind)
+        }
+        return compatibleGates.firstOrNull { it.dailyCooldownOrdinal == nextOrdinal }
+            ?: compatibleGates.filter { it.holdsGroup }.minByOrNull { it.dailyCooldownOrdinal }
+    }
 
     /** Parses the additive Pass 3 fields from the JS `attentionState` map. */
     fun parse(snapshot: Map<String, Any?>): RestorativeEnforcementSnapshot {
@@ -148,6 +156,7 @@ object RestorativeEnforcement {
                     dailyCooldownOrdinal = (map["dailyCooldownOrdinal"] as? Number)?.toInt() ?: 0,
                     requiredReadingSeconds = (map["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
                     requiredQualifiedPages = (map["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
+                    createdAt = (map["createdAt"] as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L,
                     restorativeReadingSeconds = (map["restorativeReadingSeconds"] as? Number)?.toLong() ?: 0L,
                     restorativeReadingPages = (map["restorativeReadingPages"] as? Number)?.toInt() ?: 0,
                     requiredMeditationSeconds = (map["requiredMeditationSeconds"] as? Number)?.toLong() ?: 0L,
@@ -208,6 +217,7 @@ object RestorativeEnforcement {
                     .put("dailyCooldownOrdinal", gate.dailyCooldownOrdinal)
                     .put("requiredReadingSeconds", gate.requiredReadingSeconds)
                     .put("requiredQualifiedPages", gate.requiredQualifiedPages)
+                    .put("createdAt", gate.createdAt)
                     .put("restorativeReadingSeconds", gate.restorativeReadingSeconds)
                     .put("restorativeReadingPages", gate.restorativeReadingPages)
                     .put("requiredMeditationSeconds", gate.requiredMeditationSeconds)
@@ -254,6 +264,7 @@ object RestorativeEnforcement {
                             "dailyCooldownOrdinal" to obj.optInt("dailyCooldownOrdinal"),
                             "requiredReadingSeconds" to obj.optLong("requiredReadingSeconds", 0L),
                             "requiredQualifiedPages" to obj.optInt("requiredQualifiedPages", 0),
+                            "createdAt" to obj.optLong("createdAt", 0L),
                             "restorativeReadingSeconds" to obj.optLong("restorativeReadingSeconds", 0L),
                             "restorativeReadingPages" to obj.optInt("restorativeReadingPages", 0),
                             "requiredMeditationSeconds" to obj.optLong("requiredMeditationSeconds", 0L),

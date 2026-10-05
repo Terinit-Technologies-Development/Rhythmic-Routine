@@ -71,9 +71,30 @@ class RestorativeProjectionTest {
     @Test
     fun `preview gate selection falls back to the oldest open gate`() {
         val gates = listOf(gate(5, status = "pending-selection", provider = null), gate(3, kind = "baseline-reading"))
-        val selected = RestorativeEnforcement.selectPreviewGate(gates, nextOrdinal = 6)
+        val selected = RestorativeEnforcement.selectPreviewGate(
+            gates,
+            nextOrdinal = 6,
+            requirementKind = "restorative-choice",
+        )
         assertNotNull(selected)
+        assertEquals(5, selected?.dailyCooldownOrdinal)
         assertTrue(selected!!.holdsGroup)
+    }
+
+    @Test
+    fun `preview never borrows status or provider from a different requirement kind`() {
+        val gates = listOf(
+            gate(3, kind = "baseline-reading", status = "in-progress", provider = "reader"),
+            gate(5, kind = "restorative-choice", status = "satisfied", provider = "meditation"),
+        )
+
+        val selected = RestorativeEnforcement.selectPreviewGate(
+            gates,
+            nextOrdinal = 6,
+            requirementKind = "restorative-choice",
+        )
+
+        assertNull(selected)
     }
 
     @Test
@@ -148,6 +169,36 @@ class RestorativeProjectionTest {
         )
         assertEquals("meditation", restored.restorativeGates["social"]?.selectedProviderLabel())
         assertEquals(4, restored.restorativeGates["social"]?.dailyCooldownOrdinal)
+        assertEquals(1L, restored.restorativeGates["social"]?.createdAt)
+    }
+
+    @Test
+    fun `current attention-day projection rejects a gate created before its boundary`() {
+        val morning = NativeRoutineWindow(
+            id = "morning-buffer",
+            type = "morning-buffer",
+            startTime = "06:30",
+            endTime = "08:00",
+            activeDays = (1..7).toSet(),
+            protectedPackages = emptySet(),
+            enabled = true,
+        )
+        val schedule = NativeRoutineSchedule(listOf(morning), emptySet())
+        val beforeBoundary = java.util.Calendar.getInstance().apply {
+            set(2026, java.util.Calendar.OCTOBER, 1, 0, 34, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val afterBoundary = java.util.Calendar.getInstance().apply {
+            set(2026, java.util.Calendar.OCTOBER, 1, 11, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val dayId = NativeAttentionExchangeLogic.resolveAttentionDayId(afterBoundary, schedule)
+        val baselineGate = gate(3, kind = "baseline-reading", attentionDayId = dayId).copy(createdAt = beforeBoundary)
+
+        assertFalse(NativeAttentionExchangeLogic.isCurrentRestorativeGate(baselineGate, dayId, schedule))
+        assertTrue(NativeAttentionExchangeLogic.isCurrentRestorativeGate(
+            baselineGate.copy(createdAt = afterBoundary), dayId, schedule,
+        ))
     }
 
     @Test

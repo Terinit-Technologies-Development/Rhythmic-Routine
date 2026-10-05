@@ -37,7 +37,7 @@ import {
   type RestorativeProvider,
   type RestorativeStatusView,
 } from '../domain/rhythm/restorativeGate';
-import { generateRecoverySessionId } from '../domain/rhythm/recovery';
+import { generateRecoverySessionId, NativeRecoveryProviderClient } from '../domain/rhythm/recovery';
 import {
   buildCooldownMeditationRequest,
   nativeMeditationBridge,
@@ -1414,16 +1414,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     if (!gate?.providerSessionId) return false;
     let started = false;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const RhythmDeviceModule = require('../../modules/rhythm-device').default;
-      started =
-        (await RhythmDeviceModule.startRecoverySession({
-          sessionId: gate.providerSessionId,
-          requiredSeconds: gate.requiredRestorativeReadingSeconds ?? 1800,
-          requiredPages: gate.requiredRestorativeQualifiedPages ?? 11,
-          createdAt: Date.now(),
-          expiresAt: Date.now() + 6 * 60 * 60 * 1000,
-        })) === true;
+      started = await new NativeRecoveryProviderClient().startRecoverySession({
+        sessionId: gate.providerSessionId,
+        requiredSeconds: gate.requiredRestorativeReadingSeconds ?? 1800,
+        requiredPages: gate.requiredRestorativeQualifiedPages ?? 11,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+      });
     } catch {
       started = false;
     }

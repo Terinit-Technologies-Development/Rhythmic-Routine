@@ -35,11 +35,35 @@ export class RhythmEngine {
     const resolvedAttentionDay = resolveAttentionDay(now, config.routineWindows);
 
     if (normalized) {
+      const currentDayGates = Object.values(normalized.activeRestorativeGates ?? {})
+        .filter((gate) =>
+          gate.attentionDayId === resolvedAttentionDay.id &&
+          gate.requirementKind !== 'legacy-reading'
+        );
+      const staleCurrentDayGroups = new Set(
+        currentDayGates
+          .filter((gate) =>
+            resolveAttentionDay(gate.createdAt, config.routineWindows).id !== gate.attentionDayId
+          )
+          .map((gate) => gate.groupId)
+      );
+      const allCurrentDayGatesAreStale = currentDayGates.length > 0 &&
+        currentDayGates.every((gate) => staleCurrentDayGroups.has(gate.groupId));
       let restoredAttentionExchange = reconcileAttentionExchangeDate(
         normalized.dailyAttentionExchange ?? createDailyAttentionExchangeState(todayKey, now),
         now
       );
-      if (!Number.isFinite(restoredAttentionExchange.attentionDayNextBoundaryAt)) {
+      if (allCurrentDayGatesAreStale) {
+        restoredAttentionExchange = createDailyAttentionExchangeState(
+          todayKey,
+          now,
+          resolvedAttentionDay.id,
+          resolvedAttentionDay.nextBoundaryAt
+        );
+      } else if (
+        !Number.isFinite(restoredAttentionExchange.attentionDayNextBoundaryAt) ||
+        restoredAttentionExchange.attentionDayNextBoundaryAt! <= now
+      ) {
         if (
           restoredAttentionExchange.attentionDayId &&
           restoredAttentionExchange.attentionDayId !== resolvedAttentionDay.id
@@ -70,13 +94,16 @@ export class RhythmEngine {
         dailyAttentionExchange: restoredAttentionExchange,
         activeReadingGates: Object.fromEntries(
           Object.entries(normalized.activeReadingGates ?? {})
-            .filter(([, gate]) => gate.attentionDateKey === todayKey)
+            .filter(([groupId, gate]) =>
+              gate.attentionDateKey === todayKey && !staleCurrentDayGroups.has(groupId)
+            )
             .map(([groupId, gate]) => [groupId, { ...gate }])
         ),
         activeRestorativeGates: Object.fromEntries(
           Object.entries(normalized.activeRestorativeGates ?? {})
-            .filter(([, gate]) =>
-              gate.requirementKind !== 'legacy-reading' || gate.attentionDateKey === todayKey
+            .filter(([groupId, gate]) =>
+              !staleCurrentDayGroups.has(groupId) &&
+              (gate.requirementKind !== 'legacy-reading' || gate.attentionDateKey === todayKey)
             )
             .map(([groupId, gate]) => [groupId, { ...gate }])
         ),
