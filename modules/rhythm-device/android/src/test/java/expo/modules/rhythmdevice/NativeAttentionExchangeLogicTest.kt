@@ -8,6 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Calendar
+import java.util.TimeZone
 
 class NativeAttentionExchangeLogicTest {
     private val today = "2026-09-24"
@@ -518,5 +519,255 @@ class NativeAttentionExchangeLogicTest {
         assertNull(completed.activeSegmentStartedAt)
         assertNull(completed.exhaustedAt)
         assertEquals(9L, completed.cycleRevision)
+    }
+
+    // ── SW-2026-005 A1: Attention Day clock boundary ──────────────────────
+
+    private fun morningWindow(
+        id: String = "morning-buffer",
+        endTime: String = "07:30",
+        activeDays: Set<Int> = (1..7).toSet(),
+        enabled: Boolean = true,
+    ) = NativeRoutineWindow(
+        id = id,
+        type = "morning-buffer",
+        startTime = "06:30",
+        endTime = endTime,
+        activeDays = activeDays,
+        protectedPackages = emptySet(),
+        enabled = enabled,
+    )
+
+    private fun scheduleOf(vararg windows: NativeRoutineWindow) =
+        NativeRoutineSchedule(windows.toList(), emptySet())
+
+    private fun localEpoch(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
+        Calendar.getInstance().apply {
+            clear()
+            set(year, month - 1, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+    private fun utcEpoch(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
+        Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(year, month - 1, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+    @Test
+    fun `inactive weekend days keep their own daily clock boundary`() {
+        val schedule = scheduleOf(morningWindow(activeDays = setOf(1, 2, 3, 4, 5)))
+        val friday = localEpoch(2026, 9, 25, 12, 0)
+        val saturday = localEpoch(2026, 9, 26, 12, 0)
+        val sunday = localEpoch(2026, 9, 27, 12, 0)
+        val monday = localEpoch(2026, 9, 28, 12, 0)
+
+        assertEquals("ad-20260925-0730", NativeAttentionExchangeLogic.resolveAttentionDayId(friday, schedule))
+        assertEquals("ad-20260926-0730", NativeAttentionExchangeLogic.resolveAttentionDayId(saturday, schedule))
+        assertEquals("ad-20260927-0730", NativeAttentionExchangeLogic.resolveAttentionDayId(sunday, schedule))
+        assertEquals("ad-20260928-0730", NativeAttentionExchangeLogic.resolveAttentionDayId(monday, schedule))
+
+        // No Friday-to-Monday stretch while Saturday/Sunday windows are inactive.
+        val fridayState = NativeAttentionExchangeLogic.resolveAttentionDayState(friday, schedule)
+        val saturdayState = NativeAttentionExchangeLogic.resolveAttentionDayState(saturday, schedule)
+        assertEquals(localEpoch(2026, 9, 26, 7, 30), fridayState.nextBoundaryAt)
+        assertEquals(localEpoch(2026, 9, 27, 7, 30), saturdayState.nextBoundaryAt)
+        assertNotEquals(localEpoch(2026, 9, 28, 7, 30), fridayState.nextBoundaryAt)
+    }
+
+    @Test
+    fun `midnight does not reset a morning clock Attention Day`() {
+        val schedule = scheduleOf(morningWindow(activeDays = setOf(1, 2, 3, 4, 5)))
+
+        assertEquals(
+            "ad-20260925-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 25, 23, 59), schedule),
+        )
+        assertEquals(
+            "ad-20260925-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 0, 1), schedule),
+        )
+        assertEquals(
+            "ad-20260925-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 7, 29), schedule),
+        )
+        assertEquals(
+            "ad-20260926-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 7, 30), schedule),
+        )
+    }
+
+    @Test
+    fun `disabled and empty-activeDays windows still configure the accounting clock`() {
+        val disabled = scheduleOf(
+            morningWindow(activeDays = setOf(1, 2, 3, 4, 5), enabled = false),
+        )
+        assertEquals(
+            "ad-20260926-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 12, 0), disabled),
+        )
+
+        val noActiveDays = scheduleOf(morningWindow(activeDays = emptySet()))
+        assertEquals(
+            "ad-20260926-0730",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 12, 0), noActiveDays),
+        )
+    }
+
+    @Test
+    fun `malformed morning clocks fall back to midnight and report an actionable issue`() {
+        val malformed = scheduleOf(morningWindow(id = "morning-primary", endTime = "not-a-time"))
+        val at = localEpoch(2026, 9, 26, 23, 59)
+        val state = NativeAttentionExchangeLogic.resolveAttentionDayState(at, malformed)
+        val issue = NativeAttentionExchangeLogic.attentionDayClockIssue(malformed)
+
+        assertEquals("ad-2026-09-26", state.id)
+        assertEquals(localEpoch(2026, 9, 27, 0, 0), state.nextBoundaryAt)
+        assertNull(NativeAttentionExchangeLogic.configuredAttentionDayClockMinutes(malformed))
+        assertNotNull(issue)
+        assertTrue(issue!!.contains("morning-primary"))
+        assertTrue(issue.contains("malformed endTime"))
+        assertTrue(issue.contains("HH:MM"))
+
+        val missing = scheduleOf(morningWindow(id = "morning-no-end", endTime = "  "))
+        assertEquals("ad-2026-09-26", NativeAttentionExchangeLogic.resolveAttentionDayId(at, missing))
+        assertNotNull(NativeAttentionExchangeLogic.attentionDayClockIssue(missing))
+    }
+
+    @Test
+    fun `the first usable configured morning clock wins`() {
+        val schedule = scheduleOf(
+            morningWindow(id = "morning-broken", endTime = "25:99"),
+            morningWindow(id = "morning-valid", endTime = "08:15"),
+        )
+
+        assertEquals(
+            8 * 60 + 15,
+            NativeAttentionExchangeLogic.configuredAttentionDayClockMinutes(schedule) ?: -1,
+        )
+        assertNotNull(NativeAttentionExchangeLogic.attentionDayClockIssue(schedule))
+        assertEquals(
+            "ad-20260926-0815",
+            NativeAttentionExchangeLogic.resolveAttentionDayId(localEpoch(2026, 9, 26, 9, 0), schedule),
+        )
+    }
+
+    @Test
+    fun `resolved boundary is always strictly after the sampled instant`() {
+        val schedule = scheduleOf(morningWindow(activeDays = setOf(1, 2, 3, 4, 5)))
+        val samples = listOf(
+            localEpoch(2026, 9, 25, 7, 29),
+            localEpoch(2026, 9, 25, 7, 30),
+            localEpoch(2026, 9, 26, 0, 0),
+            localEpoch(2026, 9, 26, 7, 30),
+            localEpoch(2026, 9, 27, 23, 59),
+            localEpoch(2026, 9, 28, 0, 0),
+            localEpoch(2026, 9, 28, 7, 30),
+        )
+        for (at in samples) {
+            val state = NativeAttentionExchangeLogic.resolveAttentionDayState(at, schedule)
+            assertTrue("next boundary must be after $at", state.nextBoundaryAt > at)
+        }
+    }
+
+    @Test
+    fun `spring and fall DST days use civil calendar boundaries`() {
+        val original = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+            val schedule = scheduleOf(morningWindow())
+
+            // 2026-03-08 02:00 -> 03:00: the Attention Day that opens 07:30 on
+            // 03-07 spans 23 real hours.
+            val spring = NativeAttentionExchangeLogic.resolveAttentionDayState(
+                localEpoch(2026, 3, 7, 12, 0),
+                schedule,
+            )
+            assertEquals("ad-20260307-0730", spring.id)
+            assertEquals(localEpoch(2026, 3, 8, 7, 30), spring.nextBoundaryAt)
+            assertEquals(
+                23L * 60L * 60L * 1000L,
+                spring.nextBoundaryAt - localEpoch(2026, 3, 7, 7, 30),
+            )
+
+            // 2026-11-01 02:00 -> 01:00: the Attention Day that opens 07:30 on
+            // 10-31 spans 25 real hours.
+            val fall = NativeAttentionExchangeLogic.resolveAttentionDayState(
+                localEpoch(2026, 10, 31, 12, 0),
+                schedule,
+            )
+            assertEquals("ad-20261031-0730", fall.id)
+            assertEquals(localEpoch(2026, 11, 1, 7, 30), fall.nextBoundaryAt)
+            assertEquals(
+                25L * 60L * 60L * 1000L,
+                fall.nextBoundaryAt - localEpoch(2026, 10, 31, 7, 30),
+            )
+        } finally {
+            TimeZone.setDefault(original)
+        }
+    }
+
+    @Test
+    fun `gap and overlap boundary clocks match JavaScript civil-time semantics`() {
+        val original = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+
+            // 02:30 does not exist on spring-forward day: normalize to 03:30 EDT.
+            val gapSchedule = scheduleOf(morningWindow(endTime = "02:30"))
+            val gap = NativeAttentionExchangeLogic.resolveAttentionDayState(
+                localEpoch(2026, 3, 8, 12, 0),
+                gapSchedule,
+            )
+            assertEquals("ad-20260308-0330", gap.id)
+            assertEquals(localEpoch(2026, 3, 9, 2, 30), gap.nextBoundaryAt)
+            assertEquals(
+                23L * 60L * 60L * 1000L,
+                gap.nextBoundaryAt - utcEpoch(2026, 3, 8, 7, 30), // 03:30 EDT
+            )
+
+            // 01:30 occurs twice on fall-back day: choose the earlier (EDT)
+            // occurrence exactly like ECMAScript Date.
+            val overlapSchedule = scheduleOf(morningWindow(endTime = "01:30"))
+            val overlap = NativeAttentionExchangeLogic.resolveAttentionDayState(
+                localEpoch(2026, 11, 1, 12, 0),
+                overlapSchedule,
+            )
+            assertEquals("ad-20261101-0130", overlap.id)
+            val earlierOccurrence = utcEpoch(2026, 11, 1, 5, 30) // 01:30 EDT
+            val laterBoundary = utcEpoch(2026, 11, 2, 6, 30) // 01:30 EST
+            assertEquals(laterBoundary, overlap.nextBoundaryAt)
+            assertEquals(
+                25L * 60L * 60L * 1000L,
+                overlap.nextBoundaryAt - earlierOccurrence,
+            )
+        } finally {
+            TimeZone.setDefault(original)
+        }
+    }
+
+    @Test
+    fun `the same instant resolves deterministically after a timezone change`() {
+        val original = TimeZone.getDefault()
+        try {
+            val schedule = scheduleOf(morningWindow())
+            val instant = utcEpoch(2026, 9, 26, 0, 0) // 2026-09-25T20:00 New York
+
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+            assertEquals(
+                "ad-20260925-0730",
+                NativeAttentionExchangeLogic.resolveAttentionDayId(instant, schedule),
+            )
+
+            // 2026-09-26T09:00 in Tokyo: the local morning clock has passed.
+            TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
+            assertEquals(
+                "ad-20260926-0730",
+                NativeAttentionExchangeLogic.resolveAttentionDayId(instant, schedule),
+            )
+        } finally {
+            TimeZone.setDefault(original)
+        }
     }
 }

@@ -4,6 +4,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 data class NativeReadingAttentionPolicy(
     val freeCooldownCount: Int = 2,
@@ -259,46 +260,177 @@ object NativeAttentionExchangeLogic {
         return "ad-${format.format(Date(boundaryEpochMs))}"
     }
 
+    private data class NativeAttentionClockResolution(
+        val minutesIntoDay: Int?,
+        val issue: String?,
+    )
+
+    private data class NativeCivilDate(val year: Int, val month: Int, val day: Int)
+
+    private data class NativeAttentionDayResolution(
+        val id: String,
+        val startedAt: Long,
+        val nextBoundaryAt: Long,
+    )
+
     /**
-     * Resolves the current Attention Day id exactly like JS `resolveAttentionDay`:
-     * the Morning Buffer END time opens the day (walking back to the most
-     * recent active boundary); no usable window falls back to the local
-     * calendar day. Deterministic — native allocation and JS reconciliation
-     * must derive the SAME gate identity from it.
+     * The configured Morning Buffer END clock. The first usable clock wins on
+     * EVERY civil day, even when that window is disabled or today's weekday is
+     * not in `activeDays`; only the restriction window is inactive.
      */
-    fun resolveAttentionDayId(now: Long, schedule: NativeRoutineSchedule): String {
-        val morning = schedule.windows.firstOrNull {
-            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
-        }
-        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
-        if (morning != null && minutes != null) {
-            for (back in 0..7) {
-                val candidate = boundaryAt(now, minutes, back)
-                if (candidate <= now && isActiveOnDay(morning, candidate)) {
-                    return attentionDayIdForBoundary(candidate)
+    private fun resolveAttentionDayClock(schedule: NativeRoutineSchedule): NativeAttentionClockResolution {
+        var issue: String? = null
+        var sawMorningBuffer = false
+        for (window in schedule.windows) {
+            if (window.type != "morning-buffer") continue
+            sawMorningBuffer = true
+            val raw = window.endTime
+            if (raw.isBlank()) {
+                if (issue == null) {
+                    issue = "Morning Buffer \"${window.id}\" has no endTime; expected HH:MM in 24-hour local time."
                 }
+                continue
             }
+            val minutes = parseTimeToMinutes(raw)
+            if (minutes == null) {
+                if (issue == null) {
+                    issue = "Morning Buffer \"${window.id}\" has malformed endTime \"$raw\"; expected HH:MM in 24-hour local time."
+                }
+                continue
+            }
+            return NativeAttentionClockResolution(minutes, issue)
         }
-        return "ad-${localDateKey(now)}"
+        if (sawMorningBuffer && issue == null) {
+            issue = "No Morning Buffer endTime is configured; expected HH:MM in 24-hour local time."
+        }
+        return NativeAttentionClockResolution(null, issue)
     }
 
-    /** Resolves the current identity and the next scheduled boundary. */
-    fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState {
-        val id = resolveAttentionDayId(now, schedule)
-        val morning = schedule.windows.firstOrNull {
-            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
+    /** Minutes past local midnight for the accounting clock, or null for midnight fallback. */
+    fun configuredAttentionDayClockMinutes(schedule: NativeRoutineSchedule): Int? =
+        resolveAttentionDayClock(schedule).minutesIntoDay
+
+    /** Actionable malformed-clock warning; null when the configuration is usable. */
+    fun attentionDayClockIssue(schedule: NativeRoutineSchedule): String? =
+        resolveAttentionDayClock(schedule).issue
+
+    /**
+     * Resolves the current Attention Day exactly like JS `resolveAttentionDay`:
+     * the configured Morning Buffer END clock opens the day on every civil day;
+     * no usable clock falls back to the local civil calendar day. Deterministic —
+     * native allocation and JS reconciliation derive the SAME gate identity.
+     */
+    private fun resolveAttentionDay(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayResolution {
+        val minutes = resolveAttentionDayClock(schedule).minutesIntoDay
+        if (minutes != null) {
+            val todayBoundary = boundaryAt(now, minutes, 0)
+            val startedAt = if (todayBoundary <= now) todayBoundary else boundaryAt(now, minutes, -1)
+            return NativeAttentionDayResolution(
+                id = attentionDayIdForBoundary(startedAt),
+                startedAt = startedAt,
+                nextBoundaryAt = boundaryAt(startedAt, minutes, 1),
+            )
         }
-        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
-        if (morning != null && minutes != null && Regex("^ad-\\d{8}-\\d{4}$").matches(id)) {
-            for (daysAhead in 0..7) {
-                val candidate = boundaryAt(now, minutes, -daysAhead)
-                if (candidate > now && isActiveOnDay(morning, candidate)) {
-                    return NativeAttentionDayState(id, candidate)
-                }
-            }
-        }
-        return NativeAttentionDayState(id, boundaryAt(now, 0, -1))
+
+        var startedAt = boundaryAt(now, 0, 0)
+        if (startedAt > now) startedAt = boundaryAt(now, 0, -1)
+        return NativeAttentionDayResolution(
+            id = "ad-${localDateKey(startedAt)}",
+            startedAt = startedAt,
+            nextBoundaryAt = boundaryAt(startedAt, 0, 1),
+        )
     }
+
+    /** Resolves the current Attention Day id exactly like JS `resolveAttentionDay`. */
+    fun resolveAttentionDayId(now: Long, schedule: NativeRoutineSchedule): String =
+        resolveAttentionDay(now, schedule).id
+
+    /** Resolves the current identity and the next scheduled boundary. */
+    fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState =
+        resolveAttentionDay(now, schedule).let { NativeAttentionDayState(it.id, it.nextBoundaryAt) }
+
+    /** Civil calendar date `dayOffset` days from `now` (not a fixed 24h offset). */
+    private fun civilDateAfter(now: Long, dayOffset: Int): NativeCivilDate {
+        val calendar = Calendar.getInstance().apply {
+            timeInMillis = now
+            add(Calendar.DAY_OF_YEAR, dayOffset)
+        }
+        return NativeCivilDate(
+            year = calendar.get(Calendar.YEAR),
+            month = calendar.get(Calendar.MONTH),
+            day = calendar.get(Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    /**
+     * Local civil timestamp at `minutesIntoDay` on the civil date `dayOffset`
+     * days from `now`.
+     *
+     * Mirrors ECMAScript `new Date(y, m, d, h, min)`: spring-forward gaps
+     * normalize forward by the pre-transition offset; fall-back overlaps choose
+     * the earlier instant. Android minSdk 24 uses java.util.Calendar/TimeZone
+     * (no java.time desugaring dependency).
+     */
+    private fun boundaryAt(now: Long, minutesIntoDay: Int, dayOffset: Int): Long {
+        val date = civilDateAfter(now, dayOffset)
+        return resolveLocalCivilTime(
+            date.year,
+            date.month,
+            date.day,
+            minutesIntoDay / 60,
+            minutesIntoDay % 60,
+        )
+    }
+
+    private fun resolveLocalCivilTime(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long {
+        val zone = TimeZone.getDefault()
+        val wallAsUtc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(year, month, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val offsets = LinkedHashSet<Int>()
+        for (deltaHours in intArrayOf(-48, -24, -6, -1, 0, 1, 6, 24, 48)) {
+            offsets.add(zone.getOffset(wallAsUtc + deltaHours * 3_600_000L))
+        }
+        val matching = offsets.asSequence()
+            .map { offset -> wallAsUtc - offset }
+            .filter { localFieldsMatch(it, zone, year, month, day, hour, minute) }
+            .sorted()
+            .toList()
+        if (matching.isNotEmpty()) return matching.first()
+        // Gap: apply the offset in effect before the requested wall time,
+        // which yields the same forward-normalized instant as JavaScript.
+        val beforeOffset = zone.getOffset(wallAsUtc - 24L * 3_600_000L)
+        return wallAsUtc - beforeOffset
+    }
+
+    private fun localFieldsMatch(
+        epochMs: Long,
+        zone: TimeZone,
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int,
+    ): Boolean {
+        val calendar = Calendar.getInstance(zone).apply { timeInMillis = epochMs }
+        return calendar.get(Calendar.YEAR) == year &&
+            calendar.get(Calendar.MONTH) == month &&
+            calendar.get(Calendar.DAY_OF_MONTH) == day &&
+            calendar.get(Calendar.HOUR_OF_DAY) == hour &&
+            calendar.get(Calendar.MINUTE) == minute
+    }
+
+    private fun parseTimeToMinutes(value: String): Int? {
+        val trimmed = value.trim()
+        if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(trimmed)) return null
+        val parts = trimmed.split(":")
+        return parts[0].toInt() * 60 + parts[1].toInt()
+    }
+
+    private fun localDateKey(now: Long): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
 
     /** A new-pass gate cannot belong to an Attention Day that began after it was created. */
     fun wasCreatedInAttentionDay(
@@ -350,41 +482,6 @@ object NativeAttentionExchangeLogic {
             )
         }
         .mapTo(linkedSetOf()) { it.groupId }
-
-    /** Local midnight of (now - daysBack) plus minutesIntoDay. */
-    private fun boundaryAt(now: Long, minutesIntoDay: Int, daysBack: Int): Long {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = now
-            add(Calendar.DAY_OF_YEAR, -daysBack)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return calendar.timeInMillis + minutesIntoDay * 60_000L
-    }
-
-    private fun localMidnight(now: Long): Long = boundaryAt(now, 0, 0)
-
-    /** ISO weekday (Monday=1 .. Sunday=7) — matches JS `getIsoWeekday`. */
-    private fun isActiveOnDay(window: NativeRoutineWindow, epochMs: Long): Boolean {
-        if (window.activeDays.isEmpty()) return true
-        val calendar = Calendar.getInstance().apply { timeInMillis = epochMs }
-        val iso = when (calendar.get(Calendar.DAY_OF_WEEK)) {
-            Calendar.SUNDAY -> 7
-            else -> calendar.get(Calendar.DAY_OF_WEEK) - 1
-        }
-        return iso in window.activeDays
-    }
-
-    private fun parseTimeToMinutes(value: String): Int? {
-        if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(value)) return null
-        val parts = value.split(":")
-        return parts[0].toInt() * 60 + parts[1].toInt()
-    }
-
-    private fun localDateKey(now: Long): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
 
     /** One global ordinal per accepted exhaustion; existing timer/gate/ledger state makes retries idempotent. */
     fun allocateCooldown(
