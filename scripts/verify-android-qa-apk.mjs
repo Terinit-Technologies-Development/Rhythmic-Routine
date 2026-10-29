@@ -1,153 +1,257 @@
 #!/usr/bin/env node
-
 /**
- * Verification script for Android QA Standalone APK packaging.
+ * SW-2026-005 A4 — Routine QA standalone APK verifier (fail-closed).
  *
- * Verifies:
- * 1. Target APK exists and is non-empty.
- * 2. File size exceeds sensible minimum (> 10MB).
- * 3. Filename / path reflects the qaStandalone variant.
- * 4. Embedded React Native / Hermes JavaScript bundle (assets/index.android.bundle) is present.
- * 5. Application ID is strictly com.terinit.rhythmicroutine.qa and version suffix is -qa (via aapt if available).
+ * Unlike the previous helper this script does not interpolate APK paths into a
+ * shell, does not skip package/signature checks when the SDK is missing, and
+ * does not claim runtime enforcement from static packaging.
+ *
+ * Usage:
+ *   node scripts/verify-android-qa-apk.mjs [apk] [--variant qa|production]
+ *     [--sdk PATH] [--build-tools-version V] [--expected-cert-sha256 HEX]
+ *     [--expected-version-code N] [--json]
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { execSync } from 'child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-const defaultApkDir = path.resolve(process.cwd(), 'android/app/build/outputs/apk/qaStandalone');
+import {
+  buildApksignerVerifyArgs,
+  parseArgv,
+  profileFor,
+  validateCertSha256,
+} from './sw005/lib/qa-contract.mjs';
+import {
+  evaluateArtifact,
+  parseAaptBadging,
+  parseApksignerOutput,
+  readZipEntries,
+  summarizeApkEntries,
+} from './sw005/lib/apk-inspect.mjs';
+import { summarizeDex } from './sw005/lib/dex-inspect.mjs';
+
+const execFileAsync = promisify(execFile);
+
+const QA_APPLICATION_ID = 'com.terinit.rhythmicroutine.qa';
+const REQUIRED_BUNDLE_ENTRY = 'assets/index.android.bundle';
+const DEFAULT_APK_DIR = path.resolve(process.cwd(), 'android/app/build/outputs/apk/qaStandalone');
+
+const ALLOWED = [
+  'variant',
+  'sdk',
+  'build-tools-version',
+  'expected-cert-sha256',
+  'expected-version-code',
+  'java',
+  'json',
+  'help',
+];
+
+async function run(command, args) {
+  const result = await execFileAsync(command, args, {
+    windowsHide: true,
+    maxBuffer: 8 * 1024 * 1024,
+    timeout: 2 * 60 * 1000,
+  });
+  return result.stdout ?? '';
+}
 
 function findDefaultApk() {
-  if (!fs.existsSync(defaultApkDir)) {
-    return null;
-  }
-  const files = fs.readdirSync(defaultApkDir).filter((f) => f.endsWith('.apk'));
-  if (files.length === 0) {
-    return null;
-  }
-  return path.join(defaultApkDir, files[0]);
+  if (!fs.existsSync(DEFAULT_APK_DIR)) return null;
+  const files = fs
+    .readdirSync(DEFAULT_APK_DIR)
+    .filter((file) => file.toLowerCase().endsWith('.apk'))
+    .sort();
+  if (files.length === 0) return null;
+  const preferred = files.find((file) => file.toLowerCase().includes('qastandalone'));
+  return path.join(DEFAULT_APK_DIR, preferred ?? files[0]);
 }
 
-const targetApk = process.argv[2] ? path.resolve(process.argv[2]) : findDefaultApk();
-
-console.log('[verify-android-qa-apk] Verifying Android QA Standalone APK packaging...');
-
-if (!targetApk || !fs.existsSync(targetApk)) {
-  console.error(`  ✗ Error: QA APK not found at "${targetApk || defaultApkDir}".`);
-  console.error('    Ensure you ran "./gradlew.bat assembleQaStandalone" in android/.');
-  process.exit(1);
-}
-
-console.log(`  ✓ Target APK found: ${targetApk}`);
-
-// 1. File size check (> 10 MB)
-const stats = fs.statSync(targetApk);
-const sizeMb = (stats.size / (1024 * 1024)).toFixed(2);
-const minSizeMb = 10;
-if (stats.size < minSizeMb * 1024 * 1024) {
-  console.error(`  ✗ Error: APK size is unexpectedly small (${sizeMb} MB < ${minSizeMb} MB).`);
-  process.exit(1);
-}
-console.log(`  ✓ APK size verified: ${sizeMb} MB (${stats.size.toLocaleString()} bytes)`);
-
-// 2. Filename check
-const filename = path.basename(targetApk);
-if (filename === 'app-debug.apk' && !targetApk.toLowerCase().includes('qastandalone')) {
-  console.error(`  ✗ Error: Target is a debug development client ("${filename}"), NOT a standalone QA APK.`);
-  console.error('    The standalone QA APK is located under android/app/build/outputs/apk/qaStandalone/.');
-  console.error('    To build it, run: .\\gradlew.bat assembleQaStandalone -PreactNativeArchitectures=arm64-v8a');
-  process.exit(1);
-}
-if (!filename.toLowerCase().includes('qa') && !targetApk.toLowerCase().includes('qastandalone')) {
-  console.error(`  ✗ Error: APK path does not indicate a QA standalone variant: "${filename}"`);
-  console.error('    Expected an artifact from the "qaStandalone" build type.');
-  process.exit(1);
-}
-console.log(`  ✓ QA variant name verified: ${filename}`);
-
-// 3. Inspect ZIP contents for embedded JavaScript bundle
-let archiveEntries = [];
-try {
-  const tarOutput = execSync(`tar -tf "${targetApk}"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-  archiveEntries = tarOutput.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-} catch {
-  // Fallback: check with powershell if tar fails
-  try {
-    const psCmd = `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead('${targetApk}').Entries | ForEach-Object { $_.FullName }"`;
-    const psOutput = execSync(psCmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-    archiveEntries = psOutput.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  } catch (err) {
-    console.error('  ✗ Error: Failed to inspect APK archive entries:', err);
-    process.exit(1);
-  }
-}
-
-const hasBundle = archiveEntries.some(
-  (entry) =>
-    entry === 'assets/index.android.bundle' ||
-    entry.endsWith('/index.android.bundle') ||
-    entry.includes('index.android.bundle')
-);
-
-if (!hasBundle) {
-  console.error('  ✗ Critical Error: No embedded JavaScript bundle found in APK archive!');
-  console.error('    The APK is likely a debuggable variant that expects Metro (localhost:8081).');
-  console.error('    Ensure "qaStandalone" inherits from release and is NOT in react.debuggableVariants.');
-  process.exit(1);
-}
-console.log('  ✓ Embedded JS asset verified: "assets/index.android.bundle" is packaged inside APK');
-
-// 4. Inspect badging via aapt if available
-function findAaptPath() {
-  try {
-    const whichAapt = execSync(process.platform === 'win32' ? 'where.exe aapt' : 'which aapt', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    }).trim().split(/\r?\n/)[0];
-    if (whichAapt && fs.existsSync(whichAapt)) return whichAapt;
-  } catch {}
-
-  const sdkRoot =
-    process.env.ANDROID_HOME ||
+function resolveSdk(explicit) {
+  return (
+    explicit ||
     process.env.ANDROID_SDK_ROOT ||
-    (process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk') : null);
-
-  if (sdkRoot) {
-    const buildToolsDir = path.join(sdkRoot, 'build-tools');
-    if (fs.existsSync(buildToolsDir)) {
-      const versions = fs.readdirSync(buildToolsDir).sort().reverse();
-      for (const v of versions) {
-        const candidate = path.join(buildToolsDir, v, process.platform === 'win32' ? 'aapt.exe' : 'aapt');
-        if (fs.existsSync(candidate)) return candidate;
-      }
-    }
-  }
-  return null;
+    process.env.ANDROID_HOME ||
+    (process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk') : null)
+  );
 }
 
-const aaptPath = findAaptPath();
-if (aaptPath) {
+function resolveBuildTools(sdk, requestedVersion) {
+  const root = path.join(sdk, 'build-tools');
+  if (!fs.existsSync(root)) return null;
+  const versions = fs
+    .readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+(\.\d+)+/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const version = requestedVersion ?? versions.at(-1);
+  if (!version || !versions.includes(version)) return null;
+  return {
+    version,
+    aapt: path.join(root, version, process.platform === 'win32' ? 'aapt.exe' : 'aapt'),
+    apksignerJar: path.join(root, version, 'lib', 'apksigner.jar'),
+  };
+}
+
+async function main() {
+  const args = parseArgv(process.argv.slice(2), ALLOWED);
+  if (args.help) {
+    process.stdout.write(
+      'Usage: node scripts/verify-android-qa-apk.mjs [apk] [--variant qa|production] ' +
+        '[--sdk PATH] [--build-tools-version V] [--expected-cert-sha256 HEX] ' +
+        '[--expected-version-code N] [--json]\n'
+    );
+    return;
+  }
+
+  const variant = args.variant ?? 'qa';
+  const profile = profileFor('routine', variant);
+  if (profile.applicationId !== QA_APPLICATION_ID && variant === 'qa') {
+    throw new Error('QA profile no longer maps to the canonical QA application ID');
+  }
+  const targetApk = args._[0] ? path.resolve(args._[0]) : findDefaultApk();
+
+  const sdk = resolveSdk(args.sdk);
+  const buildTools = sdk && fs.existsSync(sdk) ? resolveBuildTools(sdk, args['build-tools-version']) : null;
+  const java =
+    args.java ||
+    (process.env.JAVA_HOME
+      ? path.join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java')
+      : 'java');
+
+  if (!targetApk || !fs.existsSync(targetApk)) {
+    process.stderr.write(`[verify-android-qa-apk] FAIL: QA APK not found at "${targetApk || DEFAULT_APK_DIR}".\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const filename = path.basename(targetApk);
+  if (filename === 'app-debug.apk' && !targetApk.toLowerCase().includes('qastandalone')) {
+    process.stderr.write(
+      '[verify-android-qa-apk] FAIL: app-debug.apk is the Metro development client, not a standalone QA APK.\n'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (variant === 'qa' && !filename.toLowerCase().includes('qa') && !targetApk.toLowerCase().includes('qastandalone')) {
+    process.stderr.write(`[verify-android-qa-apk] FAIL: path does not indicate the qaStandalone variant: ${filename}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let expectedSignerSha256;
+  if (args['expected-cert-sha256']) {
+    expectedSignerSha256 = validateCertSha256(args['expected-cert-sha256'], 'expected certificate SHA-256');
+  } else if (process.env.SW005_EXPECTED_CERT_SHA256) {
+    expectedSignerSha256 = validateCertSha256(
+      process.env.SW005_EXPECTED_CERT_SHA256,
+      'expected certificate SHA-256'
+    );
+  }
+
+  const facts = {
+    exists: true,
+    sizeBytes: fs.statSync(targetApk).size,
+    aaptAvailable: Boolean(buildTools && fs.existsSync(buildTools.aapt)),
+    aaptVersion: buildTools?.version ?? null,
+    apksignerAvailable: Boolean(buildTools && fs.existsSync(buildTools.apksignerJar)),
+    javaExe: java,
+  };
+
   try {
-    const badging = execSync(`"${aaptPath}" dump badging "${targetApk}"`, {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-
-    const expectedAppId = 'com.terinit.rhythmicroutine.qa';
-    if (!badging.includes(`name='${expectedAppId}'`)) {
-      console.error(`  ✗ Error: Expected applicationId "${expectedAppId}" was not found in APK badging.`);
-      process.exit(1);
-    }
-    console.log(`  ✓ Application ID verified via aapt: "${expectedAppId}"`);
-
-    if (badging.includes("versionName='1.0.1-qa'") || badging.includes("-qa'")) {
-      console.log('  ✓ Version name suffix verified via aapt: "1.0.1-qa"');
-    }
-  } catch (err) {
-    console.warn('  ! Warning: aapt dump badging inspection failed (non-fatal):', err.message);
+    const buffer = fs.readFileSync(targetApk);
+    const entries = readZipEntries(buffer);
+    facts.packaging = summarizeApkEntries(entries);
+    facts.dex = summarizeDex(buffer, entries);
+  } catch (error) {
+    facts.entriesError = error.message;
   }
-} else {
-  console.log('  ℹ aapt not found; skipped deep package ID verification (archive checks passed).');
+
+  if (facts.aaptAvailable) {
+    try {
+      facts.badging = parseAaptBadging(await run(buildTools.aapt, ['dump', 'badging', targetApk]));
+    } catch (error) {
+      facts.badgingError = error.message;
+    }
+  } else {
+    facts.badgingError = 'aapt unavailable; refusing to skip package/version validation';
+  }
+
+  if (facts.apksignerAvailable) {
+    try {
+      const output = await run(java, [
+        '-jar',
+        buildTools.apksignerJar,
+        ...buildApksignerVerifyArgs({ apksignerJar: buildTools.apksignerJar, apk: targetApk }),
+      ]);
+      facts.signer = parseApksignerOutput(output);
+    } catch (error) {
+      facts.signerError = error.message;
+    }
+  }
+
+  const spec = {
+    id: 'routine-qa-standalone',
+    role: 'aut',
+    expectedPackage: profile.applicationId,
+    versionNameSuffix: profile.versionNameSuffix,
+    expectedVersionCode: args['expected-version-code'] ? Number(args['expected-version-code']) : undefined,
+    expectedSignerSha256,
+    requireExpectedSigner: true,
+    minSizeBytes: 10 * 1024 * 1024,
+    requireBundle: true,
+    requireNativeLibs: true,
+    requireDexModule: true,
+    requireDexClasses: [
+      { label: 'RhythmDeviceModule', descriptor: 'Lexpo/modules/rhythmdevice/RhythmDeviceModule;' },
+      { label: 'RhythmEnforcementService', descriptor: 'Lexpo/modules/rhythmdevice/RhythmEnforcementService;' },
+    ],
+    requireDexRegistration: 'Lexpo/modules/ExpoModulesPackageList;',
+  };
+
+  const evaluation = evaluateArtifact(spec, facts);
+  const report = {
+    targetApk,
+    variant,
+    expected: {
+      package: profile.applicationId,
+      versionNameSuffix: profile.versionNameSuffix,
+      versionCode: spec.expectedVersionCode ?? null,
+      signerCertSha256: expectedSignerSha256 ?? null,
+      bundleEntry: REQUIRED_BUNDLE_ENTRY,
+    },
+    sdk: {
+      root: sdk ?? null,
+      buildToolsVersion: buildTools?.version ?? null,
+      aapt: buildTools?.aapt ?? null,
+      apksignerJar: buildTools?.apksignerJar ?? null,
+    },
+    ok: evaluation.ok,
+    rows: evaluation.rows,
+  };
+
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`[verify-android-qa-apk] ${targetApk}\n`);
+    if (!sdk) process.stderr.write('  SDK not found; package/version/signature checks fail closed.\n');
+    for (const row of evaluation.rows) {
+      const mark = row.status === 'PASS' ? 'PASS' : row.status === 'FAIL' ? 'FAIL' : 'NOT RUN';
+      process.stdout.write(`  [${mark}] ${row.id}: ${row.detail}\n`);
+    }
+    process.stdout.write(
+      evaluation.ok
+        ? '[verify-android-qa-apk] Static packaging and signature checks passed. Runtime checks remain NOT RUN.\n'
+        : '[verify-android-qa-apk] FAILED. No runtime enforcement is claimed.\n'
+    );
+  }
+
+  if (!evaluation.ok) process.exitCode = 1;
 }
 
-console.log('[verify-android-qa-apk] All Android Standalone QA APK checks passed successfully.');
+main().catch((error) => {
+  process.stderr.write(`[verify-android-qa-apk] fatal: ${error.message}\n`);
+  process.exitCode = 1;
+});

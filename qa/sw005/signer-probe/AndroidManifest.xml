@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SW-2026-005 A4 TEST-ONLY legacy fixture alias. Prefer the complete scratch
+  project manifests under qa/sw005/signer-probe/app/src/{main,androidTest}/.
+  Exact existing signature permissions only; no network or broad visibility.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.terinit.rhythmicroutine.sw005probe">
+
+    <uses-permission android:name="com.terinit.rhythmicreader.permission.RECOVERY" />
+    <uses-permission android:name="com.terinit.rhythmicmeditation.permission.STATUS_ACCESS" />
+
+    <queries>
+        <package android:name="com.terinit.rhythmicreader" />
+        <package android:name="com.terinit.rhythmicmeditation" />
+        <package android:name="com.terinit.rhythmicroutine.qa" />
+        <package android:name="com.terinit.rhythmicroutine" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="SW-2026-005 signer probe"
+        android:testOnly="true" />
+</manifest>

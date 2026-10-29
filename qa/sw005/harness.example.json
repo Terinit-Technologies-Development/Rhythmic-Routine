@@ -1,0 +1,27 @@
+{
+  "$comment": "SW-2026-005 A4 template. Copy outside the repository, fill in absolute paths and full 40-character SHAs. Never commit a filled copy containing private locations or key material.",
+  "routineRoot": "<ABSOLUTE_PATH_TO_ROUTINE_WORKTREE>",
+  "routineSha": "<40_CHARACTER_REVIEWED_SHA>",
+  "readerRoot": "<ABSOLUTE_PATH_TO_READER_WORKTREE>",
+  "readerSha": "<40_CHARACTER_REVIEWED_SHA>",
+  "meditationRoot": "<ABSOLUTE_PATH_TO_MEDITATION_WORKTREE>",
+  "meditationSha": "<40_CHARACTER_REVIEWED_SHA>",
+  "androidSdk": "<ABSOLUTE_PATH_TO_INSTALLED_ANDROID_SDK>",
+  "buildToolsVersion": "36.0.0",
+  "jdkHome": "<ABSOLUTE_PATH_TO_JDK_17_OR_JBR_21>",
+  "gradleHome": "<ABSOLUTE_PATH_TO_GRADLE_9_3>",
+  "gradleUserHome": "<ABSOLUTE_PATH_TO_ISOLATED_GRADLE_CACHE>",
+  "maxHeapMb": 1024,
+  "architectures": ["arm64-v8a"],
+  "apps": ["routine", "reader", "meditation"],
+  "routineVersionCode": 0,
+  "signing": {
+    "keystore": "<ABSOLUTE_PATH_OUTSIDE_ALL_REPOS>/sw005-shared-qa.p12",
+    "keyAlias": "<KEY_ALIAS>",
+    "keystorePassEnv": "SW005_KS_PASS",
+    "keyPassEnv": "SW005_KEY_PASS",
+    "expectedCertSha256": "<64_CHARACTER_CERT_SHA256>"
+  },
+  "outputDir": "<ABSOLUTE_PATH_OUTSIDE_ALL_REPOS>/signed",
+  "manifestPath": "<ABSOLUTE_PATH_OUTSIDE_ALL_REPOS>/qa-manifest.json"
+}
