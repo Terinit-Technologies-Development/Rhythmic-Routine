@@ -38,9 +38,10 @@ Static, source-level investigation of DEF-01..DEF-07 and the FR contracts they t
 | `npm run lint` | PASS (exit 0) | supplied |
 | `npm run prebuild` | PASS | supplied |
 | Reader native tests | **106 unit tests PASS**, 0 failures / 0 errors / 0 skips, exit 0, 10m13s, independent Gradle home + explicit Java 17 path | supplied |
-| Routine native tests | queued, not executed | supplied |
-| Meditation native tests | running, no result yet | supplied |
-| Earlier Gradle failure | `Settings_gradle` `NoSuchMethodError` is **environmental and mitigated**, not a current blocker | supplied |
+| Routine native tests | **80 tests PASS**, 0 failures / 0 errors / 0 skips; cold native build 21m4s | supplied |
+| Meditation native tests | **177 tests PASS**, 0 failures / 0 errors / 0 skips | supplied |
+| Physical / signing acceptance | **none performed** | supplied |
+| Earlier Gradle failure | `Settings_gradle` `NoSuchMethodError` was environmental and mitigated; not a current blocker | supplied |
 | Android folder | generated/untracked, absent in this clean worktree | supplied |
 | `modules/rhythm-device` | tracked native source | supplied |
 | Untracked Android SDK sources | not available to this pass | consequence |
@@ -54,10 +55,10 @@ The following were produced outside this pass but on the same canonical baseline
 | JS reproduction, weekend boundary, `Africa/Johannesburg`, Saturday **31 October 2026** | resolves Friday 07:30 → Monday 07:30, **72 h**, `containsNow = true` but the day spans two inactive days | **DYNAMICALLY_REPRODUCED** for DEF-01 weekend case |
 | JS reproduction, DST boundary, `America/New_York`, Monday **9 March 2026 00:30** | resolves **Sat 7 Mar 07:30 → Sun 8 Mar 08:30**, `containsNow = false` | **DYNAMICALLY_REPRODUCED** for DEF-01 DST case |
 | Repo-wide symbol search (`rg`) by the root operator | `createMorningMeditationRequirement`, `buildMorningMeditationRequest`, `queryRecoveryStatus` have **no production callers beyond their definitions**; other occurrences are tests | upgrades DEF-02/DEF-03 from scoped to **repo-wide confirmed** |
-| Native baseline | the earlier Gradle initialisation failure is environmental and mitigated (independent Gradle home, explicit Java 17); Reader **106/106** unit tests pass; Routine native is queued and Meditation tests are still running | Reader Kotlin is now test-verified for its own suite; Routine Kotlin statements remain static until its suite runs |
+| Native baseline | all suites green: Routine JS **423**, Routine native **80**, Reader **106**, Meditation **177**; zero failures/errors/skips; Routine native cold build 21m4s. No physical or signing acceptance | Kotlin statements below are now test-backed for their suites; device behaviour remains unproven |
 
 
-Because the Gradle suite did not run, **no Android unit or instrumentation result may be claimed.** Anything below that touches Kotlin is a static reading of tracked source, not a test result.
+All four baseline suites pass, so any red in a lane is a regression. **No physical or signing acceptance has been performed**, and the Kotlin claims below still describe source behaviour, not device behaviour.
 
 ### 1.3 Tool-constrained limits of this pass
 
@@ -498,7 +499,7 @@ Also note the buttons are **not** disabled while an in-flight selection exists (
 
 ### 7.2 Switch-before-progress semantics are undefined for identity
 
-Repeat selection of the **same** provider is not ambiguous — FR-11 requires one stable id, so the current re-mint is simply a defect. What the PRD leaves open is the **switch**: what happens to the first provider's binding and to a completion it later produces. That is PD-3, carrying the controller's proposal (`OWNER_POLICY_DECISIONS.md`), pending approval: one persistent id per (gate, provider); bindings are ACTIVE/INACTIVE rather than abandoned; switching back reactivates the original id; a switch is allowed only after reconciliation proves no progress (unknown ⇒ refuse); only the active binding's exact evidence counts.
+Repeat selection of the **same** provider is not ambiguous — FR-11 requires one stable id, so the current re-mint is simply a defect. The **switch** is PD-3, approved 29 October 2026 (`OWNER_POLICY_DECISIONS.md`): one persistent id per (gate, provider); bindings ACTIVE/INACTIVE rather than abandoned; switching back reactivates the original id; a switch is allowed only after reconciliation proves no progress (unknown ⇒ refuse); only the active binding's exact evidence counts.
 
 The code implements exactly one half of the surrounding rule:
 
@@ -729,15 +730,15 @@ Two rules follow for Wave A/B:
 
 ---
 
-## 13. Owner decisions required at G0 (defect register view)
+## 13. Owner decisions — approved 29 October 2026 (defect register view)
 
-The authoritative list is `docs/sw-2026-005/OWNER_POLICY_DECISIONS.md` (three decisions). In register terms:
+The authoritative approved summary is `docs/sw-2026-005/OWNER_POLICY_REVIEW.md`; the three decisions are repeated in `OWNER_POLICY_DECISIONS.md`. In register terms:
 
-| ID | Decision | Blocks | Conservative recommendation |
+| ID | Decision | Blocks | Approved policy |
 | --- | --- | --- | --- |
-| **PD-1** | Does an inactive/disabled morning window still advance the Attention Day at the configured boundary clock, and what is the fallback when no usable boundary exists? | FR-01/02, DEF-01, T01–T05 | Yes — advance every civil day at the configured clock; fall back to local midnight with a diagnostic |
-| **PD-2** | Across a boundary, does an unsatisfied gate expire; and what happens to a pending schedule edit and the substitution/cap ledger? | FR-03/12, DEF-01, DEF-04, T06, T17, T21 | Carry the gate until satisfied; freeze the open day and clamp its boundary; ledger follows the gate's day, never resets early |
-| **PD-3** | What happens to the first provider binding when the user switches before meaningful progress, and if they switch back? | FR-11, DEF-05, T15, T16 | Controller proposal (pending): one persistent id per gate+provider; ACTIVE/INACTIVE, not abandoned; switch-back reactivates the original id; switch only after reconciliation proves no progress; only the active binding's exact evidence counts |
+| **PD-1** | Does an inactive/disabled morning window still advance the Attention Day at the configured boundary clock, and what is the fallback when no usable boundary exists? | FR-01/02, DEF-01, T01–T05 | Advance every civil day at the configured clock; local-midnight fallback with diagnostic only when no usable boundary exists |
+| **PD-2** | Across a boundary, does an unsatisfied gate expire; and what happens to a pending schedule edit and the substitution/cap ledger? | FR-03/12, DEF-01, DEF-04, T06, T17, T21 | Carry the gate until satisfied; pin the day and use the later boundary; per-day ledger keeps the gate's own day, never resets early |
+| **PD-3** | What happens to the first provider binding when the user switches before meaningful progress, and if they switch back? | FR-11, DEF-05, T15, T16 | One persistent id per gate+provider; ACTIVE/INACTIVE, not abandoned; switch-back reactivates the original id; reconcile before switching (unknown ⇒ refuse); only the active binding's exact evidence counts |
 
 **Not owner decisions — already fixed by the PRD, do not re-open:**
 
@@ -760,7 +761,7 @@ The authoritative list is `docs/sw-2026-005/OWNER_POLICY_DECISIONS.md` (three de
 
 | Gap | Impact | How to close |
 | --- | --- | --- |
-| Routine native tests queued; Meditation running | Routine Kotlin statements remain static; no instrumentation claim anywhere | Reader passed 106/106 (exit 0, 10m13s); run Routine, then Meditation, and record counts |
+| Routine native, Reader and Meditation suites | Superseded: all suites now pass (Routine native 80, Reader 106, Meditation 177) | Read the R0 baseline as green; any red in a lane is a regression |
 | No repo-wide symbol search **in this pass** | DEF-02/DEF-03 no-caller claims were initially scoped | Closed by root `rg` (§1.2.1); remaining "no caller" statements (§7.3, §9.1) are still scoped and name their search |
 | No installed APK / manifest inspection | DEF-06 signature/permission cause unproven; `exported`/`permission` unknown | C2 device manifest + `dumpsys package` on the QA build |
 | Reader and Meditation repos not inspected | Provider-side qualification/parser causes unproven | Wave A2/A3 read-only passes |
@@ -768,4 +769,4 @@ The authoritative list is `docs/sw-2026-005/OWNER_POLICY_DECISIONS.md` (three de
 | Dynamic reproduction coverage | Only the two named JS cases are executed; all other reproductions remain unexecuted | A1/A3 harnesses; T01–T05, T07–T18 |
 | Physical device absent | All device-visible claims remain hypotheses | C3 only after C2 green |
 
-**No defect in this register is closed. No fix is proposed as implemented. No owner approval is implied.**
+**No defect in this register is closed and no fix is implemented.** Policy approval is recorded only in `OWNER_POLICY_REVIEW.md`; it does not authorise device work, merge, tag or release.

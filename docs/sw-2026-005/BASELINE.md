@@ -24,7 +24,7 @@ The newer uncommitted version declarations must not be overwritten or ignored wh
 | Routine baseline | Expo Android prebuild --no-install: exit0, no package.json change | routine-baseline-prebuild.txt |
 | Reader baseline | :app:testDebugUnitTest:106 pass,0 failed/errors/skipped; exit0,10m13s cold build | reader-explicit-toolchain-unit.txt; reader-unit-summary.json |
 | Meditation baseline | :app:testDebugUnitTest:177 pass,0 failed/errors/skipped; exit0,5m31s | meditation-clean-home-native-unit.txt; meditation-unit-summary.json |
-| Routine baseline | native module suite IN PROGRESS | routine-clean-home-native-unit.txt |
+| Routine baseline | :rhythm-device:testDebugUnitTest:80 pass,0 failed/errors/skipped; exit0,21m4s cold build | routine-clean-home-native-unit.txt; routine-native-unit-summary.json |
 | Toolkit recovery fix7d72a3e | full65 tests pass,0 failed/skipped; exit0 | engiorch-recovery-suite.txt |
 
 Baseline tests do not certify required new behaviour. Independent canonical-source reproductions confirm a72h weekend day and a DST interval excluding now (attention-day-baseline-reproductions.json). Complete requirement mapping remains open in TEST_MATRIX.md.

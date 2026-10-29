@@ -1,10 +1,10 @@
-# SW-2026-005 — Owner Policy Decisions (G0)
+# SW-2026-005 — Owner Policy Decisions (approved)
 
 **Repository:** `Terinit-Technologies-Development/Rhythmic-Routine`
 **Baseline SHA:** `2b20a113ba23a74b328cdc519800ea790897a09e`
 **Prepared:** R0 follow-up, 29 October 2026
-**Status:** the owner explicitly approved all three controller policies on 29 October 2026. OWNER_POLICY_REVIEW.md records the exact approved contract and governs over any inconsistent draft wording. Engineering review and implementation remain pending.
-**PD-3 precedence note:** PD-3 sets out the controller's proposal, which has been sent for owner approval and is **not approved**; if any clause conflicts with FR-11, FR-11 wins and PD-3 is corrected.
+**Status:** **APPROVED by the owner on 29 October 2026.** `docs/sw-2026-005/OWNER_POLICY_REVIEW.md` is the authoritative approved summary and governs over any inconsistent draft wording here. Implementation and engineering review remain pending.
+**PD-3 precedence note:** PD-3 is approved policy; if any clause conflicts with FR-11, FR-11 wins and PD-3 is corrected.
 
 ---
 
@@ -28,6 +28,8 @@ Everything else raised in the first R0 draft is either already fixed by the PRD 
 
 gate storage shape and additive migration; the FR-16 transition audit ledger (required, not optional); DST gap/overlap resolution; native snapshot symmetry; persistence acknowledgements; Reader status verification; refresh orchestration; carried-gate UI. These must be delivered inside this programme.
 
+**Approval status:** all three policies are approved. Any option labelled B or C anywhere in this document is a discarded alternative recorded for context only; it is not approved and must not be implemented.
+
 **Confidence context** (details in `R0_ROUTINE_DEFECT_REGISTER.md` §1.2.1): two DEF-01 cases are now dynamically reproduced on canonical source — Saturday 31 Oct 2026 in `Africa/Johannesburg` yields a 72-hour Friday→Monday day; Monday 9 Mar 2026 00:30 in `America/New_York` yields `containsNow = false`. Repo-wide `rg` confirmed no production callers for the morning factory/request or for `queryRecoveryStatus`. None of this is physical-device proof.
 
 ---
@@ -48,7 +50,7 @@ The PRD fixes the *goal* (FR-01: one deterministic boundary, never a Friday→Mo
 | B | Boundary only on active days; on inactive days the boundary becomes local midnight |
 | C | Boundary only on active days; otherwise stretch to the next active day (current behaviour) |
 
-### Recommendation: **A**
+### Approved policy: **A** (29 October 2026)
 
 Concretely:
 
@@ -57,7 +59,7 @@ Concretely:
 3. If no valid `HH:MM` boundary exists anywhere, use local midnight as the boundary and emit a diagnostic naming the window and raw value.
 4. `activeDays: []` still means "no active routine days" (FR-02); the boundary simply no longer depends on `activeDays`.
 
-### Consequences if accepted
+### Consequences of the approved policy
 
 - A Friday evening stays one Attention Day through Saturday morning; Saturday gets its own id at the configured clock. The 72-hour day is impossible, so T01/T03 become testable and weekend risk-group exhaustion cannot inflate Friday's ordinal.
 - A user who disables weekend mornings keeps correct cooldown/substitution accounting and loses no counters; this is the PRD's success criterion for defect A.
@@ -65,7 +67,7 @@ Concretely:
 - Existing test `pass03_attention_day.test.ts:227–235` must be rewritten — it currently asserts the Friday→Monday stretch. That is an approved-behaviour change and needs the owner's acceptance of PD-1, nothing more.
 - Residual risk: on a day with no window at all, the boundary still fires at the configured time. The user sees no restriction, which is correct, but a "morning required" surface must not appear (MM-2 gates that separately).
 
-### Consequences of B or C
+### Discarded alternatives (not approved)
 
 - **B** creates two reset rules in one week: an evening can be split across midnight, resetting ordinals and substitutions inside what the user experiences as one night. Directly conflicts with POL-05's "no midnight reset loophole" and FR-03.
 - **C** is the current defect: reproduced as a 72-hour day, and it makes "exact bound session for the current day" ambiguous for two days every week.
@@ -96,14 +98,14 @@ FR-03 requires "document approved cross-boundary gate expiry semantics before ch
 | B | carried with a grace deadline | as A, plus a visible deadline | follows the gate's day until the deadline |
 | C | dropped at boundary | day recomputed immediately | resets with the new day |
 
-### Recommendation: **A**, with the ledger rule stated explicitly
+### Approved policy: **A** (29 October 2026), with the ledger rule stated explicitly
 
-1. **Gate lifetime:** an unsatisfied gate persists across any number of boundaries, keeping its `attentionDayId`, `gateId`, ordinal, requirement numbers and provider binding. It leaves only by satisfaction, user deletion of the risk group, or an explicit abandonment path the owner would have to authorise separately.
+1. **Gate lifetime:** an unsatisfied gate persists across any number of boundaries, keeping its `attentionDayId`, `gateId`, ordinal, requirement numbers and provider binding. It leaves only by satisfaction or the existing explicit risk-group deletion behaviour. No new silent expiry, grace deadline or abandonment shortcut exists. Emit the FR-16 audit event (`cause: schedule-edit`, before/after day id, boundary, gate ids, ordinal, substitutions).
 2. **Schedule edit:** on save, keep the current `attentionDayId`; set `nextBoundaryAt = max(persisted, newScheduleBoundary)`; apply the new windows from the next boundary. Emit the FR-16 audit event (`cause: schedule-edit`, before/after day id, boundary, gate ids, ordinal, substitutions).
 3. **Ledger:** `cooldownsTriggered` and `meditationSubstitutionsUsed` belong to the Attention Day that opened the gate. A gate carried into a new day does **not** consume the new day's cap; the new day starts its own ordinal at 1 while the old gate still holds. Record the owning day on the gate so this is answerable from persisted state.
 4. **Midnight:** `SC-7` (obligation lifetime) is independent of `SC-8` (evidence date scope). CD3 evidence remains calendar-scoped per FR-08; the gate is simply not destroyed.
 
-### Consequences if accepted
+### Consequences of the approved policy
 
 - No clock event or settings edit can produce an unlock. FR-03, FR-12 and POL-09 are simultaneously satisfiable.
 - A user who completes a 90-minute cooldown late at night keeps the obligation into the next morning rather than waking up free; this is the conservative reading, and it is what "never unlock solely due to a provider query error" generalises to.
@@ -111,7 +113,7 @@ FR-03 requires "document approved cross-boundary gate expiry semantics before ch
 - The FR-16 audit ledger becomes mandatory, and the store needs an additive per-gate record plus `substitutionDayId` (or equivalent). This is an engineering migration with review — not a reason to defer.
 - T06, T17 and T21 become pass/fail tests instead of "undefined behaviour".
 
-### Consequences of B or C
+### Discarded alternatives (not approved)
 
 - **B** is defensible if the owner wants a bounded nuisance ceiling, but needs a deadline field and a policy for what happens at the deadline (abandon vs re-hold). It must not silently drop.
 - **C** is today's effective behaviour and is a silent unlock: a schedule edit that disables the morning buffer makes the new boundary midnight, the day id changes, and `evaluateRestorativeGate` drops the gate as stale (`restorativeGate.ts:343–348`). Rejected on FR-03/FR-12 grounds.
@@ -124,7 +126,7 @@ Persist the owning day on every gate; freeze/clamp on `updateConfiguration`; cha
 
 ## PD-3 — Provider switch before meaningful progress
 
-> **Controller proposal, sent for owner approval — not approved.** The text below is the controller's concise proposal. It does not record owner acceptance, and the PRD remains authoritative. If FR-11 appears to conflict with any clause, FR-11 wins and this section is corrected.
+> **Approved 29 October 2026** (see `OWNER_POLICY_REVIEW.md`). The text below records the approved policy. It does not record owner acceptance of anything beyond these three policies (device, merge, tag, release remain later gates). FR-11 remains authoritative.
 
 ### What is ambiguous
 
@@ -138,7 +140,7 @@ FR-11 mandates one stable session id per gate+provider, that progress never comb
 | B | refused after first selection | n/a | n/a |
 | C | allowed, silently re-mints (current) | new id | silently lost |
 
-### Recommendation: **A**
+### Approved policy: **A** (29 October 2026)
 
 1. **Persistent identity:** exactly one session id per `(gateId, provider)`, minted on first selection of that provider and persisted before launch. Re-selecting the same provider, or switching **back** to it, reuses that id. Never mint a second id for the same pair.
 2. **Binding state:** a provider binding is **ACTIVE** (currently selected) or **INACTIVE** (previously selected). INACTIVE is not "abandoned" and is not terminal. At most one binding is ACTIVE at a time.
@@ -150,7 +152,7 @@ FR-11 mandates one stable session id per gate+provider, that progress never comb
 8. **One session, one gate:** unchanged (FR-11/POL-04).
 9. **UI:** switching must state that only the selected path can count, and switching back restores the same session rather than starting over.
 
-### Consequences if accepted
+### Consequences of the approved policy
 
 - FR-11's "stable id per gate+provider" holds even across A→B→A; returning to the first provider does not lose its id or its completed work.
 - No irrecoverable orphan: a binding is inactive, not destroyed, so evidence can be reconciled when it becomes active again.
@@ -158,7 +160,7 @@ FR-11 mandates one stable session id per gate+provider, that progress never comb
 - Storage needs one id and one state per (gate, provider) — additive, reversible migration, engineering with review.
 - T15/T16 become deterministic: re-tap reuses; switch-back reactivates; late inactive evidence is retained but not counted; post-progress switch is refused.
 
-### Consequences of B or C
+### Discarded alternatives (not approved)
 
 - **B** avoids multi-binding state but permanently traps a user who mis-taps or lacks one provider that day.
 - **C** is today's behaviour and the DEF-05 data-loss path: a new id per tap means the session the user actually completes is orphaned.
@@ -171,13 +173,13 @@ Mint-once per (gate, provider); persist ACTIVE/INACTIVE state and the id map bef
 
 ## Decision record
 
-| ID | Recommended | Owner decision | Date | Notes |
+| ID | Approved policy | Owner decision | Date | Notes |
 | --- | --- | --- | --- | --- |
-| PD-1 | A | Approved controller policy | 2026-10-29 | See OWNER_POLICY_REVIEW.md |
-| PD-2 | A | Approved controller policy | 2026-10-29 | See OWNER_POLICY_REVIEW.md |
-| PD-3 | A | _pending_ | | controller proposal sent for approval; not accepted |
+| PD-1 | A | Approved | 2026-10-29 | `OWNER_POLICY_REVIEW.md` |
+| PD-2 | A | Approved | 2026-10-29 | `OWNER_POLICY_REVIEW.md` |
+| PD-3 | A | Approved | 2026-10-29 | `OWNER_POLICY_REVIEW.md`; FR-11 still authoritative |
 
-A decision is recorded only when the owner states it explicitly. Silence, review comments, or an engineering implementation are not acceptance.
+Approval is recorded once, explicitly, in `OWNER_POLICY_REVIEW.md`. Engineering review of the implementation remains pending and is not a policy reopening.
 
 ---
 
@@ -185,5 +187,5 @@ A decision is recorded only when the owner states it explicitly. Silence, review
 
 - No physical/device evidence for any clause. The two DEF-01 reproductions are JS-domain only; both are recorded as `DYNAMICALLY_REPRODUCED`, not device-proven.
 - Reader and Meditation repositories were not inspected in R0; provider-side qualification defects remain possible and would return at Wave A2/A3.
-- Native test execution: Reader **106/106 PASS** (exit 0, 10m13s, independent Gradle home + explicit Java 17); Routine native is queued and Meditation is running. No Routine Kotlin or instrumentation result is claimed yet.
+- Baseline suites all pass: Routine JS **423**, Routine native **80**, Reader **106**, Meditation **177**, zero failures/errors/skips; Routine native cold build 21m4s. No physical or signing acceptance has been performed.
 - Installed APK hashes, manifest export state and signer facts are unverified; #13's exact trigger therefore remains a hypothesis.

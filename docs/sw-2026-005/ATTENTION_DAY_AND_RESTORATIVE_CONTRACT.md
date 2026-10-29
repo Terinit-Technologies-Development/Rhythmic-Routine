@@ -1,18 +1,19 @@
-# SW-2026-005 — Proposed Attention Day and Restorative Contract
+# SW-2026-005 — Attention Day and Restorative Contract
 
 **Repository:** `Terinit-Technologies-Development/Rhythmic-Routine`
 **Baseline SHA:** `2b20a113ba23a74b328cdc519800ea790897a09e`
-**Pass:** R0 — interface freeze proposal for G0 review
-**Status:** **PROPOSED. NOT APPROVED. NOT IMPLEMENTED.**
+**Pass:** R0 — interface freeze; owner policies approved, implementation pending
+**Status:** **POLICIES APPROVED 29 Oct 2026. NOT IMPLEMENTED. ENGINEERING REVIEW PENDING.**
+**Authoritative policy summary:** `docs/sw-2026-005/OWNER_POLICY_REVIEW.md`
 **Companion evidence:** `docs/sw-2026-005/R0_ROUTINE_DEFECT_REGISTER.md`
 
-Nothing in this document authorises a code change. Each clause is either:
+Nothing in this document authorises a code change by itself. Each clause is either:
 
 - **[CURRENT]** — what the code does today, with file:line references;
-- **[PROPOSED]** — what this document recommends engineering freeze at G0; or
+- **[PROPOSED]** — engineering detail to be reviewed before implementation; or
 - **[HYPOTHESIS]** — plausible but requiring device or dynamic proof.
 
-Only three items are escalated to the owner, as PD-1..PD-3 in `docs/sw-2026-005/OWNER_POLICY_DECISIONS.md`. Everything else is either mandated by the PRD or an engineering decision submitted for review.
+PD-1, PD-2 and PD-3 are approved policy and are marked **[APPROVED]**. Everything else is mandated by the PRD or is an engineering decision submitted for review.
 
 Where a clause is derived from reading rather than execution it is marked **[CODE-PROVEN]** or **[HYPOTHESIS]** as in the defect register.
 
@@ -32,7 +33,7 @@ The programme PRD is authoritative over this document. This revision corrects on
 - **Corrected distinction:** *obligation lifetime* (gate identity, ordinal, cooldown end, substitution consumption) is Attention-Day scoped and must survive clock transitions; *evidence date scope* (which calendar aggregate may qualify CD3) stays calendar-based and is unchanged by this programme. These are separate axes and must not be collapsed.
 - **Also corrected:** a valid cross-midnight routine window is a supported configuration (T04). Only a non-`HH:MM` value is malformed.
 
-Everything below that is tagged `[PROPOSED]` remains a proposal for engineering review or, where marked, for the three owner decisions in `OWNER_POLICY_DECISIONS.md`.
+Everything below that is tagged `[PROPOSED]` is engineering detail for review. Approved policy is tagged `[APPROVED]` and must not be reopened.
 
 ### 1.2 Authority (POL-01)
 
@@ -76,7 +77,7 @@ Reader and Meditation never grant access, never shorten a cooldown, and never de
 
 ### 3.1 Boundary clock
 
-**[PROPOSED] AD-1 (owner decision PD-1).** The Attention Day boundary is the Morning Buffer **end wall-clock time**, applied to **every civil day**, including days on which the morning window is not scheduled and days on which the window is disabled.
+**[APPROVED — PD-1] AD-1.** The Attention Day boundary is the Morning Buffer **end wall-clock time**, applied to **every civil day**, including days on which the morning window is not scheduled and days on which the window is disabled.
 
 Rationale, and why the alternatives are worse:
 
@@ -181,7 +182,7 @@ The new schedule takes effect at the next boundary. Consequence: disabling the m
 
 **[PROPOSED] SC-2 (identity is immutable).** A gate's `gateId`, `attentionDayId`, `dailyCooldownOrdinal`, `createdAt`, `cooldownEndsAt` and `providerSessionId` never change as a result of a schedule edit. Only configuration-derived fields (windows, protected groups, allowance minutes) may change.
 
-**[PROPOSED] SC-3 (no silent drop).** A gate may only leave the store by: (a) being satisfied; (b) an explicit owner-approved expiry rule (§5.3); or (c) its risk group being deleted by the user (`events.ts:777–801`). A schedule edit is not a reason to drop a gate.
+**[PROPOSED] SC-3 (no silent drop).** A gate may only leave the store by (a) being satisfied or (b) its risk group being deleted by the user (`events.ts:777–801`). There is no approved expiry rule: a boundary, clock change or schedule edit is never a reason to drop a gate.
 
 **[PROPOSED] SC-4 (audit).** Every schedule change, rollover, rehydration, restart and clock/zone change that alters the open Attention Day or a gate must append one history event:
 
@@ -201,10 +202,10 @@ No session contents, no personal data. This is required by FR-16 and is the only
 
 **[PROPOSED] SC-6 (clock/zone change).** A manual clock or zone change may reassign the current `attentionDayId` (it is a function of local time). When it does:
 - do not clear satisfied gates;
-- do not reset the substitution ledger unless the **id** changes (that is the only legal reset point);
+- keep `cooldownsTriggered` and `meditationSubstitutionsUsed` in an **additive per-Attention-Day ledger map keyed by the day id**. A new id starts a new entry; it never resets, mutates or clears an existing entry. A carried gate keeps its owning-day entry and cap consumption, and a late completion is charged once to that original day (POL-05, PD-2);
 - do not award credit for time that "passed" during the change;
 - append SC-4.
-`[HYPOTHESIS]` that any current path awards phantom credit; not reproduced here.
+`[HYPOTHESIS]` that any current path awards phantom credit; not reproduced here. This closes FINDING-03.
 
 ### 4.3 Cross-midnight: two separate axes
 
@@ -257,26 +258,19 @@ pending-selection ──(select)──> in-progress ──(verified evidence)─
 
 **[PROPOSED] GL-1.** Exactly one gate exists per `(attentionDayId, groupId, ordinal)`, with the deterministic id. Repeated allocation of the same cooldown is idempotent: the existing gate is reused, and a `satisfied` gate is never downgraded. `[CURRENT]` Implemented on both sides (`events.ts:576–594`; `RestorativeEnforcement.kt:311–334`); preserve it.
 
-**[PROPOSED] GL-2.** `activeRestorativeGates` is keyed by `groupId`, so at most one *current* gate per group exists. Consequence: the Insights projection cannot count multiple completed gates for one group per day (§12.1 and R6). Per-gate history therefore requires an **additive per-gate history record and migration**; that is an engineering decision to be delivered in this programme with review, not an owner policy choice and not out of scope.
+**[PROPOSED] GL-2 (gate store keyed by gate identity).** The authoritative store is keyed by **`gateId`**, one entry per `(attentionDayId, groupId, ordinal)`. A derived index may map `groupId → current-day gate` for UI convenience, but that index must never overwrite, evict or alias a carried gate: when a new day allocates ordinal 1 for a group that still carries an unsatisfied gate, both entries coexist and the predicate evaluates both. Any legacy `Map<groupId, gate>` state is migrated additively to the gate-keyed store (engineering, with review); no carried obligation may be lost in the migration. This also makes per-gate completions and the real substitution ledger representable (§12.2, R6). This closes FINDING-04.
 
 **[PROPOSED] GL-3.** A gate with `requirementKind === 'none'` must never be created. `[CURRENT]` correct (`restorativeGate.ts:153–154`; Kotlin `NativeAttentionExchange.kt:477`).
 
 ### 5.3 Cross-boundary expiry
 
-**[PROPOSED] GL-4 (owner decision PD-2; default: carry until satisfied).** An unsatisfied gate remains enforceable across any number of boundaries until it is satisfied, or the user deletes the risk group, or an owner-approved abandonment path exists. It keeps its original `attentionDayId` and is evaluated against that day's identity, not the new day's.
+**[APPROVED — PD-2, 29 October 2026] GL-4 (carry until satisfied).** An unsatisfied gate remains enforceable across any number of boundaries until it is satisfied or the user deletes the risk group (existing explicit deletion behaviour). No new silent expiry, grace deadline or abandonment shortcut exists. It keeps its original `attentionDayId`, and its owning-day ledger entry (ordinal and substitution cap) is retained per SC-6; late completion is charged once to that day. It is evaluated against that day's identity, not the new day's.
 
-Rationale: FR-12 says "never unlock solely due to a provider query error"; the same logic applies to a clock event. Dropping at a boundary converts a policy day change into an unlock. **This is one of the three genuinely ambiguous policies**; the options below are the owner's set.
+Rationale: FR-12 says "never unlock solely due to a provider query error"; the same logic applies to a clock event. Dropping at a boundary converts a policy day change into an unlock. The discard alternatives (grace deadline, drop at boundary, drop-if-no-progress) are not approved and must not be implemented. This closes FINDING-05.
 
-| Option | Behaviour | Assessment |
-| --- | --- | --- |
-| **C1 Carry until satisfied (recommended)** | gate persists; ordinal counted in its own day; new day starts at ordinal 1 while the old gate still holds | safest; requires the enforcement predicate to consult gates regardless of day |
-| C2 Carry with grace (e.g. until next boundary + N hours) | bounded nuisance; needs a deadline field | acceptable if the owner wants escape valve |
-| C3 Drop at boundary | current effective behaviour (`restorativeGate.ts:343–348`) | rejected: silent unlock |
-| C4 Drop only if cooldown elapsed **and** no progress | partial | still a silent unlock |
+**[PROPOSED] GL-5.** `RestorativeGatePhase` must add an explicit `carried-over` phase so the UI cannot claim "today's requirement" for a previous day's gate (FR-15).
 
-**[PROPOSED] GL-5.** If PD-2 resolves to C1/C2, `RestorativeGatePhase` must add an explicit `carried-over` phase so the UI cannot claim "today's requirement" for yesterday's gate (FR-15).
-
-**[PROPOSED] GL-6.** Satisfaction is permanent for the gate instance. A later sync, restart, or boundary must never clear it (POL-09). `[CURRENT]` correct for same day (`restorativeGate.ts:349–355`, `RestorativeEnforcement.kt:326–331`); whether a day change may drop an **unsatisfied** gate is exactly PD-2.
+**[PROPOSED] GL-6.** Satisfaction is permanent for the gate instance. A later sync, restart or boundary must never clear it (POL-09), and a boundary may never drop an **unsatisfied** gate (GL-4). `[CURRENT]` correct for same day (`restorativeGate.ts:349–355`, `RestorativeEnforcement.kt:326–331`); the day-change drop at `restorativeGate.ts:343–348` is a defect to remove.
 
 ### 5.4 Evidence never shortens the timer
 
@@ -300,7 +294,7 @@ Recommended unification: for `baseline-reading`, the restorative gate is the sol
 
 `[CURRENT]` no guard; both buttons remain enabled (`RestorativeChoiceCard.tsx:108–121`, `:133–146`). `[CODE-PROVEN]`
 
-**[PROPOSED] PV-3 (switch before meaningful progress — PD-3 controller proposal, pending owner approval).** The controlling invariant is FR-11: one stable id per (gate, provider), progress from different providers never combines, and a session satisfies at most one gate. The proposal for what happens to the binding being left:
+**[APPROVED — PD-3] PV-3 (switch before meaningful progress).** The controlling invariant is FR-11: one stable id per (gate, provider), progress from different providers never combines, and a session satisfies at most one gate. Approved rules for the binding being left:
 
 - exactly one persistent id per `(gateId, provider)`, minted on first selection and persisted; switching **back** reactivates the original id and never mints a second one;
 - a binding is **ACTIVE** (current selection) or **INACTIVE** (previously selected); INACTIVE is not abandoned or terminal;
@@ -309,7 +303,7 @@ Recommended unification: for `baseline-reading`, the restorative gate is the sol
 - a completion from an INACTIVE binding cannot satisfy while inactive, is retained for reconciliation, and is never assigned to another gate;
 - the UI must state that only the selected path can count, and that switching back resumes the same session.
 
-This proposal is not an approval. If it conflicts with FR-11, FR-11 wins.
+These rules are approved policy; FR-11 remains authoritative if a conflict is ever found.
 
 **[PROPOSED] PV-4 (lock after progress).** "Meaningful progress" = `activeSeconds > 0` OR `qualifiedPages > 0` (Reader) OR `completedQualifiedSeconds > 0` (Meditation) for the **ACTIVE** binding's exact session. Once verified, provider **and** session id are frozen for the life of the gate and no switch is offered. `[CURRENT]` the lock exists (`restorativeGate.ts:437–450`, `:494–505`, `:253–256`) but is applied to whichever id currently occupies the gate, so the binding state must be added; preserve the lock semantics.
 
@@ -329,31 +323,35 @@ This proposal is not an approval. If it conflicts with FR-11, FR-11 wins.
 
 ### 7.1 Proposed predicate
 
-**[PROPOSED] EN-1.** One predicate, one implementation per layer, identical semantics:
+**[PROPOSED] EN-1.** One predicate, one implementation per layer, identical semantics. The Essential/companion exemption is the **first statement**, not a prose caveat:
 
 ```
-morningHold   = morningRequirementActive(attentionDay, now)
-                && !morningSatisfied
+isExempt(app) = app.classification == 'essential'
+             || app.id in OFFICIAL_COMPANION_PACKAGES     // Meditation + Routine
 
-groupHold     = cooldownActive(group)
-             || readingGateOpen(group)          // obligation open; evidence stays calendar-scoped (SC-8)
-             || restorativeGateOpen(group)      // any open gate (GL-4)
-             || groupAllowanceExhausted(group)
+restricted(app, now):
+  if (isExempt(app)) return false                         // POL-08 invariant, unconditional
 
-windowHold    = anyActiveWindowProtecting(group)
-overnightHold = overnightProtectionActive && app.classification == 'risk'
+  morningHold   = morningRequiredForCurrentDay(now) && !morningSatisfied
+  morningApplies = morningHold &&
+                   (app.classification == 'risk' || app.managed)
 
-rawHold       = windowHold || overnightHold || groupHold || (morningHold && app.managed && !companion)
+  groupHold     = cooldownActive(group)
+               || readingGateOpen(group)      // obligation open; evidence calendar-scoped (SC-8)
+               || restorativeGateOpen(group)  // any open gate, carried or current (GL-4)
+               || groupAllowanceExhausted(group)
 
-leaseSuppresses = activeLease(group) && !(morningHold && app.managed && !companion)
+  windowHold    = anyActiveWindowProtecting(group)
+  overnightHold = overnightProtectionActive && app.classification == 'risk'
 
-restricted    = rawHold && !leaseSuppresses
+  rawHold       = windowHold || overnightHold || groupHold || morningApplies
+
+  leaseSuppresses = activeLease(group) && !morningApplies
+
+  return rawHold && !leaseSuppresses
 ```
 
-Notes:
-- `morningHold` is app-scoped (non-essential, non-companion, managed), not group-scoped.
-- Essential apps are excluded before the union, not after.
-- `restorativeGateOpen` and `readingGateOpen` are evaluated against **gate identity**, not the current day id (GL-4). This is a lifetime rule; it does not change CD3 evidence scope (SC-8).
+`[PROPOSED]` The exemption list is a closed allowlist: Essential apps and exactly the two official companions (`com.terinit.rhythmicmeditation`, `com.terinit.rhythmicroutine`). It is never derived from a user classification, and it is evaluated before any reason is computed, in both TS and Kotlin. This closes FINDING-02.
 
 **[PROPOSED] EN-2 (lease matrix).** The morning row is mandated by POL-06/T24. The restorative row preserves existing approved behaviour and requires no new policy decision: the gate itself is never cleared by a lease, it merely stops blocking until the lease expires.
 
@@ -369,7 +367,7 @@ Notes:
 
 `[CURRENT]` JS already implements the morning exception (`restrictions.ts:193–210`); Kotlin does not implement morning at all (§8.3), so if morning were wired through `NativeAttentionExchange.kt:633–638` as-is, a lease **would** bypass it (`&& !accessLeaseActive`). This is a required alignment.
 
-**[PROPOSED] EN-3 (parity).** Kotlin `NativeAttentionExchangeLogic.isEffectivelyRestricted` must take explicit reason inputs (`morningHold`, `restorativeHold`) rather than deriving none, and must be covered by a truth-table test that mirrors the JS table. The predicate must not read JS state at evaluation time; it reads persisted native policy only.
+**[PROPOSED] EN-3 (parity and native ownership).** Kotlin `NativeAttentionExchangeLogic.isEffectivelyRestricted` must take explicit reason inputs (`morningHold`, `restorativeHold`) and apply `isExempt` as its first step, covered by the same truth table as JS (§7.2). Native must **not** depend on Routine JS to establish the morning hold: at every evaluation it computes `morningRequiredForCurrentDay` from persisted routine-schedule metadata plus the persisted Attention Day, treats the absence of a verified completion for `morning-<currentAttentionDayId>` as an active hold, and never inherits a prior day's satisfied state. The predicate reads persisted native policy only. Instructions to prefer a live JS projection are non-conforming. This closes FINDING-01 at the predicate level and FINDING-02 in Kotlin.
 
 **[PROPOSED] EN-4 (evaluate on every foreground event).** The predicate is evaluated in `onAccessibilityEvent` before any usage accounting and before presenting the overlay, and re-evaluated on lease expiry, routine boundary, cooldown expiry, and policy sync. `[CURRENT]` re-evaluation points exist (`:108–138`, `:255–272`, `:338–372`, `:378–428`, `:724–740`); the predicate is incomplete, not misplaced. `[CODE-PROVEN]`
 
@@ -394,7 +392,7 @@ Notes:
 
 ### 8.1 Identity and creation
 
-**[PROPOSED] MM-1.** Exactly one requirement per Attention Day: `sessionId = "morning-" + attentionDayId`, `requiredQualifiedSeconds = 1800`, created at the **first observation** of `now >= boundary(attentionDay)` with `morningWindowActive(day) === true`. Creation is idempotent: re-observation returns the same object.
+**[PROPOSED] MM-1 (native-deterministic creation).** Exactly one requirement per Attention Day: `sessionId = "morning-" + attentionDayId`, `requiredQualifiedSeconds = 1800`, created only on an eligible day (MM-2). Creation is a **native-owned deterministic transition**, not a JS observation: at or after the eligible boundary, `RhythmEnforcementService` computes the requirement from persisted routine-schedule metadata and the persisted Attention Day, mints `morning-<currentAttentionDayId>` if absent, persists it, and activates the hold immediately — with Routine JS never entering the foreground. Routine JS, when it does run, reconciles to the same deterministic identity and may not mint a different one. Creation is idempotent by `sessionId`; duplicate, competing or per-process instances are non-conforming. This closes FINDING-01 at creation.
 
 **[PROPOSED] MM-2 (`morningWindowActive`).** A requirement may only exist when **all** hold:
 1. a valid morning window exists;
@@ -434,11 +432,13 @@ For a cross-midnight morning window, item 3 compares against the **civil day on 
 
 ### 8.5 Native projection
 
-**[PROPOSED] MM-9.** Routine projects `morningMeditation: {attentionDayId, sessionId, requiredQualifiedSeconds, satisfied}` and `attentionDay: {id, nextBoundaryAt}`. Native stores them in `RestorativeEnforcement` and evaluates MM-6 from persisted state, with no JS dependency at evaluation time. `[CURRENT]` the wire fields and the parser exist (`NativeRhythmSyncProvider.ts:439–447`; `RestorativeEnforcement.kt:176–187`), and the projection is currently always `null` because the runtime field is always absent.
+**[PROPOSED] MM-9 (native projection is not the source).** Native persists and owns the current requirement (`attentionDayId`, `sessionId`, `requiredQualifiedSeconds`, `satisfied`, `satisfiedAt`) after MM-1. The JS `morningMeditation` projection is **reconciliation only**: native must (a) accept a projection that adds or satisfies for the same day, (b) never accept a projection that clears or downgrades a verified current-day satisfaction, and (c) never let a null/blank/prior-day projection remove the current-day hold. Native evaluates MM-6 from its own persisted state and, on each evaluation path, queries the exact bound session through the Meditation V1 status client; unavailable, unknown, corrupt, incompatible or errored results are typed and **fail closed** (§10), never satisfied and never "no obligation". It must never infer completion from launch, return, ACTIVE state or elapsed time. `[CURRENT]` the wire fields and parser exist (`NativeRhythmSyncProvider.ts:439–447`; `RestorativeEnforcement.kt:176–187`), but the projection is currently always `null` and native cannot mint. This closes the second half of FINDING-01.
 
 ---
 
 ## 9. Evidence acceptance matrix
+
+FR-06/FR-10 also require binding-grade kind/source validation. See MEDITATION_PROTOCOL_COMPATIBILITY.md: the current seven-column V1 status omits those fields. A coordinated additive metadata projection must preserve prior clients; missing identity metadata cannot satisfy a gate. This is in scope for A2/B1/B2, without changing policy numbers or Reader V2 calendar evidence.
 
 | Requirement kind | Authority | Scope | Exact rule | Current status |
 | --- | --- | --- | --- | --- |
@@ -506,17 +506,17 @@ P6–P9 and P12 currently fail; P1–P2 pass with the 72-hour caveat; P11 fails 
 
 ---
 
-## 12. Owner policy decisions required at G0 — exactly three
+## 12. Owner policy decisions — APPROVED 29 October 2026
 
-Only three items are genuinely ambiguous product policy. Everything else in this contract is either fixed by the PRD or resolvable by the engineer with review, and must not be escalated as an owner choice. Full option analysis is in `docs/sw-2026-005/OWNER_POLICY_DECISIONS.md`.
+All three policies were explicitly approved by the owner on 29 October 2026. The authoritative approved summary is `docs/sw-2026-005/OWNER_POLICY_REVIEW.md`. They are recorded here as frozen policy, not as options. Engineering review of implementation detail remains pending and is handled in §12.2.
 
-| ID | Decision | Sub-questions in scope | Recommendation | Consequence |
-| --- | --- | --- | --- | --- |
-| **PD-1** | **Daily boundary on inactive or disabled days, and the no-boundary fallback** | Does a day that has no active/valid morning window still advance the Attention Day at the configured clock time? What happens when no usable `endTime` exists at all? | Advance at the configured clock time on every civil day; fall back to local midnight (with a diagnostic) only when no usable boundary exists | Inactive weekend windows stop stretching the day; a user who disables a window keeps one coherent behavioural day and loses no counters |
-| **PD-2** | **Cross-boundary gate expiry, pending schedule edits, and cap/ledger semantics** | Does an unsatisfied gate expire at a boundary? Is the open day frozen when the schedule changes mid-gate? Does a carried gate keep its own day's substitution/ordinal ledger or consume the new day's? | Carry the gate until satisfied; freeze the open day and clamp its close boundary to `max(old, new)`; ledger follows the gate's own day and never resets early | No clock or settings change can silently unlock; the next day starts its own ordinal while the old obligation still holds |
-| **PD-3** | **Provider switch before meaningful progress** (controller proposal, pending approval) | Does a switch keep the first binding usable; can it be resumed; can its late completion count? | One persistent id per gate+provider; bindings ACTIVE/INACTIVE, not abandoned; switch only after reconciliation proves no progress (unknown ⇒ refuse); switching back reactivates the original id; only the ACTIVE binding's exact evidence can satisfy; inactive evidence retained, never reassigned; lock on verified progress | FR-11 holds across A→B→A; no irrecoverable orphan; fail-closed on uncertain progress |
+| ID | Decision | Approved policy |
+| --- | --- | --- |
+| **PD-1** | **Daily boundary on inactive or disabled days, and the no-boundary fallback** | Configured morning-end clock every civil day, including inactive/disabled windows; no valid clock ⇒ local midnight; inactive windows create no morning/evening restriction and no morning obligation; risk-group rules remain independent; calendar arithmetic handles DST |
+| **PD-2** | **Cross-boundary gate expiry, pending schedule edits, and cap/ledger semantics** | Carry an unfinished gate until verified completion, retaining identity, timer, evidence rules and owning-day ledger; schedule edits cannot end the day early or clear a gate; pin the day and use the later of persisted and proposed boundaries for the one-time transition; new days get their own counters; late completion charged once to the original day; Reader V2 calendar evidence preserved; carried obligations shown explicitly; no new silent expiry/abandonment |
+| **PD-3** | **Provider switch before meaningful progress** | One stable session id per gate/provider including switch-back; unselected bindings INACTIVE, not destroyed; only the selected provider can satisfy; evidence never combines; reconcile before switching and treat unknown as not proven zero; lock on verified progress; retry/double-tap reuses the same binding |
 
-**PD-1 and PD-2 are prerequisites for G1.** PD-3 carries the controller's proposal and remains pending; it is a prerequisite for the B2 slice and does not block the schedule/resolver work. It is independent of PD-1/PD-2.
+**PD-1, PD-2 and PD-3 are approved and authorise bounded implementation and tests only.** Device installation, protected merges, tags and publication remain later owner gates. Engineering review of the implementation is still required (§12.2); that is not a policy reopening. This closes FINDING-05.
 
 ### 12.1 Not owner decisions — already fixed by the PRD
 
@@ -536,7 +536,7 @@ Only three items are genuinely ambiguous product policy. Everything else in this
 
 These are **not** deferred and **not** owner policy. The engineer decides the mechanism, documents it, and submits it for review:
 
-- **Storage shape and additive migration**, including a per-gate history record, per-(gate, provider) binding id and ACTIVE/INACTIVE state, so per-gate completions and the FR-16 transition audit are representable. A `Map<gateId, …>` migration is permitted if additive and reversible.
+- **Storage shape and additive migration**, including a gate-keyed store, a per-Attention-Day ledger map (ordinal + substitution cap + owning day), a per-gate history record, per-(gate, provider) binding id and ACTIVE/INACTIVE state, so per-gate completions and the FR-16 transition audit are representable. A `Map<gateId, …>` migration is permitted if additive and reversible.
 - **The FR-16 audit ledger** (before/after snapshot per schedule change, boundary, restart, clock/zone change). This is a requirement, not an optional extra.
 - **DST gap/overlap resolution** (recommended: gap → first valid instant, overlap → earlier offset) and civil-day stepping.
 - **Native snapshot symmetry** (`attentionDay`, `activeRestorativeGates`, `morningMeditation`, companion allowlist).
@@ -558,7 +558,7 @@ These are **not** deferred and **not** owner policy. The engineer decides the me
 | AD-5–AD-8 | 23 h / 25 h day, zone change, manual clock change | T05 |
 | SC-1–SC-4 | mid-gate schedule edit + in-place upgrade preserves gate/ordinal/cap/end | T06 |
 | SC-7, SC-8, R0-N1 | CD3 gate survives midnight, keeps its calendar accepted-day evidence, and is charged to the right Attention Day | T03, T12 |
-| MM-1–MM-3 | eligible transition creates exactly one id; restart recreates it | T07 |
+| MM-1, MM-8, MM-9 | eligible boundary mints exactly one id **without Routine JS foreground**; restart/reboot recreates the same id | T07, T09 |
 | MM-3, MM-5 | 29:59 cancelled/paused/expired/wrong-session keeps hold; 30:00 releases | T08 |
 | MM-8, SC-5 | force-stop, screen off, resume, process death, reboot | T09 |
 | MM-4 | morning release consumes no substitution | T10 |
@@ -585,7 +585,7 @@ These are **not** deferred and **not** owner policy. The engineer decides the me
 These are not owner decisions and not silently assumed: each is either an engineering choice to be documented in review, or a fact to be verified.
 
 1. **R1 — cross-midnight morning eligibility day.** For a buffer such as `23:00 → 07:00`, does the morning obligation attach to the civil day on which the boundary falls (recommended: yes, "the morning you wake into") or to the weekday on which the window opened? This only differs for windows that end after midnight. If the owner disagrees with the recommended reading it becomes a fourth policy item; otherwise A1 documents it and tests both sides.
-2. **R2 — carried gate and the new day's ordinal.** PD-2's recommendation settles that a carried gate keeps its own day's ledger and that the new Attention Day still starts at ordinal 1. If PD-2 is resolved differently, this must be restated explicitly rather than inferred; the test T21 must assert whichever rule is recorded.
+2. **R2 — carried gate and the new day's ordinal.** Approved PD-2 settles that a carried gate keeps its own day's ledger and that the new Attention Day starts at ordinal 1. If an implementation choice appears to contradict that, PD-2 wins; T21 must assert it.
 3. **R3 — carried-gate presentation.** FR-15/PD-2 require truthful display; the exact copy and ordering (carried obligation before today's) is a UI engineering decision with review, not policy.
 4. **R4 — Reader status trust.** Whether Routine verifies Reader's signer before trusting a recovery row. Recommended: yes, identical to Meditation. This is a POL-08/FR-14 security requirement, not a product choice.
 5. **R5 — reset reachability.** Whether the in-process "reset local state" action is user-reachable in a stable build. If it is, R0-N3 is a P1 blocker; verification is a C2/C3 task.
@@ -597,11 +597,39 @@ These are not owner decisions and not silently assumed: each is either an engine
 
 ## 15. What this document does not authorise
 
-- It does not approve any behaviour change, including the removal of the Friday→Monday assertion in `pass03_attention_day.test.ts:227–235`.
-- It does not authorise editing TS or Kotlin enforcement code.
+- It does not itself implement any behaviour change. It *records* the approved PD-1 behaviour, which necessarily replaces the Friday→Monday assertion in `pass03_attention_day.test.ts:227–235`; that test change is in scope and must be reviewed with the implementation.
+- It does not authorise implementation without engineering review. The approved policies permit bounded implementation and tests under §16; they do not authorise device work, protected merges, tags or release.
 - It does not authorise changing policy numbers (90 min, 3600/36, 1800/11, cap 2, 1800 morning).
 - It does not authorise a **destructive** schema migration or any migration without review; additive, reversible migration is explicitly within engineering scope (§12.2).
 - It does not authorise a version bump, a merge, a tag, or a release.
 - It does not close DEF-01..07. It defines what "closed" would have to mean.
 
-**G0 acceptance requires the owner to decide PD-1, PD-2 and PD-3 only.** Once those three are recorded, the engineer may proceed on the resolver, the enforcement predicate and the provider-binding store, resolving storage shape, additive migration, the FR-16 audit ledger and the remaining engineering items in §12.2 with review. Until then, implementation must not begin on those three surfaces.
+**PD-1, PD-2 and PD-3 are approved (29 October 2026).** Engineering may proceed on the resolver, the enforcement predicate, the gate store and the provider-binding store under those policies, resolving storage shape, additive migration, the FR-16 audit ledger and the remaining engineering items in §12.2 **with review**. This document still does not authorise device work, protected merges, tags or release.
+
+---
+
+## 16. File ownership, compatibility freeze and implementation handoff
+
+### 16.1 Ownership (one writer per file; shared Routine core is serial)
+
+| Lane | Owns | Must not touch |
+| --- | --- | --- |
+| A1 schedule | `src/domain/rhythm/attentionDay.ts`, boundary parts of `routine.ts`, matching tests; `NativeAttentionExchange.kt` day resolver + Kotlin tests | `events.ts`, `RhythmCoordinator.ts`, `usePrototypeStore.ts`, `RhythmEnforcementService.kt` |
+| B1 morning integrator (Routine core) | `events.ts`, `RhythmEngine.ts`, `RhythmCoordinator.ts`, `NativeRhythmSyncProvider.ts`, `usePrototypeStore.ts`; `RhythmEnforcementService.kt` predicate, `RestorativeEnforcement.kt` | Reader/Meditation repos; A1 resolver internals |
+| B2 restorative/evidence (after B1) | `restorativeGate.ts`, `recovery.ts`, `meditationEvidence.ts`, `AttentionInsightProvider.kt`, `RhythmDeviceModule.kt`, gate-store migration | Files B1 still holds; no forked `events.ts` |
+| A2/A3 companions | Meditation/Reader repos only where a provider-side defect is proven; Routine integration via patches to B1/B2 | Routine shared core without a patch |
+| A4 signer QA | test scripts/config/docs only | production source |
+
+### 16.2 Compatibility freeze
+
+- Protocol versions unchanged: Reader recovery **V1**, Reader Daily Evidence **V2**, Meditation **V1**. No silent bump.
+- Formats unchanged: `ad-<yyyyMMdd>-<HHmm>`, `gate-<day>-<group>-o<ordinal>`, `morning-<day>`, package names, versionCodes (no release bump here).
+- Persisted state changes are **additive and reversible** only (per-day ledger map, gate-keyed store, ACTIVE/INACTIVE bindings, FR-16 audit). No destructive migration.
+- TS and Kotlin must pass the same §7.2 truth table and §11 parity cases before merge.
+- No new permissions, cloud, telemetry or Essential reclassification.
+
+### 16.3 Handoff order and definition of done
+
+1. Boundary (A1) → 2. Morning, including native mint/persist and fail-closed exact-session query (B1) → 3. Restorative/evidence and gate-keyed store with per-day ledger (B2) → 4. Diagnostics/UI truth → 5. QA harness.
+
+Each commit references `SW-2026-005` and the DEF/FR/T ids; includes its tests and parity case; records command, exit code and counts; and is reviewed before the next lane starts on a shared file. Baseline suites are green (Routine JS 423, Routine native 80, Reader 106, Meditation 177; zero failures), so any red is a regression. **No implementation has started under this contract**; engineering review of the first patch remains pending, and device/signing acceptance is still outstanding.
