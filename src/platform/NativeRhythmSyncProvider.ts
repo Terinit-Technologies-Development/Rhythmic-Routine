@@ -214,6 +214,12 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
 }
 
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
+  constructor(
+    private readonly syncNowOverride?: (
+      runtime: RhythmRuntime,
+      config: RhythmConfiguration
+    ) => Promise<void>
+  ) {}
   private lastSnapshot?: IOSSharedRhythmSnapshot;
   private lastConfigSignature?: string;
   private lastAndroidBaseRestrictionsSignature?: string;
@@ -225,6 +231,8 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   private syncStage: NativeSyncStage | undefined;
   private lastSyncDiagnostics: NativeSyncDiagnostics = { success: true, updatedAt: 0 };
   private lastProjectionCheckAt = 0;
+  /** Serializes overlapping JS publications so an older config cannot land last. */
+  private syncQueue: Promise<void> = Promise.resolve();
 
   private static readonly PROJECTION_CHECK_INTERVAL_MS = 30_000;
 
@@ -273,6 +281,22 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   }
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
+    const run = this.syncQueue.then(
+      () => this.syncNow(runtime, config),
+      () => this.syncNow(runtime, config)
+    );
+    this.syncQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async syncNow(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
+    if (this.syncNowOverride) {
+      await this.syncNowOverride(runtime, config);
+      return;
+    }
     this.syncStage = undefined;
     try {
       const os = getPlatformOS();

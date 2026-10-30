@@ -581,6 +581,56 @@ describe('B1 — coordinator central polling and native write acknowledgement', 
     }
   });
 
+  test('overlapping native publications are serialized so an older config cannot land last', async () => {
+    const starts: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const provider = new PlatformNativeRhythmSyncProvider(async (runtime) => {
+      const id = (runtime as unknown as { id: string }).id;
+      starts.push(id);
+      if (id === 'first') await firstGate;
+    });
+    const first = provider.sync(
+      { id: 'first' } as unknown as RhythmRuntime,
+      {} as RhythmConfiguration
+    );
+    const second = provider.sync(
+      { id: 'second' } as unknown as RhythmRuntime,
+      {} as RhythmConfiguration
+    );
+    try {
+      await Promise.resolve();
+      assert.deepEqual(starts, ['first'], 'second publication must wait');
+    } finally {
+      releaseFirst?.();
+    }
+    await Promise.all([first, second]);
+    assert.deepEqual(starts, ['first', 'second']);
+  });
+
+  test('a rejected native publication does not deadlock the next accepted publication', async () => {
+    const starts: string[] = [];
+    const provider = new PlatformNativeRhythmSyncProvider(async (runtime) => {
+      const id = (runtime as unknown as { id: string }).id;
+      starts.push(id);
+      if (id === 'rejected') throw new Error('simulated publication failure');
+    });
+    await assert.rejects(
+      provider.sync(
+        { id: 'rejected' } as unknown as RhythmRuntime,
+        {} as RhythmConfiguration
+      ),
+      /simulated publication failure/
+    );
+    await provider.sync(
+      { id: 'accepted' } as unknown as RhythmRuntime,
+      {} as RhythmConfiguration
+    );
+    assert.deepEqual(starts, ['rejected', 'accepted']);
+  });
+
   test('a rejected native save is never reported as enforced success', async () => {
     assert.throws(
       () => requireNativeSave('morning-meditation', 'setAttentionExchangeState', false),

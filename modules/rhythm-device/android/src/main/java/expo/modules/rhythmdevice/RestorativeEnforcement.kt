@@ -74,6 +74,9 @@ data class RestorativeEnforcementSnapshot(
     val essentialPackages: Set<String> = emptySet(),
     val managedPackages: Set<String> = emptySet(),
     val morningRequirements: List<NativeMorningMeditationState> = emptyList(),
+    /** Distinguishes an explicit accepted classification set from an absent projection. */
+    val hasEssentialProjection: Boolean = false,
+    val hasManagedProjection: Boolean = false,
 ) {
     /** Morning Meditation Focus holds every nonessential, non-companion app. */
     val morningFocusActive: Boolean
@@ -249,6 +252,8 @@ object RestorativeEnforcement {
         (snapshot["managedPackages"] as? List<*>)?.forEach { name ->
             (name as? String)?.takeIf { it.isNotBlank() }?.let { managed.add(it) }
         }
+        val hasEssentialProjection = snapshot["essentialPackages"] is List<*>
+        val hasManagedProjection = snapshot["managedPackages"] is List<*>
 
         return RestorativeEnforcementSnapshot(
             gates,
@@ -261,6 +266,8 @@ object RestorativeEnforcement {
             morningRequirements.values.sortedWith(
                 compareBy({ it.createdAt }, { it.attentionDayId })
             ),
+            hasEssentialProjection,
+            hasManagedProjection,
         )
     }
 
@@ -492,8 +499,25 @@ object RestorativeEnforcement {
         val sameAttentionDay = existing.attentionDay?.id != null &&
             existing.attentionDay.id == incoming.attentionDay?.id
         val migration = existing.morningMigration ?: incoming.morningMigration
-        val essential = existing.essentialPackages + incoming.essentialPackages
-        val managed = existing.managedPackages + incoming.managedPackages
+        val incomingManaged = incoming.managedPackages
+        // Missing projection is not an explicit empty policy. An explicit
+        // classification may remove an Essential exemption only by naming the
+        // package in the managed set (deliberate reclassification); a stale
+        // projection that omits both sets cannot silently widen access.
+        val essential = if (incoming.hasEssentialProjection) {
+            (existing.essentialPackages - incomingManaged) + incoming.essentialPackages
+        } else {
+            existing.essentialPackages
+        }
+        val managed = if (incoming.hasManagedProjection) {
+            incomingManaged
+        } else {
+            existing.managedPackages
+        }
+        val hasEssentialProjection =
+            existing.hasEssentialProjection || incoming.hasEssentialProjection
+        val hasManagedProjection =
+            existing.hasManagedProjection || incoming.hasManagedProjection
         val morning = mergeMorningLists(
             existing.allMorningRequirements(),
             incoming.allMorningRequirements(),
@@ -508,6 +532,8 @@ object RestorativeEnforcement {
                 morningMigration = migration,
                 essentialPackages = essential,
                 managedPackages = managed,
+                hasEssentialProjection = hasEssentialProjection,
+                hasManagedProjection = hasManagedProjection,
             )
         }
 
@@ -540,6 +566,8 @@ object RestorativeEnforcement {
             morningMigration = migration,
             essentialPackages = essential,
             managedPackages = managed,
+            hasEssentialProjection = hasEssentialProjection,
+            hasManagedProjection = hasManagedProjection,
         )
     }
 
@@ -590,10 +618,26 @@ object RestorativeEnforcement {
      * Rebased under the accepted-snapshot lock so a stale caller cannot clear a
      * newer morning binding or regress a newer verified completion.
      */
-    fun persist(context: Context, snapshot: RestorativeEnforcementSnapshot): Boolean =
+    fun persist(
+        context: Context,
+        snapshot: RestorativeEnforcementSnapshot,
+        applyClassification: Boolean = false,
+    ): Boolean =
         NativePolicyPersistence.withReadSnapshot {
             val latest = load(context)
-            val rebased = reconcileIncoming(latest, snapshot)
+            // Native gate/morning publishers carry a stale copy of the
+            // classification sets. Only an explicitly authoritative JS
+            // publication may replace them; native mutations preserve the
+            // latest accepted classification.
+            val incoming = if (applyClassification) {
+                snapshot
+            } else {
+                snapshot.copy(
+                    hasEssentialProjection = false,
+                    hasManagedProjection = false,
+                )
+            }
+            val rebased = reconcileIncoming(latest, incoming)
             NativePolicyPersistence.persistPrefs(
                 context,
                 mapOf(

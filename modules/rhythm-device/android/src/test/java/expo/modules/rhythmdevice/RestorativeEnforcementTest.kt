@@ -219,6 +219,102 @@ class RestorativeEnforcementTest {
     }
 
     @Test
+    fun `explicit reclassification removes Essential exemption and reverse restores it`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "essentialPackages" to listOf("com.example.bank"),
+                "managedPackages" to listOf("com.example.social"),
+            )
+        )
+        val reclassified = RestorativeEnforcement.reconcileIncoming(
+            latest,
+            RestorativeEnforcement.parse(
+                mapOf(
+                    "essentialPackages" to emptyList<String>(),
+                    "managedPackages" to listOf("com.example.bank", "com.example.social"),
+                )
+            ),
+        )
+        assertFalse("com.example.bank" in reclassified.essentialPackages)
+        assertTrue("com.example.bank" in reclassified.managedPackages)
+        assertTrue(
+            NativeAttentionExchangeLogic.isEffectivelyRestricted(
+                baseOrRoutineRestricted = false,
+                cooldownActive = true,
+                gatePresent = false,
+                accessLeaseActive = false,
+                essentialPackage = MorningEnforcement.isEssentialPackage(
+                    "com.example.bank",
+                    reclassified.essentialPackages,
+                ),
+            )
+        )
+
+        val restoredEssential = RestorativeEnforcement.reconcileIncoming(
+            reclassified,
+            RestorativeEnforcement.parse(
+                mapOf(
+                    "essentialPackages" to listOf("com.example.bank"),
+                    "managedPackages" to listOf("com.example.social"),
+                )
+            ),
+        )
+        assertTrue("com.example.bank" in restoredEssential.essentialPackages)
+        assertFalse("com.example.bank" in restoredEssential.managedPackages)
+        assertFalse(
+            NativeAttentionExchangeLogic.isEffectivelyRestricted(
+                baseOrRoutineRestricted = false,
+                cooldownActive = true,
+                gatePresent = false,
+                accessLeaseActive = false,
+                essentialPackage = MorningEnforcement.isEssentialPackage(
+                    "com.example.bank",
+                    restoredEssential.essentialPackages,
+                ),
+            )
+        )
+    }
+
+    @Test
+    fun `missing classification projection cannot remove an accepted Essential exemption`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "essentialPackages" to listOf("com.example.bank"),
+                "managedPackages" to listOf("com.example.social"),
+            )
+        )
+        val stale = RestorativeEnforcement.parse(emptyMap())
+        val rebased = RestorativeEnforcement.reconcileIncoming(latest, stale)
+        assertTrue("com.example.bank" in rebased.essentialPackages)
+        assertEquals(setOf("com.example.social"), rebased.managedPackages)
+    }
+
+    @Test
+    fun `stale native gate publisher preserves latest accepted classification`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "essentialPackages" to emptyList<String>(),
+                "managedPackages" to listOf("com.example.bank"),
+            )
+        )
+        val staleNative = RestorativeEnforcement.parse(
+            mapOf(
+                "essentialPackages" to listOf("com.example.bank"),
+                "managedPackages" to emptyList<String>(),
+            )
+        )
+        val preserved = RestorativeEnforcement.reconcileIncoming(
+            latest,
+            staleNative.copy(
+                hasEssentialProjection = false,
+                hasManagedProjection = false,
+            ),
+        )
+        assertFalse("com.example.bank" in preserved.essentialPackages)
+        assertTrue("com.example.bank" in preserved.managedPackages)
+    }
+
+    @Test
     fun `missing or malformed data parses to fail-closed defaults`() {
         val empty = RestorativeEnforcement.parse(emptyMap())
         assertNull(empty.attentionDay)
