@@ -296,7 +296,11 @@ describe('Pass 03 — Regression Scenarios A through G', () => {
       const t0 = new Date(2026, 8, 2, 14, 0, 0).getTime();
       const engine = new RhythmEngine(
         {
-          routineWindows: standardWindows,
+          routineWindows: standardWindows.map((window) =>
+            window.type === 'morning-buffer'
+              ? { ...window, activeDays: [] }
+              : window
+          ),
           riskGroups: [socialGroup],
           apps: [appA],
         },

@@ -88,7 +88,9 @@ const mockRoutineWindows: RoutineWindow[] = [
     type: 'morning-buffer',
     startTime: '06:30',
     endTime: '08:00',
-    activeDays: [1, 2, 3, 4, 5, 6, 7],
+    // Lease/cooldown fixture: morning is intentionally inactive so the test
+    // measures only lease suppression, not the separate mandatory morning gate.
+    activeDays: [],
     protectedGroupIds: ['social', 'entertainment'],
     enabled: true,
     tagline: 'Ease into your day',
@@ -229,7 +231,12 @@ test('Access Lease — Routine Window Active: Suppressing Social Leaves Entertai
   const config: RhythmConfiguration = {
     apps: mockApps,
     riskGroups: mockRiskGroups,
-    routineWindows: mockRoutineWindows,
+    routineWindows: [
+      {
+        ...mockRoutineWindows[0],
+        activeDays: [1, 2, 3, 4, 5, 6, 7],
+      },
+    ],
   };
 
   // Inside Morning Buffer (07:00 AM on Monday)

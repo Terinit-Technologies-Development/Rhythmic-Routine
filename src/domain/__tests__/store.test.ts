@@ -10,6 +10,8 @@ import {
 } from '../selectors';
 import { getPlatformServices } from '../../platform/PlatformServices';
 import { RhythmCoordinator } from '../../application/RhythmCoordinator';
+import { resolveAttentionDay } from '../rhythm/attentionDay';
+import { createMorningMigrationState } from '../rhythm/morningMeditation';
 
 describe('Zustand Store Reconciliation Integration Tests', () => {
   test('Routine Propagation: Morning Buffer unlock editing propagates dynamically', async () => {
@@ -131,6 +133,30 @@ describe('Zustand Store Reconciliation Integration Tests', () => {
     // Temporarily disable routine windows so the test is deterministic regardless of wall-clock hour
     const disabledRoutines = originalRoutines.map((r) => ({ ...r, enabled: false }));
     await coordinator.updateConfig({ routineWindows: disabledRoutines });
+
+    // Scope the fixture to the approved upgraded cohort: this test exercises
+    // timer expiry, not the independent mandatory morning gate. Persist an
+    // upgrade migration floor for the current Attention Day, then reinitialize
+    // so no morning obligation is minted by this test setup.
+    const now = Date.now();
+    const attentionDay = resolveAttentionDay(now, disabledRoutines);
+    const { storage } = getPlatformServices();
+    const priorRuntime = await storage.loadRuntime();
+    await storage.saveRuntime({
+      ...(priorRuntime ?? {
+        state: 'available',
+        activeCooldowns: {},
+        activeRoutineWindowIds: [],
+        lastReconciledAt: now,
+      }),
+      morningMeditation: {
+        migration: createMorningMigrationState(now, attentionDay.id, 'upgraded'),
+      },
+      lastReconciledAt: now,
+    });
+    coordinator.destroy();
+    await coordinator.initialize();
+
     usePrototypeStore.setState({
       routineWindows: disabledRoutines,
       rhythmState: 'cooldown',

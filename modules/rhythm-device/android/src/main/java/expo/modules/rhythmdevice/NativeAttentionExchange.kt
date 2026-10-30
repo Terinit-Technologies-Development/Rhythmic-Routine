@@ -347,7 +347,9 @@ object NativeAttentionExchangeLogic {
 
     /** Resolves the current identity and the next scheduled boundary. */
     fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState =
-        resolveAttentionDay(now, schedule).let { NativeAttentionDayState(it.id, it.nextBoundaryAt) }
+        resolveAttentionDay(now, schedule).let {
+            NativeAttentionDayState(it.id, it.nextBoundaryAt, it.startedAt)
+        }
 
     /** Civil calendar date `dayOffset` days from `now` (not a fixed 24h offset). */
     private fun civilDateAfter(now: Long, dayOffset: Int): NativeCivilDate {
@@ -727,12 +729,25 @@ object NativeAttentionExchangeLogic {
             attentionDayId = attentionDayId,
         )
 
+    /**
+     * The single effective-restriction predicate used by intervention, access
+     * and usage-reentry paths. Essential is always reachable; an ordinary
+     * access lease can never suppress a compulsory morning hold.
+     */
     fun isEffectivelyRestricted(
         baseOrRoutineRestricted: Boolean,
         cooldownActive: Boolean,
         gatePresent: Boolean,
         accessLeaseActive: Boolean,
-    ): Boolean = (baseOrRoutineRestricted || cooldownActive || gatePresent) && !accessLeaseActive
+        restorativeHold: Boolean = false,
+        morningHold: Boolean = false,
+        essentialPackage: Boolean = false,
+    ): Boolean {
+        if (essentialPackage) return false
+        if (morningHold) return true
+        return (baseOrRoutineRestricted || cooldownActive || gatePresent || restorativeHold) &&
+            !accessLeaseActive
+    }
 
     fun completeGroupCycle(
         groupId: String,

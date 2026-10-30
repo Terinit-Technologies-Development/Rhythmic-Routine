@@ -7,7 +7,10 @@ import {
   RhythmEvent,
   RhythmRuntime,
 } from '../domain/rhythm/types';
-import type { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import type {
+  NativeAttentionExchangeSnapshot,
+  NativeMorningMeditationInput,
+} from '../../modules/rhythm-device/src/RhythmDevice.types';
 import { isValidLocalDateKey } from '../domain/rhythm/attentionExchange';
 import { bootstrapRhythm } from './bootstrapRhythm';
 import { reconcileRhythm } from './reconcileRhythm';
@@ -24,6 +27,29 @@ import {
   resolveGroupRecoveryActivityId,
   validateGroupAllowanceEdit,
 } from '../domain/rhythm/allowance';
+import {
+  nativeMeditationBridge,
+  buildMorningMeditationRequest,
+} from '../platform/NativeMeditationBridge';
+import {
+  isMorningMeditationSatisfied,
+  attentionDayStartedAtFromId,
+  type MorningMeditationRequirement,
+} from '../domain/rhythm/morningMeditation';
+import type {
+  MeditationEvidenceBridge,
+  MeditationProviderAvailability,
+} from '../domain/rhythm/meditationEvidence';
+import { hasMeditationIdentityMetadata } from '../domain/rhythm/meditationEvidence';
+
+export interface MorningMeditationDiagnostics {
+  requirement?: MorningMeditationRequirement;
+  satisfied: boolean;
+  availability: MeditationProviderAvailability;
+  identityMetadataAvailable: boolean;
+  providerError?: string;
+  updatedAt: number;
+}
 
 type RuntimeListener = (runtime: RhythmRuntime) => void;
 
@@ -136,6 +162,76 @@ function createNativeAttentionImportEvent(
       }
     : undefined;
 
+  const toMorningRequirement = (raw: NativeMorningMeditationInput | null | undefined) => {
+    if (
+      !raw ||
+      typeof raw.attentionDayId !== 'string' ||
+      raw.attentionDayId.length === 0 ||
+      typeof raw.sessionId !== 'string' ||
+      raw.sessionId.length === 0 ||
+      !Number.isInteger(raw.requiredQualifiedSeconds) ||
+      raw.requiredQualifiedSeconds <= 0
+    ) {
+      return undefined;
+    }
+    return {
+      attentionDayId: raw.attentionDayId,
+      sessionId: raw.sessionId,
+      requiredQualifiedSeconds: raw.requiredQualifiedSeconds,
+      ...(isFiniteNonNegative(raw.createdAt) ? { createdAt: raw.createdAt } : {}),
+      ...(typeof raw.sourceRhythmicDayId === 'string'
+        ? { sourceRhythmicDayId: raw.sourceRhythmicDayId }
+        : {}),
+      sessionKind: 'MORNING_REQUIRED' as const,
+      sourceCooldownId: null,
+      ...(isFiniteNonNegative(raw.satisfiedAt) ? { satisfiedAt: raw.satisfiedAt } : {}),
+      ...(isFiniteNonNegative(raw.expiresAtEpochMs)
+        ? { expiresAtEpochMs: raw.expiresAtEpochMs }
+        : {}),
+    };
+  };
+  const nativeMorningRequirements = (
+    Array.isArray(snapshot.morningRequirements)
+      ? snapshot.morningRequirements
+      : snapshot.morningMeditation
+      ? [snapshot.morningMeditation]
+      : []
+  )
+    .map(toMorningRequirement)
+    .filter(
+      (item): item is NonNullable<ReturnType<typeof toMorningRequirement>> =>
+        item !== undefined
+    );
+  const nativeMorningRequirement =
+    nativeMorningRequirements.find((item) => item.satisfiedAt === undefined) ??
+    nativeMorningRequirements[0];
+  const nativeMorningMigration = snapshot.morningMigration &&
+    Number.isFinite(snapshot.morningMigration.migratedAt) &&
+    typeof snapshot.morningMigration.migrationAttentionDayId === 'string'
+    ? {
+        migratedAt: snapshot.morningMigration.migratedAt,
+        migrationAttentionDayId: snapshot.morningMigration.migrationAttentionDayId,
+        ...(typeof snapshot.morningMigration.enforceableFromAttentionDayId === 'string'
+          ? {
+              enforceableFromAttentionDayId:
+                snapshot.morningMigration.enforceableFromAttentionDayId,
+            }
+          : {}),
+      }
+    : undefined;
+  const morningMeditation =
+    nativeMorningRequirements.length > 0 || nativeMorningMigration
+      ? {
+          ...(nativeMorningRequirement
+            ? { requirement: nativeMorningRequirement }
+            : {}),
+          ...(nativeMorningRequirements.length > 0
+            ? { requirements: nativeMorningRequirements }
+            : {}),
+          ...(nativeMorningMigration ? { migration: nativeMorningMigration } : {}),
+        }
+      : undefined;
+
   return {
     type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
     dailyAttentionExchange: {
@@ -163,6 +259,7 @@ function createNativeAttentionImportEvent(
     groupAllowanceUsage,
     ...(typeof snapshot.foregroundGroupId === 'string' ? { foregroundGroupId: snapshot.foregroundGroupId } : {}),
     ...(readingEvidence ? { readingEvidence } : {}),
+    ...(morningMeditation ? { morningMeditation } : {}),
     timestamp: now,
   };
 }
@@ -177,10 +274,22 @@ export class RhythmCoordinator {
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private isInitialized = false;
   private evidenceRefreshPromise?: Promise<void>;
+  private morningRefreshPromise?: Promise<void>;
+  private morningDiagnostics: MorningMeditationDiagnostics = {
+    satisfied: false,
+    availability: 'unavailable',
+    identityMetadataAvailable: false,
+    updatedAt: 0,
+  };
   private readonly dailyReadingEvidenceClient: DailyReadingEvidenceClient;
+  private readonly meditationBridge: MeditationEvidenceBridge;
 
-  constructor(dailyReadingEvidenceClient: DailyReadingEvidenceClient = new NativeDailyReadingEvidenceClient()) {
+  constructor(
+    dailyReadingEvidenceClient: DailyReadingEvidenceClient = new NativeDailyReadingEvidenceClient(),
+    meditationBridge: MeditationEvidenceBridge = nativeMeditationBridge
+  ) {
     this.dailyReadingEvidenceClient = dailyReadingEvidenceClient;
+    this.meditationBridge = meditationBridge;
   }
 
   public static getInstance(): RhythmCoordinator {
@@ -213,6 +322,7 @@ export class RhythmCoordinator {
       importNativeState: true,
       finalSync: true,
     });
+    await this.refreshMorningMeditationEvidence(now);
 
     // Subscribe to platform usage activity events
     const { usage } = getPlatformServices();
@@ -443,6 +553,9 @@ export class RhythmCoordinator {
     )) {
       await this.refreshDailyEvidence(now, false);
     }
+    if (runtime.morningMeditation?.requirement?.satisfiedAt === undefined) {
+      await this.refreshMorningMeditationEvidence(now);
+    }
     if (options?.syncNative !== false) {
       await this.syncNativeState();
     }
@@ -492,6 +605,18 @@ export class RhythmCoordinator {
         // Platform restriction application failure
       }
     }
+    // Clear any stale platform restrictions that are no longer desired after a
+    // schedule/runtime reset; otherwise a previous projection can remain live.
+    try {
+      const active = await services.restrictions.getActiveRestrictedApps?.();
+      if (Array.isArray(active)) {
+        const desired = new Set(desiredIds);
+        const stale = active.filter((appId) => !desired.has(appId));
+        if (stale.length > 0) await services.restrictions.clearRestrictions(stale);
+      }
+    } catch {
+      // Platform restriction cleanup failure remains owned by the provider.
+    }
 
     await services.storage.saveRuntime(
       this.engine.toPersistedRuntime(now)
@@ -532,6 +657,7 @@ export class RhythmCoordinator {
       importNativeState: false,
       finalSync: true,
     });
+    await this.refreshMorningMeditationEvidence(now);
 
     this.notifyListeners();
   }
@@ -581,6 +707,147 @@ export class RhythmCoordinator {
     } finally {
       if (this.evidenceRefreshPromise === refresh) this.evidenceRefreshPromise = undefined;
     }
+  }
+
+  /**
+   * Central trusted consultation of the exact bound Morning Meditation session.
+   * Runs on cold start, resume, provider return and the bounded foreground
+   * cadence; presentation components never read evidence directly.
+   */
+  public async refreshMorningMeditationEvidence(now: number = Date.now()): Promise<void> {
+    if (!this.engine) return;
+    if (this.morningRefreshPromise) {
+      await this.morningRefreshPromise;
+      return;
+    }
+    const requirement = this.engine.getRuntime().morningMeditation?.requirement;
+    if (!requirement) {
+      this.morningDiagnostics = {
+        satisfied: false,
+        availability: 'unavailable',
+        identityMetadataAvailable: false,
+        updatedAt: now,
+      };
+      return;
+    }
+
+    const refresh = (async () => {
+      const availability = await this.meditationBridge.isMeditationAvailable();
+      if (availability !== 'available') {
+        this.morningDiagnostics = {
+          requirement,
+          satisfied: requirement.satisfiedAt !== undefined,
+          availability,
+          identityMetadataAvailable: false,
+          providerError: availability,
+          updatedAt: now,
+        };
+        return;
+      }
+
+      let result: {
+        availability: MeditationProviderAvailability;
+        evidence?: import('../domain/rhythm/meditationEvidence').MeditationSessionEvidence;
+        identityMetadataAvailable?: boolean;
+        sessionMissing?: boolean;
+      };
+      if (this.meditationBridge.queryMeditationStatusResult) {
+        result = await this.meditationBridge.queryMeditationStatusResult(
+          requirement.sessionId
+        );
+      } else {
+        const evidence =
+          (await this.meditationBridge.queryMeditationStatus(requirement.sessionId)) ??
+          undefined;
+        result = {
+          availability,
+          ...(evidence ? { evidence } : {}),
+          identityMetadataAvailable: hasMeditationIdentityMetadata(evidence),
+        };
+      }
+      const identityMetadataAvailable =
+        result.identityMetadataAvailable ?? Boolean(result.evidence?.sessionKind);
+      this.morningDiagnostics = {
+        requirement,
+        satisfied:
+          requirement.satisfiedAt !== undefined ||
+          isMorningMeditationSatisfied({ requirement, evidence: result.evidence }),
+        availability: result.availability,
+        identityMetadataAvailable,
+        ...(result.evidence
+          ? {}
+          : { providerError: result.sessionMissing ? 'session-missing' : 'session-unavailable' }),
+        updatedAt: now,
+      };
+
+      // An old provider without identity metadata is a visible capability
+      // limitation. It can never satisfy the morning gate and dispatch is
+      // skipped so no naked seven-column row is treated as a match.
+      if (!result.evidence || !identityMetadataAvailable) {
+        this.notifyListeners();
+        return;
+      }
+      if (!this.engine) return;
+      const engine = this.engine;
+      const effects = engine.dispatch({
+        type: 'SYNC_MEDITATION_EVIDENCE',
+        evidence: result.evidence,
+        timestamp: now,
+      });
+      await this.executeEffects(effects);
+      await getPlatformServices().storage.saveRuntime(engine.toPersistedRuntime(now));
+      await this.syncNativeState();
+      this.notifyListeners();
+    })();
+    this.morningRefreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.morningRefreshPromise === refresh) this.morningRefreshPromise = undefined;
+    }
+  }
+
+  /**
+   * User action from Touch Grass. Reuses the exact bound requirement tuple and
+   * launches the verified Meditation IPC; it never mints a new session id.
+   */
+  public async launchMorningMeditation(
+    now: number = Date.now()
+  ): Promise<{ ok: boolean; sessionId?: string; reason?: string }> {
+    if (!this.engine) {
+      await this.initialize();
+    }
+    const requirement = this.engine?.getRuntime().morningMeditation?.requirement;
+    if (!requirement) return { ok: false, reason: 'no-morning-requirement' };
+    if (requirement.satisfiedAt !== undefined) {
+      return { ok: true, sessionId: requirement.sessionId };
+    }
+    const createdAt =
+      requirement.createdAt ??
+      attentionDayStartedAtFromId(requirement.attentionDayId) ??
+      now;
+    const request = buildMorningMeditationRequest({
+      sessionId: requirement.sessionId,
+      sourceRhythmicDayId: requirement.attentionDayId,
+      createdAtEpochMs: createdAt,
+      ...(requirement.expiresAtEpochMs !== undefined
+        ? { expiresAtEpochMs: requirement.expiresAtEpochMs }
+        : {}),
+      requiredQualifiedSeconds: requirement.requiredQualifiedSeconds,
+    });
+    const ok = await this.meditationBridge.startMeditationRecoverySession(request);
+    return ok
+      ? { ok: true, sessionId: requirement.sessionId }
+      : { ok: false, sessionId: requirement.sessionId, reason: 'launch-failed' };
+  }
+
+  public getMorningMeditationDiagnostics(): MorningMeditationDiagnostics {
+    return {
+      ...this.morningDiagnostics,
+      ...(this.morningDiagnostics.requirement
+        ? { requirement: { ...this.morningDiagnostics.requirement } }
+        : {}),
+    };
   }
 
   /**
@@ -840,6 +1107,7 @@ export class RhythmCoordinator {
         timestamp: now,
       })
         .then(() => this.refreshDailyEvidence(now, false))
+        .then(() => this.refreshMorningMeditationEvidence(now))
         .catch(() => {});
     }, ENGINE_RECONCILE_INTERVAL_MS);
 

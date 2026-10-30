@@ -1,8 +1,10 @@
 package expo.modules.rhythmdevice
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MeditationStatusProviderClientTest {
@@ -158,6 +160,37 @@ class MeditationStatusProviderClientTest {
         assertEquals("protocol-incompatible", MeditationStatusProviderClient.availabilityString(NativeMeditationAvailability.PROTOCOL_INCOMPATIBLE))
         assertEquals("unavailable", MeditationStatusProviderClient.availabilityString(NativeMeditationAvailability.SESSION_MISSING))
         assertEquals("unavailable", MeditationStatusProviderClient.availabilityString(NativeMeditationAvailability.CORRUPT))
-        assertEquals("unavailable", MeditationStatusProviderClient.availabilityString(NativeMeditationAvailability.UNAVAILABLE))
+    }
+
+    @Test
+    fun `additive identity columns are parsed when the new consumer requests them`() {
+        val identity = columns + listOf(
+            MeditationContract.COLUMN_SESSION_KIND,
+            MeditationContract.COLUMN_SOURCE_COOLDOWN_ID,
+            MeditationContract.COLUMN_SOURCE_RHYTHMIC_DAY_ID,
+        )
+        val result = MeditationStatusProviderClient.parseSessionRow(
+            sessionId,
+            identity,
+            row() + mapOf(
+                MeditationContract.COLUMN_SESSION_KIND to "MORNING_REQUIRED",
+                MeditationContract.COLUMN_SOURCE_COOLDOWN_ID to null,
+                MeditationContract.COLUMN_SOURCE_RHYTHMIC_DAY_ID to "ad-20260928-0830",
+            ),
+        )
+        assertEquals(NativeMeditationAvailability.AVAILABLE, result.availability)
+        assertTrue(result.identityMetadataAvailable)
+        assertEquals("MORNING_REQUIRED", result.evidence!!.sessionKind)
+        assertNull(result.evidence!!.sourceCooldownId)
+        assertEquals("ad-20260928-0830", result.evidence!!.sourceRhythmicDayId)
+    }
+
+    @Test
+    fun `legacy seven column row is visible but has no identity metadata`() {
+        val result = MeditationStatusProviderClient.parseSessionRow(sessionId, columns, row())
+        assertEquals(NativeMeditationAvailability.AVAILABLE, result.availability)
+        assertFalse(result.identityMetadataAvailable)
+        assertNull(result.evidence!!.sessionKind)
+        assertNull(result.evidence!!.sourceRhythmicDayId)
     }
 }

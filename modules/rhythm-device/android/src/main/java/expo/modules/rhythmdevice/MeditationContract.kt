@@ -19,6 +19,10 @@ object MeditationContract {
     const val COLUMN_COMPLETED_QUALIFIED_SECONDS = "completedQualifiedSeconds"
     const val COLUMN_COMPLETED_AT_EPOCH_MS = "completedAtEpochMs"
     const val COLUMN_LAST_UPDATED_AT_EPOCH_MS = "lastUpdatedAtEpochMs"
+    // Additive V1 identity metadata (requested explicitly by the new consumer).
+    const val COLUMN_SESSION_KIND = "sessionKind"
+    const val COLUMN_SOURCE_COOLDOWN_ID = "sourceCooldownId"
+    const val COLUMN_SOURCE_RHYTHMIC_DAY_ID = "sourceRhythmicDayId"
 
     const val KEY_SESSION_ID = "session_id"
     const val KEY_PROTOCOL_VERSION = "protocol_version"

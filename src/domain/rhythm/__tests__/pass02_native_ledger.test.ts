@@ -21,6 +21,10 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/java/expo/modules/rhythmdevice/RhythmEnforcementService.kt'
   );
+  const morningEnforcementPath = path.resolve(
+    __dirname,
+    '../../../../modules/rhythm-device/android/src/main/java/expo/modules/rhythmdevice/MorningEnforcement.kt'
+  );
   const modulePath = path.resolve(
     __dirname,
     '../../../../modules/rhythm-device/android/src/main/java/expo/modules/rhythmdevice/RhythmDeviceModule.kt'
@@ -1759,6 +1763,8 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
 
     it('Native Kotlin parser trusts explicit supported types and rejects open-day from routine schedule', () => {
       const serviceSource = fs.readFileSync(servicePath, 'utf8');
+      const morningSource = fs.readFileSync(morningEnforcementPath, 'utf8');
+      const enforcementSource = `${serviceSource}\n${morningSource}`;
 
       // 1. Verifies that parseRoutineScheduleInput strictly filters by explicit supported types
       assert.ok(
@@ -1766,19 +1772,30 @@ describe('Pass 02 — Android Native Daily Usage Ledger & Enforcement Invariants
         'Kotlin parser must explicitly require morning-buffer or evening-wind-down'
       );
 
-      // 2. Verifies evaluator uses exact type matching
+      // 2. Verifies evaluator uses exact type matching (parsing moved to the
+      //    pure MorningEnforcement helper in B1; the invariant is preserved).
       assert.ok(
-        serviceSource.includes('w.type == "morning-buffer"'),
+        enforcementSource.includes('it.type == "morning-buffer"'),
         'Evaluator must look up morning-buffer by exact type'
       );
       assert.ok(
-        serviceSource.includes('it.type == "evening-wind-down"'),
+        enforcementSource.includes('it.type == "evening-wind-down"'),
         'Evaluator must look up evening-wind-down by exact type'
       );
 
-      // 3. Verifies evaluator does not match on arbitrary IDs
+      // 3. Empty activeDays and invalid start/end clocks remain inactive.
       assert.ok(
-        !serviceSource.includes('it.type == "morning-buffer" || it.id.contains("morning")'),
+        morningSource.includes('activeDays.isEmpty()'),
+        'Empty activeDays must mean no active morning day'
+      );
+      assert.ok(
+        morningSource.includes('start == end'),
+        'Equal start/end clocks must not fabricate an all-day window'
+      );
+
+      // 4. Verifies evaluator does not match on arbitrary IDs
+      assert.ok(
+        !enforcementSource.includes('it.type == "morning-buffer" || it.id.contains("morning")'),
         'Evaluator must not use fuzzy id.contains fallbacks after normalization'
       );
     });

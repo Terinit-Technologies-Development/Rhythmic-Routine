@@ -1,6 +1,8 @@
 import {
   MEDITATION_PROTOCOL_VERSION,
+  hasMeditationIdentityMetadata,
   type MeditationEvidenceBridge,
+  type MeditationEvidenceResult,
   type MeditationProviderAvailability,
   type MeditationRecoveryRequestPayload,
   type MeditationSessionEvidence,
@@ -49,6 +51,7 @@ function normalizeAvailability(value: string | undefined): MeditationProviderAva
     case 'available':
     case 'not-installed':
     case 'untrusted-signature':
+    case 'permission-denied':
     case 'protocol-incompatible':
     case 'unavailable':
       return value;
@@ -133,6 +136,32 @@ export const nativeMeditationBridge: MeditationEvidenceBridge = {
       return parseMeditationSessionEvidence(raw ?? null);
     } catch {
       return null;
+    }
+  },
+
+  async queryMeditationStatusResult(
+    sessionId: string
+  ): Promise<MeditationEvidenceResult> {
+    const availability = await this.isMeditationAvailable();
+    if (availability !== 'available') {
+      return { availability };
+    }
+    try {
+      const raw = await native().queryMeditationStatus?.(sessionId);
+      if (!raw) {
+        return { availability: 'available', sessionMissing: true };
+      }
+      const evidence = parseMeditationSessionEvidence(raw);
+      if (!evidence) {
+        return { availability: 'unavailable' };
+      }
+      return {
+        availability: 'available',
+        evidence,
+        identityMetadataAvailable: hasMeditationIdentityMetadata(evidence),
+      };
+    } catch {
+      return { availability: 'unavailable' };
     }
   },
 };

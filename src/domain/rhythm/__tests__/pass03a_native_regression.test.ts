@@ -101,9 +101,19 @@ const mockConfig: RhythmConfiguration = {
   sessionResetGapMs: 5 * 60 * 1000,
 };
 
+// Lease/reason-union fixtures are morning-unaware; scope morning inactive so
+// they continue to assert cooldown/lease behavior only. Active morning
+// non-bypass is covered by pass06.
+const leaseMockConfig: RhythmConfiguration = {
+  ...mockConfig,
+  routineWindows: mockWindows.map((window) =>
+    window.type === 'morning-buffer' ? { ...window, activeDays: [] } : window
+  ),
+};
+
 test('Android Policy — Base restriction persists through access lease and restores after lease ends', () => {
   const t0 = 1000000000;
-  const engine = new RhythmEngine(mockConfig, null, t0);
+  const engine = new RhythmEngine(leaseMockConfig, null, t0);
 
   // Trigger cooldown on Social (90m cooldown -> ends at t0 + 90m)
   const cdEndsAt = t0 + 90 * 60 * 1000;
@@ -145,7 +155,7 @@ test('Android Policy — Base restriction persists through access lease and rest
 
 test('iOS Native Reason Union — Multi-group cooldowns and subset clearing preserve unrelated shields', () => {
   const t0 = 1000000000;
-  const engine = new RhythmEngine(mockConfig, null, t0);
+  const engine = new RhythmEngine(leaseMockConfig, null, t0);
 
   // Trigger cooldown on BOTH Social (90m) and Entertainment (60m)
   const socialCdEndsAt = t0 + 90 * 60 * 1000;

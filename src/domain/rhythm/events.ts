@@ -9,10 +9,12 @@ import {
   RhythmEvent,
   RhythmRuntime,
   SESSION_RESET_GAP_MS,
+  type MorningMeditationRuntimeState,
 } from './types';
 import {
   getActiveRoutineWindowIds,
   isInsideOvernightProtection,
+  isInsideRoutineWindow,
   isInsideWindow,
   resolveRhythmState,
 } from './routine';
@@ -47,6 +49,16 @@ import {
   type ActiveRestorativeGate,
 } from './restorativeGate';
 import { resolveAttentionDay } from './attentionDay';
+import {
+  attentionDayStartedAtFromId,
+  createMorningMigrationState,
+  createMorningMeditationRequirement,
+  isMorningEnforceableForAttentionDay,
+  isMorningMeditationSatisfied,
+  isMorningWindowEligibleForAttentionDay,
+  resolveMorningMeditationState,
+  type MorningMeditationRequirement,
+} from './morningMeditation';
 import {
   computeEffectiveRestrictions,
   diffRestrictions,
@@ -117,6 +129,7 @@ export function processRhythmEvent(
     : undefined;
   let nextNativeAttentionAuthority = currentRuntime.nativeAttentionAuthority === true;
   let nextNativeForegroundGroupId = currentRuntime.nativeForegroundGroupId;
+  let nextMorningCurrent = currentRuntime.morningMeditation;
   const nextDailyAppUsage: Record<string, DailyAppUsage> = rolloverDailyAppUsage(
     currentRuntime.dailyAppUsage || {},
     nowMs
@@ -441,6 +454,19 @@ export function processRhythmEvent(
 
     case 'SYNC_NATIVE_ATTENTION_EXCHANGE': {
       nextNativeAttentionAuthority = true;
+      if (event.morningMeditation?.migration) {
+        nextMorningCurrent = {
+          ...nextMorningCurrent,
+          migration: event.morningMeditation.migration,
+        };
+      }
+      if (event.morningMeditation) {
+        nextMorningCurrent = mergeNativeMorningProjection(
+          nextMorningCurrent,
+          event.morningMeditation,
+          attentionDay.id
+        );
+      }
       const nativeAttentionDayMatches =
         !event.dailyAttentionExchange.attentionDayId ||
         event.dailyAttentionExchange.attentionDayId === attentionDay.id;
@@ -847,6 +873,31 @@ export function processRhythmEvent(
     }
   }
 
+  // Pass 3 / B1: deterministic Morning Meditation obligation. The requirement
+  // is minted only at/after the eligible morning-end boundary for an eligible
+  // window; it is never fabricated on an inactive/disabled/malformed day.
+  // Retries and restarts preserve the original id/createdAt/satisfaction.
+  const morningMeditation = reconcileMorningMeditationRuntime({
+    current: nextMorningCurrent,
+    schedule: config.routineWindows,
+    attentionDayId: attentionDay.id,
+    attentionDayStartedAt:
+      attentionDay.id === scheduledAttentionDay.id
+        ? scheduledAttentionDay.startedAt
+        : attentionDayStartedAtFromId(attentionDay.id) ??
+          scheduledAttentionDay.startedAt,
+    now: nowMs,
+    evidence: nextMeditationEvidence,
+    insideOvernightProtection: isInsideOvernightProtection(nowDate, config.routineWindows),
+    insideMorningBuffer: isInsideRoutineWindow(
+      nowDate,
+      config.routineWindows,
+      'morning-buffer'
+    ),
+  });
+  const morningMeditationActive =
+    morningMeditation.state === 'morning-meditation-required';
+
   // 4. Resolve active routine windows
   const activeRoutineWindowIds = getActiveRoutineWindowIds(nowDate, config.routineWindows);
   const activeRoutineWindows = config.routineWindows.filter((w) => isInsideWindow(nowDate, w));
@@ -979,6 +1030,8 @@ export function processRhythmEvent(
       isOvernight,
       groupAllowanceUsage: nextGroupAllowanceUsage,
       activeReadingGates: nextReadingGates,
+      activeRestorativeGates: nextRestorativeGates,
+      morningMeditationActive,
       currentDateKey,
     }
   );
@@ -1031,7 +1084,7 @@ export function processRhythmEvent(
     ...(nextReadingEvidence ? { readingEvidence: nextReadingEvidence } : {}),
     ...(nextMeditationEvidence ? { meditationEvidence: nextMeditationEvidence } : {}),
     ...(nextReaderSessionEvidence ? { readerSessionEvidence: nextReaderSessionEvidence } : {}),
-    ...(currentRuntime.morningMeditation ? { morningMeditation: currentRuntime.morningMeditation } : {}),
+    morningMeditation,
     nativeAttentionAuthority: nextNativeAttentionAuthority,
     nativeForegroundGroupId: nextNativeForegroundGroupId,
   };
@@ -1039,6 +1092,146 @@ export function processRhythmEvent(
   return {
     nextRuntime,
     effects,
+  };
+}
+
+/** Native is the creation/marker source; merge bindings without mutating accepted tuples. */
+function mergeNativeMorningProjection(
+  existing: MorningMeditationRuntimeState | undefined,
+  incoming: MorningMeditationRuntimeState,
+  currentAttentionDayId: string
+): MorningMeditationRuntimeState {
+  const existingList = existing?.requirements?.length
+    ? existing.requirements
+    : existing?.requirement
+    ? [existing.requirement]
+    : [];
+  const incomingList = incoming.requirements?.length
+    ? incoming.requirements
+    : incoming.requirement
+    ? [incoming.requirement]
+    : [];
+  const byDay = new Map(existingList.map((item) => [item.attentionDayId, { ...item }]));
+  for (const candidate of incomingList) {
+    const current = byDay.get(candidate.attentionDayId);
+    if (!current) {
+      byDay.set(candidate.attentionDayId, { ...candidate });
+      continue;
+    }
+    if (
+      current.satisfiedAt === undefined &&
+      candidate.satisfiedAt !== undefined &&
+      candidate.sessionId === current.sessionId &&
+      candidate.attentionDayId === current.attentionDayId &&
+      candidate.sessionKind === 'MORNING_REQUIRED' &&
+      candidate.sourceRhythmicDayId === current.attentionDayId
+    ) {
+      // Retain the immutable tuple; only the native marker is promoted.
+      byDay.set(candidate.attentionDayId, {
+        ...current,
+        satisfiedAt: candidate.satisfiedAt,
+      });
+    }
+  }
+  const requirements = Array.from(byDay.values()).sort(
+    (a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.attentionDayId.localeCompare(b.attentionDayId)
+  );
+  const requirement =
+    requirements.find((item) => item.satisfiedAt === undefined) ??
+    requirements.find((item) => item.attentionDayId === currentAttentionDayId) ??
+    requirements[0];
+  return {
+    ...(requirement ? { requirement } : {}),
+    ...(requirements.length > 0 ? { requirements } : {}),
+    migration: existing?.migration ?? incoming.migration,
+    ...(existing?.state ? { state: existing.state } : {}),
+  };
+}
+
+/** The single JS-side deterministic morning reconciliation path. */
+function reconcileMorningMeditationRuntime(input: {
+  current?: MorningMeditationRuntimeState;
+  schedule: RhythmConfiguration['routineWindows'];
+  attentionDayId: string;
+  attentionDayStartedAt: number;
+  now: number;
+  evidence?: import('./meditationEvidence').MeditationSessionEvidence;
+  insideOvernightProtection: boolean;
+  insideMorningBuffer: boolean;
+}): MorningMeditationRuntimeState {
+  const migration =
+    input.current?.migration ??
+    createMorningMigrationState(input.now, input.attentionDayId, 'upgraded');
+  const enforceableForDay = isMorningEnforceableForAttentionDay(
+    migration,
+    input.attentionDayId
+  );
+  const eligible =
+    enforceableForDay &&
+    isMorningWindowEligibleForAttentionDay(
+      input.schedule,
+      input.attentionDayStartedAt
+    );
+
+  const existing = input.current?.requirements?.length
+    ? input.current.requirements.map((item) => ({ ...item }))
+    : input.current?.requirement
+    ? [{ ...input.current.requirement }]
+    : [];
+  const byDay = new Map(existing.map((item) => [item.attentionDayId, item]));
+
+  if (eligible && !byDay.has(input.attentionDayId)) {
+    // createdAt is the ORIGINAL eligible boundary, never retry time.
+    byDay.set(
+      input.attentionDayId,
+      createMorningMeditationRequirement(
+        input.attentionDayId,
+        undefined,
+        input.attentionDayStartedAt
+      )
+    );
+  }
+
+  const requirements = Array.from(byDay.values())
+    .map((requirement) => {
+      const normalized: MorningMeditationRequirement = {
+        ...requirement,
+        sourceRhythmicDayId:
+          requirement.sourceRhythmicDayId ?? requirement.attentionDayId,
+        sessionKind: requirement.sessionKind ?? 'MORNING_REQUIRED',
+        sourceCooldownId: requirement.sourceCooldownId ?? null,
+      };
+      if (
+        normalized.satisfiedAt === undefined &&
+        isMorningMeditationSatisfied({ requirement: normalized, evidence: input.evidence })
+      ) {
+        normalized.satisfiedAt = input.evidence?.completedAtEpochMs ?? input.now;
+      }
+      return normalized;
+    })
+    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.attentionDayId.localeCompare(b.attentionDayId));
+
+  const pending = requirements.find((item) => item.satisfiedAt === undefined);
+  const requirement = pending ?? requirements[0];
+  const carried = pending !== undefined;
+
+  const state = resolveMorningMeditationState({
+    now: input.now,
+    insideOvernightProtection: input.insideOvernightProtection,
+    insideMorningBuffer: input.insideMorningBuffer,
+    morningBufferElapsedForAttentionDay: input.now >= input.attentionDayStartedAt,
+    requirement,
+    evidence: input.evidence,
+    // A carried or current requirement cannot be cleared by a later migration
+    // projection or an inactive new day; only verified completion can.
+    enforceable: carried || (requirement !== undefined && enforceableForDay),
+  });
+
+  return {
+    ...(requirement ? { requirement } : {}),
+    ...(requirements.length > 0 ? { requirements } : {}),
+    migration,
+    state,
   };
 }
 

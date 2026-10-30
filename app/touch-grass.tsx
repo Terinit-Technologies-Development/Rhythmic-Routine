@@ -15,6 +15,7 @@ import { ScreenHeader } from '../src/components/ScreenHeader';
 import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
 import { RestorativeChoiceCard } from '../src/components/RestorativeChoiceCard';
+import { MorningMeditationCard } from '../src/components/MorningMeditationCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
 import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
@@ -198,6 +199,9 @@ export default function TouchGrassScreen() {
             )}
           </View>
         </View>
+
+        {/* B1 — mandatory morning meditation: launches the exact bound session. */}
+        <MorningMeditationCard />
 
         {/* Pass 3 — Restorative Choice: one discrete requirement for CD4+
             (Meditation 30 min OR Reading 30 min + 11 pages). The cooldown

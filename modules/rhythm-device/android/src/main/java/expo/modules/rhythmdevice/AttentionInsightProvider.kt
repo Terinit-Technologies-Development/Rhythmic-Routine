@@ -28,6 +28,8 @@ class AttentionInsightProvider : ContentProvider() {
     companion object {
         const val PROTOCOL_VERSION = 1
         const val PATH = "attention-day"
+        /** Explicit additive selector; never a guessed calendar day. */
+        const val CURRENT_SELECTOR = "current"
 
         const val COLUMN_PROTOCOL_VERSION = "protocolVersion"
         const val COLUMN_ATTENTION_DAY_ID = "attentionDayId"
@@ -107,23 +109,26 @@ class AttentionInsightProvider : ContentProvider() {
         if (columns.any { it !in allowedColumns } || columns.distinct().size != columns.size) return null
 
         val appContext = context?.applicationContext ?: return null
-        val attentionDay = RhythmEnforcementService.loadAttentionDayState(appContext)
-        val restorative = RestorativeEnforcement.load(appContext).copy(
-            restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext),
-            attentionDay = attentionDay,
-        )
-        val state = RhythmEnforcementService.loadAttentionExchangeState(appContext)
-        val currentDayId = attentionDay.id
+        return NativePolicyPersistence.withReadSnapshot {
+            val attentionDay = RhythmEnforcementService.loadAttentionDayState(appContext)
+            val restorative = RestorativeEnforcement.load(appContext).copy(
+                restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext),
+                attentionDay = attentionDay,
+            )
+            val state = RhythmEnforcementService.loadAttentionExchangeState(appContext)
+            val currentDayId = attentionDay.id
 
-        // Fail closed for policy, gracefully empty for Insights: only the
-        // requested Attention Day's facts are ever returned.
-        val cursor = MatrixCursor(columns.toTypedArray())
-        if (requestedDayId == currentDayId) {
-            val values = deriveValues(restorative, currentDayId, state.cooldownsTriggered)
-            cursor.addRow(columns.map { values[it] }.toTypedArray())
+            // Fail closed for policy, gracefully empty for Insights: only the
+            // requested Attention Day's facts are ever returned. The additive
+            // `current` selector resolves to Routine's actual current identity.
+            val cursor = MatrixCursor(columns.toTypedArray())
+            if (requestedDayId == currentDayId || requestedDayId == CURRENT_SELECTOR) {
+                val values = deriveValues(restorative, currentDayId, state.cooldownsTriggered)
+                cursor.addRow(columns.map { values[it] }.toTypedArray())
+            }
+            context?.contentResolver?.let { cursor.setNotificationUri(it, uri) }
+            cursor
         }
-        context?.contentResolver?.let { cursor.setNotificationUri(it, uri) }
-        return cursor
     }
 
     override fun getType(uri: Uri): String? =

@@ -18,6 +18,7 @@ import {
 } from './attentionExchange';
 import { getLocalDateKey } from './allowance';
 import { resolveAttentionDay } from './attentionDay';
+import { createMorningMigrationState } from './morningMeditation';
 
 export class RhythmEngine {
   private runtime: RhythmRuntime;
@@ -33,6 +34,18 @@ export class RhythmEngine {
     const normalized = normalizePersistedRuntime(persistedState, now);
     const todayKey = getLocalDateKey(now);
     const resolvedAttentionDay = resolveAttentionDay(now, config.routineWindows);
+    const morningMeditation = {
+      ...(normalized?.morningMeditation ?? {}),
+    };
+    if (!morningMeditation.migration) {
+      // Persisted ONCE. A fresh install may enforce from its own day; an
+      // upgraded install must not lock mid-day and starts strictly afterwards.
+      morningMeditation.migration = createMorningMigrationState(
+        now,
+        resolvedAttentionDay.id,
+        normalized ? 'upgraded' : 'fresh'
+      );
+    }
 
     if (normalized) {
       const currentDayGates = Object.values(normalized.activeRestorativeGates ?? {})
@@ -112,6 +125,13 @@ export class RhythmEngine {
           : {}),
         nativeAttentionAuthority: normalized.nativeAttentionAuthority === true,
         nativeForegroundGroupId: normalized.nativeForegroundGroupId,
+        ...(normalized.meditationEvidence
+          ? { meditationEvidence: { ...normalized.meditationEvidence } }
+          : {}),
+        ...(normalized.readerSessionEvidence
+          ? { readerSessionEvidence: { ...normalized.readerSessionEvidence } }
+          : {}),
+        morningMeditation,
         activeRestrictions: [], // Start with empty baseline so initial reconciliation emits APPLY_RESTRICTIONS
       };
     } else {
@@ -125,6 +145,7 @@ export class RhythmEngine {
         dailyAttentionExchange: createDailyAttentionExchangeState(todayKey, now),
         activeReadingGates: {},
         nativeAttentionAuthority: false,
+        morningMeditation,
         activeRestrictions: [], // Start with empty baseline
       };
     }
@@ -176,9 +197,23 @@ export class RhythmEngine {
         now
       );
       const nextScheduleDay = resolveAttentionDay(now, nextConfig.routineWindows);
+      // Schedule-edit one-time pin: the current accounting day cannot end
+      // early. Use the LATER of the already-persisted next boundary and the
+      // proposed new boundary; the pinned id keeps its original identity.
+      const persistedNextBoundary =
+        Number.isFinite(priorState.attentionDayNextBoundaryAt) &&
+        (priorState.attentionDayNextBoundaryAt ?? 0) > now
+          ? priorState.attentionDayNextBoundaryAt!
+          : 0;
+      const nextBoundaryAt = Math.max(persistedNextBoundary, nextScheduleDay.nextBoundaryAt);
+      const pinnedDayId =
+        priorState.attentionDayId && persistedNextBoundary > 0
+          ? priorState.attentionDayId
+          : currentAttentionDayId;
       this.runtime.dailyAttentionExchange = {
         ...reconciledState,
-        attentionDayNextBoundaryAt: nextScheduleDay.nextBoundaryAt,
+        attentionDayId: pinnedDayId,
+        attentionDayNextBoundaryAt: nextBoundaryAt,
       };
     }
     this.config = { ...nextConfig };
@@ -226,6 +261,27 @@ export class RhythmEngine {
       nativeAttentionAuthority: this.runtime.nativeAttentionAuthority === true,
       nativeForegroundGroupId: this.runtime.nativeForegroundGroupId,
       readingEvidence: this.runtime.readingEvidence ? { ...this.runtime.readingEvidence } : undefined,
+      meditationEvidence: this.runtime.meditationEvidence
+        ? { ...this.runtime.meditationEvidence }
+        : undefined,
+      morningMeditation: this.runtime.morningMeditation
+        ? {
+            ...this.runtime.morningMeditation,
+            ...(this.runtime.morningMeditation.requirement
+              ? { requirement: { ...this.runtime.morningMeditation.requirement } }
+              : {}),
+            ...(this.runtime.morningMeditation.requirements
+              ? {
+                  requirements: this.runtime.morningMeditation.requirements.map((item) => ({
+                    ...item,
+                  })),
+                }
+              : {}),
+            ...(this.runtime.morningMeditation.migration
+              ? { migration: { ...this.runtime.morningMeditation.migration } }
+              : {}),
+          }
+        : undefined,
       activeRestrictions: this.runtime.activeRestrictions.map((r) => ({
         appId: r.appId,
         reasons: [...r.reasons],
@@ -292,6 +348,30 @@ export class RhythmEngine {
     };
     if (this.runtime.readingEvidence) {
       res.readingEvidence = { ...this.runtime.readingEvidence };
+    }
+    if (this.runtime.meditationEvidence) {
+      res.meditationEvidence = { ...this.runtime.meditationEvidence };
+    }
+    if (this.runtime.readerSessionEvidence) {
+      res.readerSessionEvidence = { ...this.runtime.readerSessionEvidence };
+    }
+    if (this.runtime.morningMeditation) {
+      res.morningMeditation = {
+        ...this.runtime.morningMeditation,
+        ...(this.runtime.morningMeditation.requirement
+          ? { requirement: { ...this.runtime.morningMeditation.requirement } }
+          : {}),
+        ...(this.runtime.morningMeditation.requirements
+          ? {
+              requirements: this.runtime.morningMeditation.requirements.map((item) => ({
+                ...item,
+              })),
+            }
+          : {}),
+        ...(this.runtime.morningMeditation.migration
+          ? { migration: { ...this.runtime.morningMeditation.migration } }
+          : {}),
+      };
     }
     if (this.runtime.activeSession) {
       res.activeSession = { ...this.runtime.activeSession };

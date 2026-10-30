@@ -103,9 +103,19 @@ describe('Rhythm Engine — Full Engine Lifecycle, Effects & Reconciliation Cloc
     routineWindows,
   };
 
+  // These two legacy tests measure cooldown/lease deltas in a morning-unaware
+  // scenario. Scope their fixture to an inactive morning window; active
+  // mandatory-morning non-bypass is covered by pass06.
+  const cooldownOnlyConfig: RhythmConfiguration = {
+    ...config,
+    routineWindows: routineWindows.map((window) =>
+      window.type === 'morning-buffer' ? { ...window, activeDays: [] } : window
+    ),
+  };
+
   test('Continuous foreground usage: CLOCK_TICK alone triggers threshold without second foreground event', () => {
     const t0 = new Date('2026-08-31T14:00:00').getTime();
-    const engine = new RhythmEngine(config, null, t0);
+    const engine = new RhythmEngine(cooldownOnlyConfig, null, t0);
 
     assert.equal(engine.getRuntime().state, 'available');
 
@@ -139,7 +149,7 @@ describe('Rhythm Engine — Full Engine Lifecycle, Effects & Reconciliation Cloc
 
   test('Multi-group cooldowns: Social and Entertainment cooldowns coexist and expire independently', () => {
     const t0 = new Date('2026-08-31T14:00:00').getTime();
-    const engine = new RhythmEngine(config, null, t0);
+    const engine = new RhythmEngine(cooldownOnlyConfig, null, t0);
 
     // 1. Start Social Cooldown (90m, ends at t0 + 90m)
     engine.dispatch({

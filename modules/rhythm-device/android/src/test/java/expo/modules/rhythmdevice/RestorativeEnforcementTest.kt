@@ -105,11 +105,117 @@ class RestorativeEnforcementTest {
                     "attentionDayId" to "ad-20260928-0730",
                     "sessionId" to "morning-ad-20260928-0730",
                     "requiredQualifiedSeconds" to 1800,
+                    "satisfied" to true,
+                    "satisfiedAt" to 1L
+                )
+            ),
+            trustNativeCompletionMarker = true,
+        )
+        assertFalse(snapshot.morningFocusActive)
+    }
+
+    @Test
+    fun `naked js satisfied flag never clears the native hold`() {
+        val snapshot = RestorativeEnforcement.parse(
+            mapOf(
+                "morningMeditation" to mapOf(
+                    "attentionDayId" to "ad-20260928-0730",
+                    "sessionId" to "morning-ad-20260928-0730",
+                    "requiredQualifiedSeconds" to 1800,
                     "satisfied" to true
                 )
             )
         )
-        assertFalse(snapshot.morningFocusActive)
+        assertTrue(snapshot.morningFocusActive)
+        assertNull(snapshot.morningMeditation?.satisfiedAt)
+    }
+
+    @Test
+    fun `persisted native marker remains trusted after restart while forged projection does not`() {
+        val persisted = RestorativeEnforcement.fromJson(
+            """{"morningRequirements":[{"attentionDayId":"ad-20260928-0830","sessionId":"morning-ad-20260928-0830","requiredQualifiedSeconds":1800,"createdAt":1,"satisfied":true,"satisfiedAt":2,"sourceRhythmicDayId":"ad-20260928-0830","sessionKind":"MORNING_REQUIRED"}]}"""
+        )
+        assertFalse(persisted.morningFocusActive)
+        assertEquals(2L, persisted.allMorningRequirements().single().satisfiedAt!!)
+
+        val forged = RestorativeEnforcement.parse(
+            mapOf(
+                "morningMeditation" to mapOf(
+                    "attentionDayId" to "ad-20260928-0830",
+                    "sessionId" to "different-session",
+                    "requiredQualifiedSeconds" to 1800,
+                    "satisfied" to true,
+                    "satisfiedAt" to 2L,
+                )
+            )
+        )
+        assertTrue(forged.morningFocusActive)
+    }
+
+    @Test
+    fun `stale js publication cannot clear a newer native morning binding`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "morningRequirements" to listOf(
+                    mapOf(
+                        "attentionDayId" to "ad-20260928-0830",
+                        "sessionId" to "morning-ad-20260928-0830",
+                        "requiredQualifiedSeconds" to 1800,
+                        "createdAt" to 10L,
+                        "satisfied" to false,
+                        "sessionKind" to "MORNING_REQUIRED",
+                        "sourceRhythmicDayId" to "ad-20260928-0830",
+                    )
+                )
+            ),
+            trustNativeCompletionMarker = true,
+        )
+        val staleJs = RestorativeEnforcement.parse(emptyMap())
+        val rebased = RestorativeEnforcement.reconcileIncoming(latest, staleJs)
+        val carried = rebased.allMorningRequirements().single()
+        assertEquals("morning-ad-20260928-0830", carried.sessionId)
+        assertEquals(10L, carried.createdAt)
+        assertTrue(rebased.morningFocusActive)
+    }
+
+    @Test
+    fun `stale provider observation cannot regress a verified native completion`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "morningRequirements" to listOf(
+                    mapOf(
+                        "attentionDayId" to "ad-20260928-0830",
+                        "sessionId" to "morning-ad-20260928-0830",
+                        "requiredQualifiedSeconds" to 1800,
+                        "createdAt" to 10L,
+                        "satisfied" to true,
+                        "satisfiedAt" to 20L,
+                        "sessionKind" to "MORNING_REQUIRED",
+                        "sourceRhythmicDayId" to "ad-20260928-0830",
+                    )
+                )
+            ),
+            trustNativeCompletionMarker = true,
+        )
+        val stalePending = RestorativeEnforcement.parse(
+            mapOf(
+                "morningRequirements" to listOf(
+                    mapOf(
+                        "attentionDayId" to "ad-20260928-0830",
+                        "sessionId" to "morning-ad-20260928-0830",
+                        "requiredQualifiedSeconds" to 1800,
+                        "createdAt" to 10L,
+                        "satisfied" to false,
+                        "sessionKind" to "MORNING_REQUIRED",
+                        "sourceRhythmicDayId" to "ad-20260928-0830",
+                    )
+                )
+            )
+        )
+        val rebased = RestorativeEnforcement.reconcileIncoming(latest, stalePending)
+        val retained = rebased.allMorningRequirements().single()
+        assertEquals(20L, retained.satisfiedAt!!)
+        assertFalse(rebased.morningFocusActive)
     }
 
     @Test

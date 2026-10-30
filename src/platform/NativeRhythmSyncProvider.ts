@@ -5,6 +5,7 @@ import { offlineActivities } from '../data/mockData';
 import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
 import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
 import { getLocalDateKey } from '../domain/rhythm/allowance';
+import { attentionDayStartedAtFromId } from '../domain/rhythm/morningMeditation';
 import {
   requirementKindForCooldownOrdinal,
   RESTORATIVE_POLICY,
@@ -50,7 +51,8 @@ export type NativeSyncStage =
   | 'base-restrictions'
   | 'risk-policies'
   | 'cooldowns'
-  | 'routine-schedule';
+  | 'routine-schedule'
+  | 'morning-meditation';
 
 /** Evidence of one native-projection attempt. Never silent. */
 export interface NativeSyncDiagnostics {
@@ -359,6 +361,18 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             `RhythmDevice native module unavailable (${moduleDiagnostics.source}${moduleDiagnostics.loadError ? `: ${moduleDiagnostics.loadError}` : ''})`
           );
         }
+        // B1 capability gate: an old native binary without the authoritative
+        // attention-state projection cannot be reported as ENFORCED.
+        if (
+          typeof RhythmDeviceModule.setAttentionExchangeState !== 'function' ||
+          typeof RhythmDeviceModule.setAttentionExchangePolicy !== 'function' ||
+          typeof RhythmDeviceModule.setRoutineSchedule !== 'function'
+        ) {
+          this.syncStage = 'attention-state';
+          throw new Error(
+            'RhythmDevice native module lacks the B1 morning-enforcement projection capability'
+          );
+        }
 
         // Seed native defaults and an empty native store before any group-policy
         // update can cause the AccessibilityService to evaluate an exhausted ledger.
@@ -394,6 +408,28 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 ...cooldownRequirementProjection(cooldown),
               };
             });
+          const morningRequirements = (
+            runtime.morningMeditation?.requirements?.length
+              ? runtime.morningMeditation.requirements
+              : runtime.morningMeditation?.requirement
+              ? [runtime.morningMeditation.requirement]
+              : []
+          )
+            .slice()
+            .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+            .map((item) => ({
+              attentionDayId: item.attentionDayId,
+              sessionId: item.sessionId,
+              requiredQualifiedSeconds: item.requiredQualifiedSeconds,
+              createdAt: item.createdAt ?? 0,
+              sourceRhythmicDayId: item.sourceRhythmicDayId ?? item.attentionDayId,
+              sessionKind: 'MORNING_REQUIRED',
+              satisfied: item.satisfiedAt !== undefined,
+              satisfiedAt: item.satisfiedAt ?? null,
+              expiresAtEpochMs: item.expiresAtEpochMs ?? null,
+            }));
+          const oldestPending =
+            morningRequirements.find((item) => !item.satisfied) ?? morningRequirements[0];
           const attentionState = sanitizeForNative({
             dailyAttentionExchange: runtime.dailyAttentionExchange ?? {
               dateKey: getLocalDateKey(),
@@ -412,7 +448,10 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             attentionDay: runtime.dailyAttentionExchange?.attentionDayId
               ? {
                   id: runtime.dailyAttentionExchange.attentionDayId,
-                  startedAt: 0,
+                  startedAt:
+                    attentionDayStartedAtFromId(
+                      runtime.dailyAttentionExchange.attentionDayId
+                    ) ?? 0,
                   nextBoundaryAt:
                     runtime.dailyAttentionExchange.attentionDayNextBoundaryAt ?? 0,
                 }
@@ -436,15 +475,35 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 restorativeReadingPages: gate.requiredRestorativeQualifiedPages ?? null,
               })
             ),
-            morningMeditation: runtime.morningMeditation?.requirement
+            morningMeditation: oldestPending ?? null,
+            morningRequirements,
+            morningMigration: runtime.morningMeditation?.migration
               ? {
-                  attentionDayId: runtime.morningMeditation.requirement.attentionDayId,
-                  sessionId: runtime.morningMeditation.requirement.sessionId,
-                  requiredQualifiedSeconds:
-                    runtime.morningMeditation.requirement.requiredQualifiedSeconds,
-                  satisfied: Boolean(runtime.morningMeditation.requirement.satisfiedAt),
+                  migratedAt: runtime.morningMeditation.migration.migratedAt,
+                  migrationAttentionDayId:
+                    runtime.morningMeditation.migration.migrationAttentionDayId,
+                  enforceableFromAttentionDayId:
+                    runtime.morningMeditation.migration.enforceableFromAttentionDayId ?? null,
                 }
               : null,
+            /** Explicit Essential facts so native never restricts an Essential app. */
+            essentialPackages: config.apps
+              .filter((app) => app.classification === 'essential')
+              .map((app) => app.id)
+              .sort(),
+            /**
+             * Explicit managed nonessential facts. Production clears the opaque
+             * base set, so without this native morning focus would silently
+             * omit ordinary managed apps.
+             */
+            managedPackages: config.apps
+              .filter(
+                (app) =>
+                  app.classification !== 'essential' &&
+                  !OFFICIAL_COMPANION_PACKAGES.has(app.id)
+              )
+              .map((app) => app.id)
+              .sort(),
             officialCompanionPackages: [...OFFICIAL_COMPANION_PACKAGES],
           });
           const attentionStateSignature = JSON.stringify(attentionState);
