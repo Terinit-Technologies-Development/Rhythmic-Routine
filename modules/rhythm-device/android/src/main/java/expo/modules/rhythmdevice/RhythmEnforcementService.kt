@@ -88,9 +88,11 @@ class RhythmEnforcementService : AccessibilityService() {
         val now = System.currentTimeMillis()
         rolloverIfNeeded(now)
         loadActiveLeases(applicationContext).forEach { scheduleLeaseExpiry(it) }
+        // Fail-closed morning reconciliation must precede any usage/immediate
+        // enforcement admission during startup.
+        reconcileMorningRequirement(applicationContext, now)
         reconcileUsage(toTime = now)
         reconcileAllReadingGates(now)
-        reconcileMorningRequirement(applicationContext, now)
         pruneExpiredCooldowns(now)
         scheduleMidnightRollover(now)
         scheduleNearestCooldownExpiry()
@@ -461,8 +463,11 @@ class RhythmEnforcementService : AccessibilityService() {
         val now = System.currentTimeMillis()
         rolloverIfNeeded(now)
         // Deterministic native creation at the eligible morning-end boundary,
-        // even when no JS ever entered the foreground.
-        reconcileMorningRequirement(applicationContext, now)
+        // even when no JS ever entered the foreground. A failed durable commit
+        // remains fail-closed through the process-local exact binding intent.
+        if (!reconcileMorningRequirement(applicationContext, now)) {
+            Log.e(TAG, "Morning requirement persistence failed; fail-closed hold retained")
+        }
         lastForegroundPackage?.let { packageName ->
             val policy = findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), packageName)
             if (isEffectivelyRestricted(applicationContext, packageName, now)) {
@@ -878,6 +883,11 @@ class RhythmEnforcementService : AccessibilityService() {
 
     companion object {
         const val TAG = "RhythmEnforcement"; var isRunning = false; var instance: RhythmEnforcementService? = null
+        /** Process-local fail-closed binding when the first durable morning commit fails. */
+        private val failedMorningRequirements =
+            java.util.concurrent.ConcurrentHashMap<String, NativeMorningMeditationState>()
+        @Volatile private var morningPersistenceFailureStage: String? = null
+        @Volatile private var morningPersistenceFailureAt: Long = 0L
         fun getLocalDateKey(timestamp: Long = System.currentTimeMillis()): String = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
         private fun isValidLocalDateKey(value: String): Boolean {
             if (!value.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return false
@@ -2002,8 +2012,11 @@ class RhythmEnforcementService : AccessibilityService() {
                     oldestPending == latest.morningMeditation &&
                     migration == latest.morningMigration &&
                     attentionDay == latest.attentionDay
-                ) return@withReadSnapshot true
-                RestorativeEnforcement.persist(
+                ) {
+                    clearMorningFailure(attentionDay.id)
+                    return@withReadSnapshot true
+                }
+                val saved = RestorativeEnforcement.persist(
                     context,
                     latest.copy(
                         morningMeditation = oldestPending,
@@ -2012,6 +2025,18 @@ class RhythmEnforcementService : AccessibilityService() {
                         attentionDay = attentionDay,
                     ),
                 )
+                if (saved) {
+                    clearMorningFailure(attentionDay.id)
+                } else {
+                    next.firstOrNull {
+                        it.attentionDayId == attentionDay.id && it.satisfiedAt == null
+                    }?.let { requirement ->
+                        failedMorningRequirements[attentionDay.id] = requirement
+                        morningPersistenceFailureStage = "morning-requirement-commit"
+                        morningPersistenceFailureAt = now
+                    }
+                }
+                saved
             }
         }
 
@@ -2031,6 +2056,25 @@ class RhythmEnforcementService : AccessibilityService() {
             return RestorativeEnforcement.load(context).restorativeGates.isNotEmpty()
         }
 
+        private fun clearMorningFailure(attentionDayId: String) {
+            failedMorningRequirements.remove(attentionDayId)
+            if (failedMorningRequirements.isEmpty()) {
+                morningPersistenceFailureStage = null
+                morningPersistenceFailureAt = 0L
+            }
+        }
+
+        fun morningPersistenceDiagnostics(): Map<String, Any?> = mapOf(
+            "failed" to failedMorningRequirements.isNotEmpty(),
+            "stage" to morningPersistenceFailureStage,
+            "at" to morningPersistenceFailureAt,
+            "pendingCount" to failedMorningRequirements.size,
+        )
+
+        fun failedMorningRequirementsSnapshot(): List<NativeMorningMeditationState> =
+            failedMorningRequirements.values
+                .sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+
         fun hasMorningFocusHold(
             context: Context,
             packageName: String,
@@ -2041,7 +2085,11 @@ class RhythmEnforcementService : AccessibilityService() {
             if (MorningEnforcement.isEssentialPackage(packageName, restorative.essentialPackages)) {
                 return@withReadSnapshot false
             }
-            val pending = restorative.oldestPendingMorning() ?: return@withReadSnapshot false
+            val pending = MorningEnforcement.effectivePendingMorning(
+                persisted = restorative.allMorningRequirements(),
+                failedCurrentDay = failedMorningRequirements.values,
+                currentAttentionDayId = loadAttentionDayState(context, now).id,
+            ) ?: return@withReadSnapshot false
             if (pending.satisfied || pending.satisfiedAt != null) return@withReadSnapshot false
             if (restorative.isCompanionPackage(packageName)) return@withReadSnapshot false
             val base = NativePolicyPersistence.getStringSet(

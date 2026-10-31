@@ -448,6 +448,241 @@ class MorningEnforcementTest {
     }
 
     @Test
+    fun `first creation failure keeps exact fail-closed current requirement until durable retry`() {
+        val schedule = schedule(window())
+        val attentionDay = day(monday, schedule)
+        val migration = MorningEnforcement.migrationFor("fresh", attentionDay.id, monday)
+        val intended = MorningEnforcement.reconcileRequirements(
+            emptyList(), attentionDay, schedule, migration, monday, emptyMap()
+        ).single()
+
+        val failedHold = MorningEnforcement.effectivePendingMorning(
+            persisted = emptyList(),
+            failedCurrentDay = listOf(intended),
+            currentAttentionDayId = attentionDay.id,
+        )
+        assertEquals(intended.sessionId, failedHold?.sessionId)
+        assertEquals(intended.createdAt, failedHold?.createdAt)
+        assertTrue(
+            MorningEnforcement.isManagedMorningPackage(
+                packageName = "com.example.game",
+                baseRestrictedPackages = emptySet(),
+                riskPolicies = emptyList(),
+                companionPackages = emptySet(),
+                managedPackages = setOf("com.example.game"),
+            )
+        )
+        assertTrue(
+            NativeAttentionExchangeLogic.isEffectivelyRestricted(
+                baseOrRoutineRestricted = false,
+                cooldownActive = false,
+                gatePresent = false,
+                accessLeaseActive = true,
+                morningHold = failedHold != null,
+            )
+        )
+
+        // Retry produces the same deterministic binding, then persistence succeeds.
+        val retried = MorningEnforcement.reconcileRequirements(
+            emptyList(), attentionDay, schedule, migration, monday + 1000, emptyMap()
+        ).single()
+        assertEquals(intended.sessionId, retried.sessionId)
+        assertEquals(intended.createdAt, retried.createdAt)
+        val durableHold = MorningEnforcement.effectivePendingMorning(
+            persisted = listOf(retried),
+            failedCurrentDay = emptyList(),
+            currentAttentionDayId = attentionDay.id,
+        )
+        assertEquals(intended.sessionId, durableHold?.sessionId)
+
+        // Restart before retry still derives the same identity.
+        val afterRestart = MorningEnforcement.reconcileRequirements(
+            emptyList(), attentionDay, schedule, migration, monday + 2000, emptyMap()
+        ).single()
+        assertEquals(intended.sessionId, afterRestart.sessionId)
+
+        // Migration exemption on the migration day creates no new obligation.
+        val upgraded = MorningEnforcement.migrationFor("upgraded", attentionDay.id, monday)
+        assertNull(
+            MorningEnforcement.reconcileRequirements(
+                emptyList(), attentionDay, schedule, upgraded, monday, emptyMap()
+            ).firstOrNull { it.attentionDayId == attentionDay.id }
+        )
+
+        // Inactive next day creates no new obligation and does not carry a
+        // never-durable failed intent as historical backlog.
+        val inactiveSchedule = schedule(window(days = setOf(1)))
+        val inactiveDay = day(tuesday, inactiveSchedule)
+        assertNull(
+            MorningEnforcement.effectivePendingMorning(
+                persisted = emptyList(),
+                failedCurrentDay = listOf(intended),
+                currentAttentionDayId = inactiveDay.id,
+            )
+        )
+        assertNull(
+            MorningEnforcement.reconcileRequirements(
+                emptyList(), inactiveDay, inactiveSchedule, migration, tuesday, emptyMap()
+            ).firstOrNull { it.attentionDayId == inactiveDay.id }
+        )
+
+        // Completed persisted binding is never treated as pending.
+        val completed = retried.copy(satisfied = true, satisfiedAt = monday + 3000)
+        assertNull(
+            MorningEnforcement.effectivePendingMorning(
+                persisted = listOf(completed),
+                failedCurrentDay = listOf(intended),
+                currentAttentionDayId = attentionDay.id,
+            )
+        )
+    }
+
+    @Test
+    fun `effective morning projection suppresses only exact completed failed intent`() {
+        fun requirement(day: String, createdAt: Long) = NativeMorningMeditationState(
+            attentionDayId = day,
+            sessionId = "morning-$day",
+            requiredQualifiedSeconds = 1800,
+            createdAt = createdAt,
+            satisfied = false,
+            sourceRhythmicDayId = day,
+            sessionKind = "MORNING_REQUIRED",
+        )
+
+        val day = "ad-20260928-0830"
+        val failed = requirement(day, 100L)
+        val exactComplete = failed.copy(satisfied = true, satisfiedAt = 200L)
+        val exactResult = MorningEnforcement.effectiveMorningRequirements(
+            persisted = listOf(exactComplete),
+            failedCurrentDay = listOf(failed),
+            currentAttentionDayId = day,
+        )
+        assertNull(
+            MorningEnforcement.effectivePendingMorning(
+                listOf(exactComplete), listOf(failed), day,
+            )
+        )
+        assertEquals(1, exactResult.size)
+        assertEquals(200L, exactResult.single().satisfiedAt)
+
+        val unrelatedComplete = exactComplete.copy(
+            sessionId = "morning-other",
+            createdAt = 999L,
+        )
+        assertEquals(
+            failed.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                listOf(unrelatedComplete), listOf(failed), day,
+            )?.sessionId,
+        )
+
+        val previousDayFailed = requirement("ad-20260927-0830", 50L)
+        assertNull(
+            MorningEnforcement.effectivePendingMorning(
+                emptyList(), listOf(previousDayFailed), day,
+            )
+        )
+        assertTrue(
+            MorningEnforcement.effectiveMorningRequirements(
+                emptyList(), listOf(previousDayFailed), day,
+            ).isEmpty()
+        )
+        assertEquals(
+            failed.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                emptyList(), listOf(failed), day,
+            )?.sessionId,
+        )
+
+        val carried = requirement("ad-20260927-0830", 50L)
+        val carriedResult = MorningEnforcement.effectiveMorningRequirements(
+            persisted = listOf(carried),
+            failedCurrentDay = listOf(failed),
+            currentAttentionDayId = day,
+        )
+        assertEquals(carried.sessionId, carriedResult.first().sessionId)
+        assertEquals(failed.sessionId, carriedResult.last().sessionId)
+        assertEquals(
+            carried.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                listOf(carried), listOf(failed), day,
+            )?.sessionId,
+        )
+
+        val durableRetry = failed.copy()
+        val retryResult = MorningEnforcement.effectiveMorningRequirements(
+            persisted = listOf(durableRetry),
+            failedCurrentDay = listOf(failed),
+            currentAttentionDayId = day,
+        )
+        assertEquals(1, retryResult.size)
+        assertEquals(failed.sessionId, retryResult.single().sessionId)
+    }
+
+    @Test
+    fun `effective transient failures require exact unpersisted current binding`() {
+        fun requirement(day: String, createdAt: Long) = NativeMorningMeditationState(
+            attentionDayId = day,
+            sessionId = "morning-$day",
+            requiredQualifiedSeconds = 1800,
+            createdAt = createdAt,
+            satisfied = false,
+            sourceRhythmicDayId = day,
+            sessionKind = "MORNING_REQUIRED",
+        )
+        val day = "ad-20260928-0830"
+        val failed = requirement(day, 100L)
+
+        assertEquals(
+            1,
+            MorningEnforcement.effectiveFailedMorningIntents(
+                emptyList(), listOf(failed), day,
+            ).size
+        )
+        val exactComplete = failed.copy(satisfied = true, satisfiedAt = 200L)
+        assertTrue(
+            MorningEnforcement.effectiveFailedMorningIntents(
+                listOf(exactComplete), listOf(failed), day,
+            ).isEmpty()
+        )
+        assertTrue(
+            MorningEnforcement.effectiveFailedMorningIntents(
+                listOf(failed), listOf(failed), day,
+            ).isEmpty()
+        )
+        assertEquals(
+            1,
+            MorningEnforcement.effectiveFailedMorningIntents(
+                listOf(exactComplete.copy(sessionId = "morning-other")),
+                listOf(failed),
+                day,
+            ).size
+        )
+        val wrongKindComplete = exactComplete.copy(sessionKind = "COOLDOWN_RESTORATIVE")
+        assertEquals(
+            1,
+            MorningEnforcement.effectiveFailedMorningIntents(
+                listOf(wrongKindComplete), listOf(failed), day,
+            ).size
+        )
+        assertEquals(
+            1,
+            MorningEnforcement.effectiveFailedMorningIntents(
+                listOf(exactComplete.copy(createdAt = 999L)),
+                listOf(failed),
+                day,
+            ).size
+        )
+        assertTrue(
+            MorningEnforcement.effectiveFailedMorningIntents(
+                emptyList(),
+                listOf(requirement("ad-20260927-0830", 50L)),
+                day,
+            ).isEmpty()
+        )
+    }
+
+    @Test
     fun `inactive disabled empty and malformed mornings create no obligation`() {
         val cases = listOf(
             schedule(window(days = setOf(1))),

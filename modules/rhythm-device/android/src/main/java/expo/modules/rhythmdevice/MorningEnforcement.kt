@@ -192,6 +192,100 @@ object MorningEnforcement {
             ?: all.firstOrNull()
     }
 
+    /**
+     * One authoritative effective projection shared by the restriction
+     * predicate, bridge snapshot and diagnostics.
+     *
+     * - Persisted historical pending obligations are retained (oldest-first).
+     * - A process-local failed creation intent is eligible only for the current
+     *   Attention Day and only when the authoritative persisted state does not
+     *   prove that EXACT immutable binding is complete.
+     * - Persisted rows win over a failed copy for the same day; an unrelated
+     *   completion identity never clears the failed intent.
+     */
+    fun effectiveMorningRequirements(
+        persisted: List<NativeMorningMeditationState>,
+        failedCurrentDay: Collection<NativeMorningMeditationState>,
+        currentAttentionDayId: String,
+    ): List<NativeMorningMeditationState> {
+        val result = persisted.toMutableList()
+        val persistedByDay = persisted.associateBy { it.attentionDayId }
+        for (failed in failedCurrentDay) {
+            if (failed.attentionDayId != currentAttentionDayId) continue
+            val existing = persistedByDay[failed.attentionDayId]
+            if (existing == null) {
+                if (result.none { it.sessionId == failed.sessionId }) result.add(failed)
+                continue
+            }
+            if (existing.satisfiedAt == null) {
+                // Persisted pending state is authoritative; do not duplicate.
+                continue
+            }
+            val exactComplete =
+                existing.sessionId == failed.sessionId &&
+                    existing.createdAt == failed.createdAt &&
+                    existing.requiredQualifiedSeconds == failed.requiredQualifiedSeconds &&
+                    existing.attentionDayId == failed.attentionDayId &&
+                    existing.sourceRhythmicDayId == failed.attentionDayId &&
+                    existing.sessionKind == MORNING_SESSION_KIND &&
+                    failed.sessionKind == MORNING_SESSION_KIND
+            if (!exactComplete) {
+                result.removeAll { it.attentionDayId == failed.attentionDayId }
+                result.add(failed)
+            }
+        }
+        return result
+            .distinctBy { it.attentionDayId }
+            .sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+    }
+
+    fun sameMorningBinding(
+        left: NativeMorningMeditationState,
+        right: NativeMorningMeditationState,
+    ): Boolean =
+        left.attentionDayId == right.attentionDayId &&
+            left.sessionId == right.sessionId &&
+            left.createdAt == right.createdAt &&
+            left.requiredQualifiedSeconds == right.requiredQualifiedSeconds &&
+            left.sessionKind == MORNING_SESSION_KIND &&
+            right.sessionKind == MORNING_SESSION_KIND &&
+            left.sourceRhythmicDayId == left.attentionDayId &&
+            right.sourceRhythmicDayId == right.attentionDayId &&
+            left.sourceCooldownId == null &&
+            right.sourceCooldownId == null
+
+    /**
+     * Failed intents that are genuinely unpersisted and still part of the
+     * effective hold. Exact durable completion/retry is not a transient failure.
+     */
+    fun effectiveFailedMorningIntents(
+        persisted: List<NativeMorningMeditationState>,
+        failedCurrentDay: Collection<NativeMorningMeditationState>,
+        currentAttentionDayId: String,
+    ): List<NativeMorningMeditationState> {
+        val effective = effectiveMorningRequirements(
+            persisted,
+            failedCurrentDay,
+            currentAttentionDayId,
+        )
+        return failedCurrentDay
+            .filter { it.attentionDayId == currentAttentionDayId }
+            .filter { failed ->
+                effective.any { sameMorningBinding(it, failed) } &&
+                    persisted.none { sameMorningBinding(it, failed) }
+            }
+            .sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+    }
+
+    fun effectivePendingMorning(
+        persisted: List<NativeMorningMeditationState>,
+        failedCurrentDay: Collection<NativeMorningMeditationState>,
+        currentAttentionDayId: String,
+    ): NativeMorningMeditationState? =
+        effectiveMorningRequirements(persisted, failedCurrentDay, currentAttentionDayId)
+            .filter { it.satisfiedAt == null }
+            .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
+
     fun isVerifiedCompletion(
         requirement: NativeMorningMeditationState,
         evidence: NativeMeditationSessionEvidence,

@@ -373,7 +373,15 @@ class RhythmDeviceModule : Module() {
         result["restorativeReaderPages"] = restorativeGate.restorativeReadingPages
         result["requiredMeditationSeconds"] = restorativeGate.requiredMeditationSeconds
       }
-      val morning = restorative.morningMeditation
+      val currentMorningDayId = RhythmEnforcementService.loadAttentionDayState(context).id
+      val effectiveMorning = MorningEnforcement.effectiveMorningRequirements(
+        persisted = restorative.allMorningRequirements(),
+        failedCurrentDay = RhythmEnforcementService.failedMorningRequirementsSnapshot(),
+        currentAttentionDayId = currentMorningDayId,
+      )
+      val morning = effectiveMorning.filter { it.satisfiedAt == null }
+        .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
+        ?: effectiveMorning.firstOrNull()
       if (morning != null) {
         result["morningAttentionDayId"] = morning.attentionDayId
         result["morningSessionId"] = morning.sessionId
@@ -385,6 +393,19 @@ class RhythmDeviceModule : Module() {
       }
       result["morningFocusActive"] = morning != null &&
         !morning.satisfied && morning.satisfiedAt == null
+      val failedMorning = RhythmEnforcementService.failedMorningRequirementsSnapshot()
+      val effectiveFailedMorning = MorningEnforcement.effectiveFailedMorningIntents(
+        persisted = restorative.allMorningRequirements(),
+        failedCurrentDay = failedMorning,
+        currentAttentionDayId = currentMorningDayId,
+      )
+      val morningDiag = RhythmEnforcementService.morningPersistenceDiagnostics()
+      result["morningPersistenceFailed"] = effectiveFailedMorning.isNotEmpty()
+      result["morningPersistenceStage"] =
+        if (effectiveFailedMorning.isNotEmpty()) morningDiag["stage"] else null
+      result["morningPersistenceAt"] =
+        if (effectiveFailedMorning.isNotEmpty()) morningDiag["at"] else 0L
+      result["morningPersistencePendingCount"] = effectiveFailedMorning.size
       if (service?.lastForegroundPackage != null) {
         result["lastForegroundPackage"] = service.lastForegroundPackage
       }
@@ -689,8 +710,14 @@ class RhythmDeviceModule : Module() {
       restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(context, now),
       attentionDay = attentionDay,
     )
-    val morning = restorativeSnapshot.oldestPendingMorning()
-      ?: restorativeSnapshot.allMorningRequirements().firstOrNull()
+    val allMorning = MorningEnforcement.effectiveMorningRequirements(
+      persisted = restorativeSnapshot.allMorningRequirements(),
+      failedCurrentDay = RhythmEnforcementService.failedMorningRequirementsSnapshot(),
+      currentAttentionDayId = attentionDay.id,
+    )
+    val morning = allMorning.filter { it.satisfiedAt == null }
+      .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
+      ?: allMorning.firstOrNull()
     result["morningMeditation"] = morning?.let {
       mutableMapOf<String, Any?>(
         "attentionDayId" to it.attentionDayId,
@@ -705,8 +732,7 @@ class RhythmDeviceModule : Module() {
         it.satisfiedAt?.let { value -> put("satisfiedAt", value.toDouble()) }
       }
     }
-    result["morningRequirements"] = restorativeSnapshot.allMorningRequirements()
-      .sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+    result["morningRequirements"] = allMorning
       .map {
         mutableMapOf<String, Any?>(
           "attentionDayId" to it.attentionDayId,
