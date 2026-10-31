@@ -140,6 +140,8 @@ export interface NativeCooldownPolicyInput {
   endsAt: number;
   attentionDateKey?: string;
   dailyCooldownOrdinal?: number;
+  /** Immutable owning Attention Day for this native cooldown binding. */
+  attentionDayId?: string;
   /** Pass 5A requirement kind wire label. */
   requirementKind?: string;
   /** Baseline/legacy compatibility numbers (CD3 + migrated v1.2). */

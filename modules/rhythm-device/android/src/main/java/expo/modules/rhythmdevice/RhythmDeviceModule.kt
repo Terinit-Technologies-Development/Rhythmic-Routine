@@ -269,6 +269,7 @@ class RhythmDeviceModule : Module() {
           endsAt = endsAt,
           attentionDateKey = it["attentionDateKey"] as? String,
           dailyCooldownOrdinal = (it["dailyCooldownOrdinal"] as? Number)?.toInt(),
+          attentionDayId = (it["attentionDayId"] as? String)?.takeIf { value -> value.isNotBlank() },
           requirementKind = it["requirementKind"] as? String ?: "none",
           requiredReadingSeconds = (it["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
           requiredQualifiedPages = (it["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
@@ -642,6 +643,7 @@ class RhythmDeviceModule : Module() {
           put("endsAt", cooldown.endsAt.toDouble())
           cooldown.attentionDateKey?.let { put("attentionDateKey", it) }
           cooldown.dailyCooldownOrdinal?.let { put("dailyCooldownOrdinal", it) }
+          cooldown.attentionDayId?.let { put("attentionDayId", it) }
           put("requirementKind", cooldown.requirementKind)
           put("requiredReadingSeconds", cooldown.requiredReadingSeconds.toDouble())
           put("requiredQualifiedPages", cooldown.requiredQualifiedPages)

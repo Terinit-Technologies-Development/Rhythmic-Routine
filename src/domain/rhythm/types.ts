@@ -58,6 +58,8 @@ export interface ActiveCooldown {
   endsAt: number;
   dailyCooldownOrdinal?: number;
   attentionDateKey?: string;
+  /** Immutable owning Attention Day for native cooldown/gate binding. */
+  attentionDayId?: string;
   /**
    * Pass 5A requirement kind wire label ('none' | 'baseline-reading' |
    * 'restorative-choice' | 'legacy-reading').

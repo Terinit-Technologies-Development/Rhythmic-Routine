@@ -108,6 +108,7 @@ function createNativeAttentionImportEvent(
         endsAt: cooldown.endsAt,
         ...(cooldown.attentionDateKey ? { attentionDateKey: cooldown.attentionDateKey } : {}),
         ...(cooldown.dailyCooldownOrdinal !== undefined ? { dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal } : {}),
+        ...(cooldown.attentionDayId ? { attentionDayId: cooldown.attentionDayId } : {}),
         ...(cooldown.requirementKind ? { requirementKind: cooldown.requirementKind } : {}),
         requiredReadingSeconds: cooldown.requiredReadingSeconds ?? 0,
         requiredQualifiedPages: cooldown.requiredQualifiedPages ?? 0,

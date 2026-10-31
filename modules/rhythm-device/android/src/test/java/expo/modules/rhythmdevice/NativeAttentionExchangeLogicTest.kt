@@ -263,6 +263,163 @@ class NativeAttentionExchangeLogicTest {
     }
 
     @Test
+    fun `cd4 allocation carries a deterministic gate and missing gate fails closed`() {
+        val dayId = "ad-20260924-0730"
+        val state = NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now, dayId)
+        val allocation = NativeAttentionExchangeLogic.allocateCooldown(
+            state = state,
+            policy = NativeAttentionExchangeLogic.DEFAULT_POLICY,
+            groupId = "social",
+            packageNames = setOf("com.twitter.android"),
+            startedAt = now,
+            endsAt = now + 90 * 60_000L,
+            dateKey = today,
+            existingCooldowns = emptyMap(),
+            existingGates = emptyMap(),
+            alreadyExhausted = false,
+            attentionDayId = dayId,
+            existingRestorativeGates = emptyMap(),
+        )
+        assertTrue(allocation.allocated)
+        val cooldown = allocation.cooldowns.getValue("social")
+        val gate = allocation.restorativeGates.getValue("social")
+        assertEquals(4, cooldown.dailyCooldownOrdinal)
+        assertEquals("restorative-choice", cooldown.requirementKind)
+        assertEquals(dayId, cooldown.attentionDayId)
+        assertEquals(4, gate.dailyCooldownOrdinal)
+        assertEquals(dayId, gate.attentionDayId)
+
+        val retry = NativeAttentionExchangeLogic.allocateCooldown(
+            state = allocation.dailyAttentionExchange,
+            policy = NativeAttentionExchangeLogic.DEFAULT_POLICY,
+            groupId = "social",
+            packageNames = setOf("com.twitter.android"),
+            startedAt = now,
+            endsAt = now + 90 * 60_000L,
+            dateKey = today,
+            existingCooldowns = allocation.cooldowns,
+            existingGates = allocation.readingGates,
+            alreadyExhausted = false,
+            attentionDayId = dayId,
+            existingRestorativeGates = allocation.restorativeGates,
+        )
+        assertFalse(retry.allocated)
+        assertEquals(gate.gateId, allocation.restorativeGates.getValue("social").gateId)
+
+        assertTrue(
+            NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(cooldown, null)
+        )
+        assertTrue(
+            NativeAttentionExchangeLogic.isEffectivelyRestricted(
+                baseOrRoutineRestricted = false,
+                cooldownActive = false,
+                gatePresent = false,
+                accessLeaseActive = false,
+                restorativeHold = NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(
+                    cooldown,
+                    null,
+                ),
+            )
+        )
+    }
+
+    @Test
+    fun `restorative recovery uses immutable binding and never the current schedule`() {
+        val bound = NativeCooldownPolicy(
+            groupId = "social",
+            packageNames = setOf("com.twitter.android"),
+            startedAt = now,
+            endsAt = now - 1,
+            attentionDateKey = today,
+            dailyCooldownOrdinal = 4,
+            attentionDayId = "ad-20260924-0730",
+            requirementKind = "restorative-choice",
+            restorativeReadingSeconds = 1800,
+            restorativeReadingPages = 11,
+            requiredMeditationSeconds = 1800,
+        )
+        val create = NativeAttentionExchangeLogic.restorativeRecoveryDecision(bound, null)
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.CREATE,
+            create.action,
+        )
+        assertEquals("ad-20260924-0730", create.attentionDayId)
+        assertEquals(
+            RestorativeEnforcement.gateIdFor("ad-20260924-0730", "social", 4),
+            create.gateId,
+        )
+
+        val existing = NativeRestorativeGateState(
+            gateId = create.gateId!!,
+            groupId = "social",
+            attentionDayId = create.attentionDayId!!,
+            requirementKind = "restorative-choice",
+            status = "satisfied",
+            dailyCooldownOrdinal = 4,
+            createdAt = now,
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.ACCEPT_EXISTING,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(bound, existing).action,
+        )
+        val staleOldDay = existing.copy(
+            attentionDayId = "ad-20260923-0730",
+            gateId = RestorativeEnforcement.gateIdFor("ad-20260923-0730", "social", 4),
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(bound, staleOldDay).action,
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(
+                bound,
+                existing.copy(groupId = "video"),
+            ).action,
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(
+                bound,
+                existing.copy(requirementKind = "baseline-reading"),
+            ).action,
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(
+                bound,
+                existing.copy(createdAt = now - 1000),
+            ).action,
+        )
+        val legacyBound = bound.copy(attentionDayId = null)
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.ACCEPT_EXISTING,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(legacyBound, existing).action,
+        )
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(
+                legacyBound,
+                existing.copy(createdAt = now - 1000),
+            ).action,
+        )
+
+        val missingIdentity = bound.copy(attentionDayId = null)
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(missingIdentity, null).action,
+        )
+        val malformed = bound.copy(dailyCooldownOrdinal = 0)
+        assertEquals(
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED,
+            NativeAttentionExchangeLogic.restorativeRecoveryDecision(malformed, null).action,
+        )
+        assertTrue(
+            NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(malformed, null)
+        )
+    }
+
+    @Test
     fun `access leases suppress enforcement without deleting or satisfying a gate`() {
         val readingGate = gate()
         assertTrue(NativeAttentionExchangeLogic.isEffectivelyRestricted(false, false, true, false))

@@ -528,6 +528,7 @@ object NativeAttentionExchangeLogic {
             endsAt = endsAt,
             attentionDateKey = dateKey,
             dailyCooldownOrdinal = ordinal,
+            attentionDayId = attentionDayId,
             requirementKind = requirement.kind.wireLabel,
             requiredReadingSeconds = requirement.baselineReadingSeconds,
             requiredQualifiedPages = requirement.baselineReadingPages,
@@ -747,6 +748,79 @@ object NativeAttentionExchangeLogic {
         if (morningHold) return true
         return (baseOrRoutineRestricted || cooldownActive || gatePresent || restorativeHold) &&
             !accessLeaseActive
+    }
+
+    /**
+     * A CD4+ cooldown must never be treated as satisfied merely because its
+     * restorative gate is absent. This covers legacy split-commit state until
+     * the deterministic gate is durably recovered.
+     */
+    fun isRestorativeIntentUnresolved(
+        cooldown: NativeCooldownPolicy?,
+        gate: NativeRestorativeGateState?,
+    ): Boolean =
+        cooldown != null &&
+            cooldown.requirementKind == "restorative-choice" &&
+            gate == null
+
+    enum class NativeRestorativeRecoveryAction { NONE, ACCEPT_EXISTING, CREATE, UNRESOLVED }
+
+    data class NativeRestorativeRecoveryDecision(
+        val action: NativeRestorativeRecoveryAction,
+        val attentionDayId: String? = null,
+        val gateId: String? = null,
+    )
+
+    /**
+     * Pure recovery decision. Never reinterprets the persisted binding from the
+     * current schedule; an existing exact gate or immutable cooldown metadata
+     * is the only accepted authority.
+     */
+    fun restorativeRecoveryDecision(
+        cooldown: NativeCooldownPolicy?,
+        existingGate: NativeRestorativeGateState?,
+    ): NativeRestorativeRecoveryDecision {
+        if (cooldown == null || cooldown.requirementKind != "restorative-choice") {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.NONE)
+        }
+        val ordinal = cooldown.dailyCooldownOrdinal ?: 0
+        if (ordinal <= 0) {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        }
+        if (existingGate != null) {
+            val gateDay = existingGate.attentionDayId
+            val cooldownDay = cooldown.attentionDayId?.takeIf { it.isNotBlank() }
+            val sameOwner = cooldownDay == null || gateDay == cooldownDay
+            val exact = gateDay.isNotBlank() &&
+                sameOwner &&
+                existingGate.groupId == cooldown.groupId &&
+                existingGate.requirementKind == "restorative-choice" &&
+                existingGate.status in setOf("pending-selection", "in-progress", "satisfied") &&
+                existingGate.dailyCooldownOrdinal == ordinal &&
+                existingGate.createdAt > 0L &&
+                cooldown.startedAt > 0L &&
+                existingGate.createdAt == cooldown.startedAt &&
+                existingGate.gateId == RestorativeEnforcement.gateIdFor(gateDay, cooldown.groupId, ordinal)
+            return if (exact) {
+                NativeRestorativeRecoveryDecision(
+                    NativeRestorativeRecoveryAction.ACCEPT_EXISTING,
+                    gateDay,
+                    existingGate.gateId,
+                )
+            } else {
+                NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+            }
+        }
+        if (cooldown.startedAt <= 0L) {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        }
+        val originalDayId = cooldown.attentionDayId?.takeIf { it.isNotBlank() }
+            ?: return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        return NativeRestorativeRecoveryDecision(
+            NativeRestorativeRecoveryAction.CREATE,
+            originalDayId,
+            RestorativeEnforcement.gateIdFor(originalDayId, cooldown.groupId, ordinal),
+        )
     }
 
     fun completeGroupCycle(

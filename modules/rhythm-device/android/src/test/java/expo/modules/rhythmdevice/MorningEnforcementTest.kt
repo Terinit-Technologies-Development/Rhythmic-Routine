@@ -380,6 +380,35 @@ class MorningEnforcementTest {
     }
 
     @Test
+    fun `coupled allocation and restorative gate are not published on first failure and retry succeeds`() {
+        val current = linkedMapOf<String, String>()
+        var failNext = true
+        val store = object : NativePolicyKeyValueStore {
+            override fun get(key: String): String? = current[key]
+            override fun commit(values: Map<String, String>, removals: Set<String>): Boolean {
+                values.forEach { (key, value) -> current[key] = value }
+                removals.forEach { key -> current.remove(key) }
+                if (failNext) {
+                    failNext = false
+                    return false
+                }
+                return true
+            }
+        }
+        val bundle = mapOf(
+            "cooldown-policy" to "ordinal-4",
+            "restorative-gate" to "gate-ad-20260924-0730-social-o4",
+        )
+        assertFalse(NativePolicyPersistence.persist(store, bundle))
+        assertNull(current["cooldown-policy"])
+        assertNull(current["restorative-gate"])
+
+        assertTrue(NativePolicyPersistence.persist(store, bundle))
+        assertEquals("ordinal-4", current["cooldown-policy"])
+        assertEquals("gate-ad-20260924-0730-social-o4", current["restorative-gate"])
+    }
+
+    @Test
     fun `reader observation need is decided before the persistence lock`() {
         val today = "2026-09-28"
         assertFalse(

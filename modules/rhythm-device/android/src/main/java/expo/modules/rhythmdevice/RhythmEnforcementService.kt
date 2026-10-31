@@ -31,6 +31,8 @@ data class NativeCooldownPolicy(
     val startedAt: Long = 0L,
     val attentionDateKey: String? = null,
     val dailyCooldownOrdinal: Int? = null,
+    /** Immutable Attention Day that owns this cooldown/gate binding. */
+    val attentionDayId: String? = null,
     /** Pass 3 requirement kind (wire label); NONE for pre-Pass-3 timers. */
     val requirementKind: String = "none",
     /** Baseline/legacy compatibility only (CD3 aggregate evidence + migrated v1.2). */
@@ -184,7 +186,10 @@ class RhythmEnforcementService : AccessibilityService() {
         val prior = ledger[policy.groupId]?.takeIf { it.dateKey == dateKey }
         val cooldowns = loadCooldownPolicies(applicationContext).associateBy { it.groupId }
         val gates = loadCurrentAttentionReadingGates(applicationContext, now)
-        if (NativeGroupUsageAccounting.hasCommittedExhaustion(policy.groupId, dateKey, prior, cooldowns, gates)) return
+        if (NativeGroupUsageAccounting.hasCommittedExhaustion(policy.groupId, dateKey, prior, cooldowns, gates)) {
+            ensureCommittedRestorativeGate(policy.groupId, cooldowns[policy.groupId], now)
+            return
+        }
 
         val activeStartedAt = activeUsageStartedAt ?: ledger[policy.groupId]?.activeSegmentStartedAt
         val exhaustion = NativeGroupUsageAccounting.prepareExhaustion(
@@ -219,34 +224,52 @@ class RhythmEnforcementService : AccessibilityService() {
         )
         if (!allocation.allocated) return
         val updatedCooldowns = allocation.cooldowns.values.toList()
-        val saved = persistAttentionMutation(
-            context = applicationContext,
-            ledger = ledger,
-            cooldowns = updatedCooldowns,
-            state = allocation.dailyAttentionExchange,
-            gates = allocation.readingGates,
-            accountedWatermarkUpdates = mapOf(policy.groupId to exhaustion.accountedThrough),
-        )
-        if (!saved) {
-            Log.e(TAG, "Failed to persist exhaustion accounting for ${policy.groupId}")
-            return
+        // Allocation, ledger, cooldown and the required restorative gate must
+        // become durable together. A split commit could leave a cooldown with
+        // no bound restorative obligation (CD4+ fail-open).
+        val saved = NativePolicyPersistence.withReadSnapshot {
+            val latestCooldowns = loadCooldownPolicies(applicationContext)
+            val latestGates = loadReadingGates(applicationContext)
+            if (
+                latestCooldowns.any { it.groupId == policy.groupId } ||
+                latestGates.containsKey(policy.groupId)
+            ) {
+                ensureCommittedRestorativeGate(
+                    policy.groupId,
+                    latestCooldowns.firstOrNull { it.groupId == policy.groupId },
+                    now,
+                )
+                return@withReadSnapshot true
+            }
+            val latestRestorative = RestorativeEnforcement.load(applicationContext)
+            val incomingRestorative = latestRestorative.copy(
+                restorativeGates =
+                    latestRestorative.restorativeGates + allocation.restorativeGates,
+                attentionDay = attentionDay,
+                // Native exhaustion carries a stale classification copy; the
+                // latest accepted JS classification must win.
+                hasEssentialProjection = false,
+                hasManagedProjection = false,
+            )
+            val mergedRestorative = RestorativeEnforcement.reconcileIncoming(
+                latestRestorative,
+                incomingRestorative,
+            )
+            persistAttentionMutation(
+                context = applicationContext,
+                ledger = ledger,
+                cooldowns = updatedCooldowns,
+                state = allocation.dailyAttentionExchange,
+                gates = allocation.readingGates,
+                accountedWatermarkUpdates = mapOf(policy.groupId to exhaustion.accountedThrough),
+                extraValues = mapOf(
+                    RhythmNativePolicyKeys.RESTORATIVE_GATES_JSON to
+                        RestorativeEnforcement.toJson(mergedRestorative).toString(),
+                ),
+            )
         }
-        // CD4+ allocations carry a provider-neutral Restorative Gate (Pass 3
-        // schema, deterministic identity shared with JS). Persist it with the
-        // same no-downgrade reconciliation the JS projection uses.
-        val existingRestorative = RestorativeEnforcement.load(applicationContext).copy(
-            restorativeGates = existingRestorativeGates,
-        )
-        val incomingRestorative = existingRestorative.copy(
-            restorativeGates = allocation.restorativeGates,
-            attentionDay = attentionDay,
-        )
-        val restorativeSaved = RestorativeEnforcement.persist(
-            applicationContext,
-            RestorativeEnforcement.reconcileIncoming(existingRestorative, incomingRestorative),
-        )
-        if (!restorativeSaved) {
-            Log.e(TAG, "Failed to persist restorative gate for ${policy.groupId}")
+        if (!saved) {
+            Log.e(TAG, "Failed to persist exhaustion allocation for ${policy.groupId}")
             return
         }
         activeUsageGroup = null; activeUsagePackage = null; activeUsageStartedAt = null
@@ -256,6 +279,59 @@ class RhythmEnforcementService : AccessibilityService() {
     }
 
     private fun Long?.orZero(): Long = this ?: 0L
+
+    /**
+     * Recovers a legacy/split-commit CD4+ cooldown that is committed without its
+     * deterministic restorative gate. The gate is rebuilt from the cooldown's
+     * immutable ordinal/metadata and persisted atomically; retries are idempotent.
+     */
+    @Synchronized
+    private fun ensureCommittedRestorativeGate(
+        groupId: String,
+        cooldown: NativeCooldownPolicy?,
+        now: Long,
+    ): Boolean {
+        if (cooldown == null || cooldown.requirementKind != "restorative-choice") return true
+        val ordinal = cooldown.dailyCooldownOrdinal ?: return false
+        val allGates = RestorativeEnforcement.load(applicationContext).restorativeGates
+        val decision = NativeAttentionExchangeLogic.restorativeRecoveryDecision(
+            cooldown,
+            allGates[groupId],
+        )
+        when (decision.action) {
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.NONE -> return true
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.ACCEPT_EXISTING -> return true
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.UNRESOLVED -> return false
+            NativeAttentionExchangeLogic.NativeRestorativeRecoveryAction.CREATE -> Unit
+        }
+        val originalDayId = decision.attentionDayId ?: return false
+        val gateId = decision.gateId ?: return false
+        val gate = NativeRestorativeGateState(
+            gateId = gateId,
+            groupId = groupId,
+            attentionDayId = originalDayId,
+            requirementKind = "restorative-choice",
+            status = "pending-selection",
+            selectedProvider = null,
+            dailyCooldownOrdinal = ordinal,
+            requiredReadingSeconds = 0L,
+            requiredQualifiedPages = 0,
+            createdAt = cooldown.startedAt,
+            restorativeReadingSeconds = cooldown.restorativeReadingSeconds,
+            restorativeReadingPages = cooldown.restorativeReadingPages,
+            requiredMeditationSeconds = cooldown.requiredMeditationSeconds,
+        )
+        return NativePolicyPersistence.withReadSnapshot {
+            val latest = RestorativeEnforcement.load(applicationContext)
+            val incoming = latest.copy(
+                restorativeGates = latest.restorativeGates + (groupId to gate),
+                attentionDay = latest.attentionDay,
+                hasEssentialProjection = false,
+                hasManagedProjection = false,
+            )
+            RestorativeEnforcement.persist(applicationContext, incoming)
+        }
+    }
 
     private fun scheduleGroupAllowanceDeadline(groupId: String, packageName: String, deadline: Long) {
         cancelAllowanceDeadline()
@@ -416,6 +492,14 @@ class RhythmEnforcementService : AccessibilityService() {
         if (expiredCooldowns.isEmpty()) return
 
         for (cooldown in expiredCooldowns) {
+            val recovered = ensureCommittedRestorativeGate(cooldown.groupId, cooldown, now)
+            if (!recovered) {
+                // Preserve the cooldown as the sole durable witness of the
+                // unresolved restorative obligation; do not reset usage or
+                // complete the cycle while its bound state is unavailable.
+                Log.e(TAG, "Restorative gate recovery failed for ${cooldown.groupId}; retaining fail-closed cooldown")
+                continue
+            }
             val currentCycle = gates[cooldown.groupId] != null ||
                 (cooldown.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                     cooldown.startedAt,
@@ -1603,6 +1687,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 endsAt = values.maxOf { it.endsAt },
                 attentionDateKey = if (hasNativeAttention) native.attentionDateKey else null,
                 dailyCooldownOrdinal = if (hasNativeAttention) native.dailyCooldownOrdinal else null,
+                attentionDayId = if (hasNativeAttention) native.attentionDayId else null,
                 requirementKind = if (hasNativeAttention) native.requirementKind else "none",
                 requiredReadingSeconds = if (hasNativeAttention) native.requiredReadingSeconds else 0L,
                 requiredQualifiedPages = if (hasNativeAttention) native.requiredQualifiedPages else 0,
@@ -1657,6 +1742,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 endsAt = endsAt,
                 attentionDateKey = item["attentionDateKey"] as? String,
                 dailyCooldownOrdinal = (item["dailyCooldownOrdinal"] as? Number)?.toInt(),
+                attentionDayId = (item["attentionDayId"] as? String)?.takeIf { it.isNotBlank() },
                 requirementKind = item["requirementKind"] as? String ?: "none",
                 requiredReadingSeconds = (item["requiredReadingSeconds"] as? Number)?.toLong() ?: 0L,
                 requiredQualifiedPages = (item["requiredQualifiedPages"] as? Number)?.toInt() ?: 0,
@@ -1686,6 +1772,7 @@ class RhythmEnforcementService : AccessibilityService() {
                         endsAt = value.optLong("endsAt", 0L).coerceAtLeast(0L),
                         attentionDateKey = attentionDate.takeIf { hasMetadata },
                         dailyCooldownOrdinal = ordinal.takeIf { hasMetadata },
+                        attentionDayId = value.optString("attentionDayId", "").takeIf { hasMetadata && it.isNotBlank() },
                         requirementKind = value.optString("requirementKind", "none").takeIf { hasMetadata } ?: "none",
                         requiredReadingSeconds = seconds.takeIf { hasMetadata } ?: 0L,
                         requiredQualifiedPages = pages.takeIf { hasMetadata } ?: 0,
@@ -1710,6 +1797,7 @@ class RhythmEnforcementService : AccessibilityService() {
                     if (cooldown.attentionDateKey != null && cooldown.dailyCooldownOrdinal != null) {
                         put("attentionDateKey", cooldown.attentionDateKey)
                         put("dailyCooldownOrdinal", cooldown.dailyCooldownOrdinal)
+                        cooldown.attentionDayId?.let { put("attentionDayId", it) }
                         put("requirementKind", cooldown.requirementKind)
                         put("requiredReadingSeconds", cooldown.requiredReadingSeconds)
                         put("requiredQualifiedPages", cooldown.requiredQualifiedPages)
@@ -1841,7 +1929,8 @@ class RhythmEnforcementService : AccessibilityService() {
 
         fun hasGroupAttentionHold(context: Context, groupId: String, now: Long = System.currentTimeMillis()): Boolean =
             NativePolicyPersistence.withReadSnapshot {
-                if (loadCooldownPolicies(context).any { it.groupId == groupId && it.endsAt > now }) return@withReadSnapshot true
+                val cooldown = loadCooldownPolicies(context).firstOrNull { it.groupId == groupId }
+                if (cooldown != null && cooldown.endsAt > now) return@withReadSnapshot true
                 val currentReadingGate = loadCurrentAttentionReadingGates(context, now).containsKey(groupId)
                 if (currentReadingGate) return@withReadSnapshot true
 
@@ -1851,6 +1940,9 @@ class RhythmEnforcementService : AccessibilityService() {
                 // accepting a stale, calendar-date-only projection after rollover.
                 val attentionDay = loadAttentionDayState(context, now)
                 val gate = loadCurrentAttentionRestorativeGates(context, now)[groupId]
+                if (NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(cooldown, gate)) {
+                    return@withReadSnapshot true
+                }
                 gate?.let {
                     it.attentionDayId == attentionDay.id && it.holdsGroup &&
                         (it.requirementKind != "baseline-reading" || currentReadingGate)
@@ -1986,9 +2078,16 @@ class RhythmEnforcementService : AccessibilityService() {
                 )?.contains(packageName) == true
                 val policy = loadRiskGroupPolicies(context).firstOrNull { packageName in it.packageNames }
                 val gatePresent = policy?.let { loadCurrentAttentionReadingGates(context, now).containsKey(it.groupId) } == true
-                val restorativeHold = policy?.let {
-                    loadCurrentAttentionRestorativeGates(context, now)[it.groupId]?.holdsGroup == true
-                } == true
+                val cooldown = policy?.let { group ->
+                    loadCooldownPolicies(context).firstOrNull { it.groupId == group.groupId }
+                }
+                val restorativeGate = policy?.let {
+                    loadCurrentAttentionRestorativeGates(context, now)[it.groupId]
+                }
+                val restorativeHold = policy != null && (
+                    restorativeGate?.holdsGroup == true ||
+                        NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(cooldown, restorativeGate)
+                    )
                 val morningHold = hasMorningFocusHold(context, packageName, now)
                 NativeAttentionExchangeLogic.isEffectivelyRestricted(
                     baseOrRoutineRestricted = base || isProtectedByRoutine(context, packageName, now),
