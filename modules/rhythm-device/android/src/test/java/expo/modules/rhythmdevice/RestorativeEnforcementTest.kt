@@ -315,6 +315,98 @@ class RestorativeEnforcementTest {
     }
 
     @Test
+    fun `unfinished restorative gate carries across attention day with provider progress`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to listOf(gateMap()),
+                "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 1L),
+            )
+        )
+        val incoming = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to emptyList<Any>(),
+                "attentionDay" to mapOf("id" to "ad-20260928-0730", "nextBoundaryAt" to 2L),
+            )
+        )
+        val rebased = RestorativeEnforcement.reconcileIncoming(latest, incoming)
+        val carried = rebased.restorativeGates.getValue("social")
+        assertEquals("ad-20260927-0730", carried.attentionDayId)
+        assertEquals("meditation", carried.selectedProvider)
+        assertEquals("in-progress", carried.status)
+    }
+
+    @Test
+    fun `distinct incoming same-group gate cannot replace an unfinished carried binding`() {
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to listOf(gateMap(status = "in-progress")),
+                "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 1L),
+            )
+        )
+        val incoming = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to listOf(
+                    gateMap(groupId = "social", status = "pending-selection").toMutableMap().apply {
+                        put("gateId", "gate-ad-20260928-0730-social-o5")
+                        put("attentionDayId", "ad-20260928-0730")
+                        put("dailyCooldownOrdinal", 5)
+                        put("selectedProvider", null)
+                    }
+                ),
+                "attentionDay" to mapOf("id" to "ad-20260928-0730", "nextBoundaryAt" to 2L),
+            )
+        )
+        val rebased = RestorativeEnforcement.reconcileIncoming(latest, incoming)
+        val carried = rebased.restorativeGates.getValue("social")
+        assertEquals("gate-ad-20260927-0730-social-o4", carried.gateId)
+        assertEquals("meditation", carried.selectedProvider)
+    }
+
+    @Test
+    fun `same textual gate id with wrong immutable binding cannot complete the pending gate`() {
+        val knownGate = gateMap(status = "in-progress") + mapOf(
+            "restorativeReadingSeconds" to 1800L,
+            "restorativeReadingPages" to 11,
+        )
+        val latest = RestorativeEnforcement.parse(
+            mapOf(
+                "activeRestorativeGates" to listOf(knownGate),
+                "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 1L),
+            )
+        )
+        val wrongs = listOf(
+            "attentionDayId" to "ad-20260928-0730",
+            "dailyCooldownOrdinal" to 5,
+            "requirementKind" to "baseline-reading",
+            "groupId" to "video",
+            "createdAt" to 999L,
+            "restorativeReadingSeconds" to 900L,
+        )
+        for ((key, value) in wrongs) {
+            val incoming = RestorativeEnforcement.parse(
+                mapOf(
+                    "activeRestorativeGates" to listOf(
+                        (knownGate + ("status" to "satisfied")).toMutableMap().apply { put(key, value) }
+                    ),
+                    "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 2L),
+                )
+            )
+            val rebased = RestorativeEnforcement.reconcileIncoming(latest, incoming)
+            val carried = rebased.restorativeGates.getValue("social")
+            assertEquals("wrong $key must not complete", "in-progress", carried.status)
+            assertEquals(1800L, carried.restorativeReadingSeconds)
+            assertEquals("meditation", carried.selectedProvider)
+        }
+        val exactCompletion = latest.copy(
+            restorativeGates = mapOf(
+                "social" to latest.restorativeGates.getValue("social").copy(status = "satisfied"),
+            ),
+        )
+        assertTrue(RestorativeEnforcement.reconcileIncoming(latest, exactCompletion)
+            .restorativeGates.getValue("social").satisfied)
+    }
+
+    @Test
     fun `missing or malformed data parses to fail-closed defaults`() {
         val empty = RestorativeEnforcement.parse(emptyMap())
         assertNull(empty.attentionDay)
@@ -370,5 +462,62 @@ class RestorativeEnforcementTest {
         assertEquals(0, corrupt.restorativeGates.size)
         assertNull(corrupt.morningMeditation)
         assertNotNull(RestorativeEnforcement.fromJson(null))
+    }
+
+    @Test
+    fun `cross day incoming replacement cannot erase an actual pending gate`() {
+        val previous = RestorativeEnforcement.parse(mapOf(
+            "activeRestorativeGates" to listOf(gateMap()),
+            "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 1L),
+        ))
+        val incoming = RestorativeEnforcement.parse(mapOf(
+            "activeRestorativeGates" to listOf(gateMap() + mapOf(
+                "gateId" to "gate-ad-20260928-0730-social-o1",
+                "attentionDayId" to "ad-20260928-0730",
+                "dailyCooldownOrdinal" to 1,
+                "status" to "pending-selection",
+                "selectedProvider" to null,
+            )),
+            "attentionDay" to mapOf("id" to "ad-20260928-0730", "nextBoundaryAt" to 2L),
+        ))
+        val rebased = RestorativeEnforcement.reconcileIncoming(previous, incoming)
+        assertEquals(previous.restorativeGates["social"], rebased.restorativeGates["social"])
+    }
+
+    @Test
+    fun `context persistence merge cannot replace a carried pending binding`() {
+        val old = RestorativeEnforcement.parse(mapOf(
+            "activeRestorativeGates" to listOf(gateMap()),
+        )).restorativeGates.getValue("social")
+        val incoming = old.copy(
+            gateId = "gate-ad-20260928-0730-social-o1",
+            attentionDayId = "ad-20260928-0730",
+            dailyCooldownOrdinal = 1,
+            status = "pending-selection",
+            selectedProvider = null,
+        )
+        val result = RestorativeEnforcement.gatesForPersistence(
+            mapOf("social" to old), mapOf("social" to incoming),
+        )
+        assertEquals(old, result["social"])
+    }
+
+    @Test
+    fun `same textual gate id with wrong immutable owner cannot complete pending gate`() {
+        val previous = RestorativeEnforcement.parse(mapOf(
+            "activeRestorativeGates" to listOf(gateMap()),
+            "attentionDay" to mapOf("id" to "ad-20260927-0730", "nextBoundaryAt" to 1L),
+        ))
+        val wrong = previous.restorativeGates.getValue("social").copy(
+            attentionDayId = "ad-20260928-0730",
+            dailyCooldownOrdinal = 1,
+            status = "satisfied",
+        )
+        val incoming = previous.copy(
+            attentionDay = NativeAttentionDayState("ad-20260928-0730", 2L),
+            restorativeGates = mapOf("social" to wrong),
+        )
+        val merged = RestorativeEnforcement.reconcileIncoming(previous, incoming)
+        assertEquals(previous.restorativeGates["social"], merged.restorativeGates["social"])
     }
 }

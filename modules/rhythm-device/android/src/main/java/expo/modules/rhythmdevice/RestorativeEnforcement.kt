@@ -159,6 +159,62 @@ object RestorativeEnforcement {
             ?: compatibleGates.filter { it.holdsGroup }.minByOrNull { it.dailyCooldownOrdinal }
     }
 
+    /** Reporting filters must never delete unfinished carried enforcement debt. */
+    fun gatesForPersistence(
+        allGates: Map<String, NativeRestorativeGateState>,
+        currentDayGates: Map<String, NativeRestorativeGateState>,
+    ): Map<String, NativeRestorativeGateState> {
+        val merged = LinkedHashMap(allGates)
+        for ((groupId, incoming) in currentDayGates) {
+            merged[groupId] = mergeGate(merged[groupId], incoming)
+        }
+        return merged
+    }
+
+    /**
+     * Preserve an actual unfinished binding unless the incoming row is the same
+     * immutable gate progressing/completing, or the existing binding is complete.
+     */
+    private fun mergeGate(
+        current: NativeRestorativeGateState?,
+        incoming: NativeRestorativeGateState,
+    ): NativeRestorativeGateState {
+        if (current == null) return incoming
+        if (current.gateId != incoming.gateId) {
+            return if (current.holdsGroup) current else incoming
+        }
+        if (!sameImmutableGateBinding(current, incoming)) {
+            // A same textual id with wrong owner/targets is not proof of progress.
+            return current
+        }
+        if (current.status == "satisfied" && incoming.status != "satisfied") return current
+        val immutable = current.copy(
+            selectedProvider = incoming.selectedProvider ?: current.selectedProvider,
+            status = if (incoming.status == "satisfied") "satisfied" else incoming.status,
+        )
+        return immutable
+    }
+
+    private fun sameImmutableGateBinding(
+        current: NativeRestorativeGateState,
+        incoming: NativeRestorativeGateState,
+    ): Boolean {
+        if (current.groupId != incoming.groupId) return false
+        if (current.attentionDayId != incoming.attentionDayId) return false
+        if (current.dailyCooldownOrdinal != incoming.dailyCooldownOrdinal) return false
+        if (current.requirementKind != incoming.requirementKind) return false
+        if (current.createdAt > 0L && incoming.createdAt != current.createdAt) return false
+        fun targetMatches(currentValue: Long, incomingValue: Long): Boolean =
+            currentValue <= 0L || incomingValue == currentValue
+        fun intTargetMatches(currentValue: Int, incomingValue: Int): Boolean =
+            currentValue <= 0 || incomingValue == currentValue
+        return targetMatches(current.requiredReadingSeconds, incoming.requiredReadingSeconds) &&
+            intTargetMatches(current.requiredQualifiedPages, incoming.requiredQualifiedPages) &&
+            targetMatches(current.restorativeReadingSeconds, incoming.restorativeReadingSeconds) &&
+            intTargetMatches(current.restorativeReadingPages, incoming.restorativeReadingPages) &&
+            targetMatches(current.requiredMeditationSeconds, incoming.requiredMeditationSeconds)
+    }
+
     /** Parses the additive Pass 3 fields from the JS `attentionState` map. */
     fun parse(
         snapshot: Map<String, Any?>,
@@ -526,7 +582,16 @@ object RestorativeEnforcement {
             .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
             ?: morning.firstOrNull()
         if (!sameAttentionDay) {
+            val carriedGates = LinkedHashMap<String, NativeRestorativeGateState>()
+            existing.restorativeGates
+                .filterValues { it.holdsGroup }
+                .forEach { (groupId, gate) -> carriedGates[groupId] = gate }
+            for ((groupId, gate) in incoming.restorativeGates) {
+                val current = carriedGates[groupId]
+                carriedGates[groupId] = mergeGate(current, gate)
+            }
             return incoming.copy(
+                restorativeGates = carriedGates,
                 morningMeditation = oldestPending,
                 morningRequirements = morning,
                 morningMigration = migration,
@@ -543,13 +608,7 @@ object RestorativeEnforcement {
         }
         for ((groupId, gate) in incoming.restorativeGates) {
             val current = merged[groupId]
-            merged[groupId] = when {
-                current == null -> gate
-                current.gateId == gate.gateId &&
-                    current.status == "satisfied" &&
-                    gate.status != "satisfied" -> current
-                else -> gate
-            }
+            merged[groupId] = mergeGate(current, gate)
         }
         val attentionDay = incoming.attentionDay?.copy(
             startedAt = if (incoming.attentionDay.startedAt > 0L) {

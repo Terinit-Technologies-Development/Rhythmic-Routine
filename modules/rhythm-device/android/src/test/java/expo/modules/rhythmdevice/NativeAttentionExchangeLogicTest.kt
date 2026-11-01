@@ -183,14 +183,14 @@ class NativeAttentionExchangeLogicTest {
     }
 
     @Test
-    fun `stale restorative gate from a prior Attention Day does not block a new allocation`() {
+    fun `completed restorative gate from a prior Attention Day permits a new allocation`() {
         val currentDayId = "ad-20260925-0730"
         val previousDayGate = NativeRestorativeGateState(
             gateId = "gate-ad-20260924-0730-social-o4",
             groupId = "social",
             attentionDayId = "ad-20260924-0730",
             requirementKind = "restorative-choice",
-            status = "pending-selection",
+            status = "satisfied",
         )
         val state = NativeDailyAttentionExchangeState(
             dateKey = tomorrow,
@@ -417,6 +417,74 @@ class NativeAttentionExchangeLogicTest {
         assertTrue(
             NativeAttentionExchangeLogic.isRestorativeIntentUnresolved(malformed, null)
         )
+    }
+
+    @Test
+    fun `completed historical gate allows a new cycle while unfinished carried gate blocks it`() {
+        val dayId = "ad-20260924-0730"
+        val state = NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now, dayId)
+        val completed = NativeRestorativeGateState(
+            gateId = "gate-old-social-o3",
+            groupId = "social",
+            attentionDayId = "ad-20260923-0730",
+            requirementKind = "restorative-choice",
+            status = "satisfied",
+            dailyCooldownOrdinal = 3,
+            createdAt = now - 86_400_000L,
+        )
+        val allowed = NativeAttentionExchangeLogic.allocateCooldown(
+            state, NativeAttentionExchangeLogic.DEFAULT_POLICY, "social",
+            setOf("com.twitter.android"), now, now + 60_000L, today,
+            emptyMap(), emptyMap(), false, dayId, mapOf("social" to completed),
+        )
+        assertTrue(allowed.allocated)
+
+        val unfinished = completed.copy(status = "in-progress", gateId = "gate-old-social-o4")
+        val blocked = NativeAttentionExchangeLogic.allocateCooldown(
+            state, NativeAttentionExchangeLogic.DEFAULT_POLICY, "social",
+            setOf("com.twitter.android"), now, now + 60_000L, today,
+            emptyMap(), emptyMap(), false, dayId, mapOf("social" to unfinished),
+        )
+        assertFalse(blocked.allocated)
+    }
+
+    @Test
+    fun `exhaustion allocation preserves concurrent other-group cooldown and gate`() {
+        val dayId = "ad-20260924-0730"
+        val state = NativeDailyAttentionExchangeState(today, 3, 3600L, 36, now, dayId)
+        val otherCooldown = NativeCooldownPolicy(
+            groupId = "video",
+            packageNames = setOf("com.youtube"),
+            startedAt = now - 1000,
+            endsAt = now + 60_000,
+            attentionDateKey = today,
+            dailyCooldownOrdinal = 3,
+            attentionDayId = dayId,
+            requirementKind = "baseline-reading",
+            requiredReadingSeconds = 3600,
+            requiredQualifiedPages = 36,
+        )
+        val otherGate = NativeReadingGate(
+            "video", today, 3, now - 1000, now + 60_000, 3600, 36,
+        )
+        val allocation = NativeAttentionExchangeLogic.allocateCooldown(
+            state = state,
+            policy = NativeAttentionExchangeLogic.DEFAULT_POLICY,
+            groupId = "social",
+            packageNames = setOf("com.twitter.android"),
+            startedAt = now,
+            endsAt = now + 90 * 60_000L,
+            dateKey = today,
+            existingCooldowns = mapOf("video" to otherCooldown),
+            existingGates = mapOf("video" to otherGate),
+            alreadyExhausted = false,
+            attentionDayId = dayId,
+            existingRestorativeGates = emptyMap(),
+        )
+        assertTrue(allocation.allocated)
+        assertEquals(otherCooldown, allocation.cooldowns["video"])
+        assertEquals(otherGate, allocation.readingGates["video"])
+        assertTrue(allocation.cooldowns.containsKey("social"))
     }
 
     @Test
@@ -926,5 +994,35 @@ class NativeAttentionExchangeLogicTest {
         } finally {
             TimeZone.setDefault(original)
         }
+    }
+
+    @Test
+    fun `accepted allocation advances its current day without rewinding civil reporting time`() {
+        val current = NativeDailyAttentionExchangeState(
+            "2026-09-29", 3, 3600L, 36, 2000L, "ad-20260928-0830",
+        )
+        val allocated = current.copy(
+            dateKey = "2026-09-28", cooldownsTriggered = 4, updatedAt = 1000L,
+        )
+        val committed = NativeAttentionExchangeLogic.stateAfterAcceptedAllocation(current, allocated)
+        assertEquals(4, committed.cooldownsTriggered)
+        assertEquals(current.dateKey, committed.dateKey)
+        assertEquals(current.attentionDayId, committed.attentionDayId)
+        assertEquals(current.updatedAt, committed.updatedAt)
+    }
+
+    @Test
+    fun `accepted prior day retry cannot replace the current global allocation counters`() {
+        val current = NativeDailyAttentionExchangeState(
+            "2026-09-29", 7, 3600L, 36, 2000L, "ad-20260929-0830",
+        )
+        val oldAllocation = current.copy(
+            dateKey = "2026-09-28", cooldownsTriggered = 4, updatedAt = 1000L,
+            attentionDayId = "ad-20260928-0830",
+        )
+        assertEquals(
+            current,
+            NativeAttentionExchangeLogic.stateAfterAcceptedAllocation(current, oldAllocation),
+        )
     }
 }

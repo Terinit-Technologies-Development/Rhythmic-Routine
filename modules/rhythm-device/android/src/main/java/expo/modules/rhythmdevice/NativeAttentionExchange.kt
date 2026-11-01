@@ -137,6 +137,25 @@ data class NativeCooldownExpiryDecision(
 )
 
 object NativeAttentionExchangeLogic {
+    /** Select the actual accepted allocation state without rewinding a newer day. */
+    fun stateAfterAcceptedAllocation(
+        current: NativeDailyAttentionExchangeState,
+        allocated: NativeDailyAttentionExchangeState,
+    ): NativeDailyAttentionExchangeState {
+        val sameDay = current.attentionDayId != null &&
+            current.attentionDayId == allocated.attentionDayId ||
+            current.attentionDayId == null && allocated.attentionDayId == null &&
+                current.dateKey == allocated.dateKey
+        if (!sameDay) return current
+        return allocated.copy(
+            dateKey = current.dateKey,
+            cooldownsTriggered = maxOf(current.cooldownsTriggered, allocated.cooldownsTriggered),
+            highestRequiredActiveSeconds = maxOf(current.highestRequiredActiveSeconds, allocated.highestRequiredActiveSeconds),
+            highestRequiredQualifiedPages = maxOf(current.highestRequiredQualifiedPages, allocated.highestRequiredQualifiedPages),
+            updatedAt = maxOf(current.updatedAt, allocated.updatedAt),
+        )
+    }
+
     val DEFAULT_POLICY = NativeReadingAttentionPolicy()
 
     fun nextReadingTargetPreview(
@@ -505,7 +524,7 @@ object NativeAttentionExchangeLogic {
             existingCooldowns.containsKey(groupId) ||
             existingGates[groupId]?.attentionDateKey == dateKey ||
             existingRestorativeGates[groupId]?.let {
-                it.attentionDayId == attentionDayId && it.holdsGroup
+                it.holdsGroup
             } == true
         ) {
             return NativeCooldownAllocation(state, existingCooldowns, existingGates, allocated = false)
