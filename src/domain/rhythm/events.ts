@@ -441,9 +441,16 @@ export function processRhythmEvent(
       // progress locked the gate, or once the meditation cap is exhausted.
       const gate = nextRestorativeGates[event.groupId];
       if (!gate) break;
+      // PD-2: the selection guard belongs to the gate's OWNING Attention Day.
+      // A carried gate must not be blocked (or allowed) by the current day's
+      // independent substitution counter.
+      const selectionDayId =
+        gate.requirementKind === 'legacy-reading'
+          ? attentionDay.id
+          : gate.attentionDayId;
       const meditationAllowed = event.provider !== 'meditation' ||
         isMeditationPathAllowed(
-          resolveMeditationSubstitutionsUsed(nextDailyAttentionExchange, attentionDay.id)
+          resolveMeditationSubstitutionsUsed(nextDailyAttentionExchange, selectionDayId)
         );
       const selected = selectGateProvider(gate, event.provider, { meditationAllowed });
       if (selected !== gate && selected.selectedProvider === event.provider) {

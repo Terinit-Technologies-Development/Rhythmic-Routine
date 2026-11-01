@@ -378,6 +378,146 @@ describe('B2 PD-2 carry and owning-day debit (FR-12 / FR-16 / T06)', () => {
     );
   });
 
+  test('carried-gate provider selection uses the owning-day cap, not the current day', () => {
+    const now = new Date(2026, 10, 2, 12, 0, 0).getTime();
+    const currentDayId = resolveAttentionDay(now, []).id;
+    const config: RhythmConfiguration = { apps: [], riskGroups: [], routineWindows: [] };
+
+    let daily = createDailyAttentionExchangeState(getLocalDateKey(now), now, currentDayId);
+    daily = recordMeditationCompletion(
+      daily,
+      {
+        gateId: 'gate-b-used-1',
+        groupId: 'other-b1',
+        providerSessionId: 'm-b1',
+        attentionDayId: currentDayId,
+        completedAt: now,
+      },
+      now
+    );
+    daily = recordMeditationCompletion(
+      daily,
+      {
+        gateId: 'gate-b-used-2',
+        groupId: 'other-b2',
+        providerSessionId: 'm-b2',
+        attentionDayId: currentDayId,
+        completedAt: now + 1,
+      },
+      now + 1
+    );
+    assert.equal(resolveMeditationSubstitutionsUsed(daily, currentDayId), 2);
+
+    const carriedGate = createRestorativeGateForOrdinal({
+      groupId: 'social',
+      attentionDayId: ATTENTION_DAY,
+      dailyCooldownOrdinal: 4,
+      createdAt: now - 24 * 60 * 60 * 1000,
+      cooldownEndsAt: now - 1_000,
+      gateId: 'gate-carried-a',
+    })!;
+    const runtime: RhythmRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      activeRoutineWindowIds: [],
+      activeRestrictions: [],
+      dailyAttentionExchange: daily,
+      activeRestorativeGates: { social: carriedGate },
+      nativeAttentionAuthority: false,
+    };
+
+    const selected = processRhythmEvent(
+      runtime,
+      {
+        type: 'SELECT_RESTORATIVE_PROVIDER',
+        groupId: 'social',
+        provider: 'meditation',
+        providerSessionId: 'm-carried-a',
+        timestamp: now,
+      },
+      config
+    ).nextRuntime;
+
+    assert.equal(selected.activeRestorativeGates?.['social']?.selectedProvider, 'meditation');
+    assert.equal(selected.activeRestorativeGates?.['social']?.providerSessionId, 'm-carried-a');
+    assert.equal(selected.activeRestorativeGates?.['social']?.attentionDayId, ATTENTION_DAY);
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(selected.dailyAttentionExchange!, currentDayId),
+      2
+    );
+  });
+
+  test('carried-gate selection is still rejected when its OWNING day cap is exhausted', () => {
+    const now = new Date(2026, 10, 2, 12, 0, 0).getTime();
+    const currentDayId = resolveAttentionDay(now, []).id;
+    const config: RhythmConfiguration = { apps: [], riskGroups: [], routineWindows: [] };
+
+    let daily = createDailyAttentionExchangeState(getLocalDateKey(now), now, currentDayId);
+    daily = recordMeditationCompletion(
+      daily,
+      {
+        gateId: 'gate-a-used-1',
+        groupId: 'other-a1',
+        providerSessionId: 'm-a1',
+        attentionDayId: ATTENTION_DAY,
+        completedAt: now,
+      },
+      now
+    );
+    daily = recordMeditationCompletion(
+      daily,
+      {
+        gateId: 'gate-a-used-2',
+        groupId: 'other-a2',
+        providerSessionId: 'm-a2',
+        attentionDayId: ATTENTION_DAY,
+        completedAt: now + 1,
+      },
+      now + 1
+    );
+    assert.equal(resolveMeditationSubstitutionsUsed(daily, ATTENTION_DAY), 2);
+    assert.equal(resolveMeditationSubstitutionsUsed(daily, currentDayId), 0);
+
+    const carriedGate = createRestorativeGateForOrdinal({
+      groupId: 'social',
+      attentionDayId: ATTENTION_DAY,
+      dailyCooldownOrdinal: 4,
+      createdAt: now - 24 * 60 * 60 * 1000,
+      cooldownEndsAt: now - 1_000,
+      gateId: 'gate-carried-a-used',
+    })!;
+    const runtime: RhythmRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      activeRoutineWindowIds: [],
+      activeRestrictions: [],
+      dailyAttentionExchange: daily,
+      activeRestorativeGates: { social: carriedGate },
+      nativeAttentionAuthority: false,
+    };
+
+    const blocked = processRhythmEvent(
+      runtime,
+      {
+        type: 'SELECT_RESTORATIVE_PROVIDER',
+        groupId: 'social',
+        provider: 'meditation',
+        providerSessionId: 'm-should-not-bind',
+        timestamp: now,
+      },
+      config
+    ).nextRuntime;
+
+    assert.equal(blocked.activeRestorativeGates?.['social']?.selectedProvider, undefined);
+    assert.equal(blocked.activeRestorativeGates?.['social']?.providerSessionId, undefined);
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(blocked.dailyAttentionExchange!, ATTENTION_DAY),
+      2
+    );
+  });
+
   test('a wrong bound completion still holds the carried gate', () => {
     const now = new Date(2026, 10, 2, 12, 0, 0).getTime();
     const currentDayId = resolveAttentionDay(now, []).id;
