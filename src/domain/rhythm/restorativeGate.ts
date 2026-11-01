@@ -3,7 +3,7 @@ import { isReadingRequirementSatisfied, isTrustedEvidenceForDate } from './atten
 import type { RecoverySessionInfo } from './recovery';
 import {
   DEFAULT_MEDITATION_REQUIRED_SECONDS,
-  isVerifiedMeditationCompletion,
+  isVerifiedCooldownMeditationCompletion,
   type MeditationSessionEvidence,
 } from './meditationEvidence';
 
@@ -428,22 +428,30 @@ export function evaluateRestorativeGate(input: {
             substitutionConsumed: false,
           };
         }
-        const verified = isVerifiedMeditationCompletion({
+        const verified = isVerifiedCooldownMeditationCompletion({
           evidence: meditationEvidence,
           sessionId: gate.providerSessionId ?? '',
           requiredQualifiedSeconds:
             gate.requiredMeditationSeconds ?? RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds,
+          sourceCooldownId: gate.gateId,
         });
         if (!verified) {
-          // Meaningful progress (any credited qualified time) locks the provider.
+          // Meaningful progress (any credited qualified time) locks the provider,
+          // but ONLY for the exact bound session — stale/other-gate evidence
+          // must never lock (or advance) this gate.
+          const boundMeditation =
+            meditationEvidence &&
+            meditationEvidence.sessionId === (gate.providerSessionId ?? '')
+              ? meditationEvidence
+              : null;
           const hasProgress =
-            typeof meditationEvidence?.completedQualifiedSeconds === 'number' &&
-            meditationEvidence.completedQualifiedSeconds > 0;
+            typeof boundMeditation?.completedQualifiedSeconds === 'number' &&
+            boundMeditation.completedQualifiedSeconds > 0;
           return {
             gate: hasProgress ? lockGateProvider(selected) : selected,
             phase: gate.cooldownEndsAt > now
               ? 'separation-only'
-              : meditationEvidence
+              : boundMeditation
                 ? 'meditation-in-progress'
                 : 'meditation-unavailable',
             substitutionConsumed: false,

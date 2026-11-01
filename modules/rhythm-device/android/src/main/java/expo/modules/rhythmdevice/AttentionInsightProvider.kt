@@ -61,10 +61,12 @@ class AttentionInsightProvider : ContentProvider() {
         /**
          * Pure projection over the persisted enforcement snapshot.
          *
-         * A meditation substitution is consumed exactly once per satisfied
-         * meditation gate, so "used" is exactly the count of satisfied
-         * meditation restorative gates for the Attention Day. Morning/Evening/
-         * Standalone meditation never create gates and never consume the cap.
+         * Completion counts come from the durable per-Attention-Day ledger, not
+         * from whichever gates happen to remain current. The ledger is unioned
+         * with still-satisfied gates by gateId, so an upgraded install without a
+         * historical row still counts its existing completion exactly once.
+         * Morning/Evening/Standalone meditation never create gates and never
+         * enter the ledger.
          */
         fun deriveValues(
             snapshot: RestorativeEnforcementSnapshot,
@@ -74,8 +76,20 @@ class AttentionInsightProvider : ContentProvider() {
             val gates = snapshot.restorativeGates.values
                 .filter { it.attentionDayId == attentionDayId }
             val satisfied = gates.filter { it.satisfied }
-            val readerCompletions = satisfied.count { it.selectedProviderLabel() == "reader" }
-            val meditationCompletions = satisfied.count { it.selectedProviderLabel() == "meditation" }
+            val completionsByGate = LinkedHashMap<String, String>()
+            for (entry in snapshot.restorativeCompletions) {
+                if (entry.attentionDayId == attentionDayId) {
+                    completionsByGate[entry.gateId] = entry.provider
+                }
+            }
+            for (gate in satisfied) {
+                val provider = gate.selectedProviderLabel()
+                if (provider == "reader" || provider == "meditation") {
+                    completionsByGate[gate.gateId] = provider
+                }
+            }
+            val readerCompletions = completionsByGate.values.count { it == "reader" }
+            val meditationCompletions = completionsByGate.values.count { it == "meditation" }
             return mapOf(
                 COLUMN_PROTOCOL_VERSION to PROTOCOL_VERSION,
                 COLUMN_ATTENTION_DAY_ID to (attentionDayId ?: "unknown"),

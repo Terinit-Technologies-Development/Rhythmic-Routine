@@ -14,6 +14,7 @@ import {
 import {
   migrateDailyAttentionExchange,
   isValidLocalDateKey,
+  normalizeMeditationCompletions,
   type ActiveReadingGate,
   type DailyAttentionExchangeState,
 } from './attentionExchange';
@@ -401,6 +402,13 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
         meditationSubstitutionsUsed: finiteNonNegativeInteger(
           raw.dailyAttentionExchange.meditationSubstitutionsUsed
         ),
+        ...(raw.dailyAttentionExchange.meditationCompletions !== undefined
+          ? {
+              meditationCompletions: normalizeMeditationCompletions(
+                raw.dailyAttentionExchange.meditationCompletions
+              ),
+            }
+          : {}),
         ...(typeof raw.dailyAttentionExchange.attentionDayId === 'string'
           ? { attentionDayId: raw.dailyAttentionExchange.attentionDayId }
           : {}),

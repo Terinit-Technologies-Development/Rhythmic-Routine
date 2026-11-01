@@ -34,6 +34,10 @@ import {
   buildMorningMeditationRequest,
 } from '../platform/NativeMeditationBridge';
 import {
+  NativeRecoveryProviderClient,
+  type RecoveryProviderClient,
+} from '../domain/rhythm/recovery';
+import {
   isMorningEvidenceForRequirement,
   attentionDayStartedAtFromId,
   type MorningMeditationRequirement,
@@ -42,6 +46,7 @@ import type {
   MeditationEvidenceBridge,
   MeditationProviderAvailability,
   MeditationQueryStatus,
+  MeditationSessionEvidence,
 } from '../domain/rhythm/meditationEvidence';
 import { hasMeditationIdentityMetadata } from '../domain/rhythm/meditationEvidence';
 
@@ -324,13 +329,16 @@ export class RhythmCoordinator {
   };
   private readonly dailyReadingEvidenceClient: DailyReadingEvidenceClient;
   private readonly meditationBridge: MeditationEvidenceBridge;
+  private readonly recoveryProviderClient: RecoveryProviderClient;
 
   constructor(
     dailyReadingEvidenceClient: DailyReadingEvidenceClient = new NativeDailyReadingEvidenceClient(),
-    meditationBridge: MeditationEvidenceBridge = nativeMeditationBridge
+    meditationBridge: MeditationEvidenceBridge = nativeMeditationBridge,
+    recoveryProviderClient: RecoveryProviderClient = new NativeRecoveryProviderClient()
   ) {
     this.dailyReadingEvidenceClient = dailyReadingEvidenceClient;
     this.meditationBridge = meditationBridge;
+    this.recoveryProviderClient = recoveryProviderClient;
   }
 
   public static getInstance(): RhythmCoordinator {
@@ -396,6 +404,7 @@ export class RhythmCoordinator {
       finalSync: true,
     });
     await this.refreshMorningMeditationEvidenceLocked(now);
+    await this.refreshRestorativeProviderEvidenceLocked(now);
 
     this.isInitialized = true;
 
@@ -794,6 +803,7 @@ export class RhythmCoordinator {
     if (runtime.morningMeditation?.requirement?.satisfiedAt === undefined) {
       await this.refreshMorningMeditationEvidenceLocked(now);
     }
+    await this.refreshRestorativeProviderEvidenceLocked(now);
     if (options?.syncNative !== false) {
       await this.syncNativeState();
     }
@@ -893,6 +903,7 @@ export class RhythmCoordinator {
         finalSync: true,
       });
       await this.refreshMorningMeditationEvidenceLocked(now);
+      await this.refreshRestorativeProviderEvidenceLocked(now);
 
       this.notifyListeners();
     });
@@ -1116,6 +1127,87 @@ export class RhythmCoordinator {
       await refresh;
     } finally {
       if (this.morningRefreshPromise === refresh) this.morningRefreshPromise = undefined;
+    }
+  }
+
+  /**
+   * Central trusted consultation of the exact bound CD4+ provider session.
+   * Runs on cold start, resume, provider return and the bounded foreground
+   * cadence. Reader V1 and Meditation V1 evidence are queried by the exact
+   * persisted session id; a failed/missing/partial response leaves the gate
+   * unsatisfied (never fail-open).
+   */
+  public async refreshRestorativeProviderEvidence(now: number = Date.now()): Promise<void> {
+    await this.ensureReady();
+    return this.runExclusive(() => this.refreshRestorativeProviderEvidenceLocked(now));
+  }
+
+  private async refreshRestorativeProviderEvidenceLocked(now: number): Promise<void> {
+    const engine = this.engine;
+    if (!engine) return;
+    const gates = Object.values(engine.getRuntime().activeRestorativeGates ?? {});
+    let mutated = false;
+
+    for (const gate of gates) {
+      if (gate.requirementKind !== 'restorative-choice') continue;
+      if (gate.status === 'satisfied') continue;
+      if (!gate.providerSessionId || !gate.selectedProvider) continue;
+
+      const current = engine.getRuntime().activeRestorativeGates?.[gate.groupId];
+      if (
+        !current ||
+        current.gateId !== gate.gateId ||
+        current.providerSessionId !== gate.providerSessionId
+      ) {
+        continue;
+      }
+
+      if (gate.selectedProvider === 'reader') {
+        const evidence = await this.recoveryProviderClient.queryRecoveryStatus(
+          gate.providerSessionId
+        );
+        if (!evidence || evidence.sessionId !== gate.providerSessionId) continue;
+        const effects = engine.dispatch({
+          type: 'SYNC_READER_SESSION_EVIDENCE',
+          evidence,
+          timestamp: now,
+        });
+        await this.executeEffects(effects);
+        mutated = true;
+        continue;
+      }
+
+      let evidence: MeditationSessionEvidence | undefined;
+      if (this.meditationBridge.queryMeditationStatusResult) {
+        const result = await this.meditationBridge.queryMeditationStatusResult(
+          gate.providerSessionId
+        );
+        if (
+          result.availability === 'available' &&
+          result.evidence?.sessionId === gate.providerSessionId
+        ) {
+          evidence = result.evidence;
+        }
+      } else {
+        const raw = await this.meditationBridge.queryMeditationStatus(
+          gate.providerSessionId
+        );
+        if (raw?.sessionId === gate.providerSessionId) evidence = raw;
+      }
+      if (!evidence) continue;
+      const effects = engine.dispatch({
+        type: 'SYNC_MEDITATION_EVIDENCE',
+        evidence,
+        timestamp: now,
+      });
+      await this.executeEffects(effects);
+      mutated = true;
+    }
+
+    if (mutated) {
+      await getPlatformServices().storage.saveRuntime(engine.toPersistedRuntime(now));
+      await this.syncNativeState();
+      this.notifyListeners();
     }
   }
 
@@ -1426,6 +1518,7 @@ export class RhythmCoordinator {
       })
         .then(() => this.refreshDailyEvidence(now, false))
         .then(() => this.refreshMorningMeditationEvidence(now))
+        .then(() => this.refreshRestorativeProviderEvidence(now))
         .catch(() => {});
     }, ENGINE_RECONCILE_INTERVAL_MS);
 

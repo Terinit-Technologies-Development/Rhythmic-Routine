@@ -65,6 +65,14 @@ data class NativeMorningMeditationState(
     val expiresAtEpochMs: Long? = null,
 )
 
+data class NativeRestorativeCompletion(
+    val gateId: String,
+    val groupId: String,
+    val attentionDayId: String,
+    val provider: String,
+    val completedAt: Long,
+)
+
 data class RestorativeEnforcementSnapshot(
     val restorativeGates: Map<String, NativeRestorativeGateState>,
     val attentionDay: NativeAttentionDayState?,
@@ -77,6 +85,12 @@ data class RestorativeEnforcementSnapshot(
     /** Distinguishes an explicit accepted classification set from an absent projection. */
     val hasEssentialProjection: Boolean = false,
     val hasManagedProjection: Boolean = false,
+    /**
+     * Durable per-Attention-Day completion ledger. Append-only by gateId, so a
+     * completion is counted exactly once across re-imports, restarts and the
+     * later removal/staleness of its gate. Morning meditation never enters it.
+     */
+    val restorativeCompletions: List<NativeRestorativeCompletion> = emptyList(),
 ) {
     /** Morning Meditation Focus holds every nonessential, non-companion app. */
     val morningFocusActive: Boolean
@@ -311,6 +325,24 @@ object RestorativeEnforcement {
         val hasEssentialProjection = snapshot["essentialPackages"] is List<*>
         val hasManagedProjection = snapshot["managedPackages"] is List<*>
 
+        val completions = LinkedHashMap<String, NativeRestorativeCompletion>()
+        (snapshot["restorativeCompletions"] as? List<*>)?.forEach { entry ->
+            val map = entry as? Map<*, *> ?: return@forEach
+            val gateId = map["gateId"] as? String ?: return@forEach
+            val groupId = map["groupId"] as? String ?: return@forEach
+            val attentionDayId = map["attentionDayId"] as? String ?: return@forEach
+            val provider = (map["provider"] as? String)?.takeIf { it == "reader" || it == "meditation" }
+                ?: return@forEach
+            if (gateId.isBlank() || groupId.isBlank() || attentionDayId.isBlank()) return@forEach
+            completions[gateId] = NativeRestorativeCompletion(
+                gateId = gateId,
+                groupId = groupId,
+                attentionDayId = attentionDayId,
+                provider = provider,
+                completedAt = (map["completedAt"] as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L,
+            )
+        }
+
         return RestorativeEnforcementSnapshot(
             gates,
             attentionDay,
@@ -324,6 +356,7 @@ object RestorativeEnforcement {
             ),
             hasEssentialProjection,
             hasManagedProjection,
+            completions.values.toList(),
         )
     }
 
@@ -431,6 +464,21 @@ object RestorativeEnforcement {
         root.put("essentialPackages", JSONArray(snapshot.essentialPackages.toList()))
         root.put("managedPackages", JSONArray(snapshot.managedPackages.toList()))
         root.put("companionPackages", JSONArray(snapshot.companionPackages.toList()))
+        root.put(
+            "restorativeCompletions",
+            JSONArray().apply {
+                for (entry in snapshot.restorativeCompletions) {
+                    put(
+                        JSONObject()
+                            .put("gateId", entry.gateId)
+                            .put("groupId", entry.groupId)
+                            .put("attentionDayId", entry.attentionDayId)
+                            .put("provider", entry.provider)
+                            .put("completedAt", entry.completedAt)
+                    )
+                }
+            }
+        )
         return root
     }
 
@@ -534,6 +582,22 @@ object RestorativeEnforcement {
                 }
                 map["officialCompanionPackages"] = list
             }
+            root.optJSONArray("restorativeCompletions")?.let { array ->
+                val list = ArrayList<Map<String, Any?>>()
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    list.add(
+                        mapOf(
+                            "gateId" to obj.optString("gateId"),
+                            "groupId" to obj.optString("groupId"),
+                            "attentionDayId" to obj.optString("attentionDayId"),
+                            "provider" to obj.optString("provider"),
+                            "completedAt" to obj.optLong("completedAt", 0L),
+                        )
+                    )
+                }
+                map["restorativeCompletions"] = list
+            }
             parse(map, trustNativeCompletionMarker = true)
         } catch (_: Throwable) {
             parse(emptyMap())
@@ -581,6 +645,12 @@ object RestorativeEnforcement {
         val oldestPending = morning.filter { !it.satisfied && it.satisfiedAt == null }
             .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
             ?: morning.firstOrNull()
+        val completions = mergeRestorativeCompletions(
+            existing = existing.restorativeCompletions,
+            incoming = incoming.restorativeCompletions,
+            gates = existing.restorativeGates.values + incoming.restorativeGates.values,
+            now = System.currentTimeMillis(),
+        )
         if (!sameAttentionDay) {
             val carriedGates = LinkedHashMap<String, NativeRestorativeGateState>()
             existing.restorativeGates
@@ -599,6 +669,7 @@ object RestorativeEnforcement {
                 managedPackages = managed,
                 hasEssentialProjection = hasEssentialProjection,
                 hasManagedProjection = hasManagedProjection,
+                restorativeCompletions = completions,
             )
         }
 
@@ -627,7 +698,43 @@ object RestorativeEnforcement {
             managedPackages = managed,
             hasEssentialProjection = hasEssentialProjection,
             hasManagedProjection = hasManagedProjection,
+            restorativeCompletions = completions,
         )
+    }
+
+    /**
+     * Union by gateId. Existing ledger rows are never rewritten; a newly
+     * satisfied gate is appended once. A verified morning session is never a
+     * gate and therefore can never enter this ledger.
+     */
+    private fun mergeRestorativeCompletions(
+        existing: List<NativeRestorativeCompletion>,
+        incoming: List<NativeRestorativeCompletion>,
+        gates: Collection<NativeRestorativeGateState>,
+        now: Long,
+    ): List<NativeRestorativeCompletion> {
+        val byGate = LinkedHashMap<String, NativeRestorativeCompletion>()
+        for (entry in existing) byGate[entry.gateId] = entry
+        for (entry in incoming) {
+            if (entry.gateId.isNotBlank() && !byGate.containsKey(entry.gateId)) {
+                byGate[entry.gateId] = entry
+            }
+        }
+        for (gate in gates) {
+            if (!gate.satisfied) continue
+            val provider = gate.selectedProviderLabel()
+            if (provider != "reader" && provider != "meditation") continue
+            if (!byGate.containsKey(gate.gateId)) {
+                byGate[gate.gateId] = NativeRestorativeCompletion(
+                    gateId = gate.gateId,
+                    groupId = gate.groupId,
+                    attentionDayId = gate.attentionDayId,
+                    provider = provider,
+                    completedAt = now,
+                )
+            }
+        }
+        return byGate.values.toList()
     }
 
     private fun mergeMorningLists(

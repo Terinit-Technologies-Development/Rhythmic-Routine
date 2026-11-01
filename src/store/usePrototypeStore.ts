@@ -30,14 +30,14 @@ import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
 import { getPrimaryCooldown, RhythmRuntime, MorningMeditationRuntimeState } from '../domain/rhythm/types';
-import { deriveAttentionGateStatus, AttentionGateStatus, ActiveReadingGate, DailyAttentionExchangeState } from '../domain/rhythm/attentionExchange';
+import { deriveAttentionGateStatus, AttentionGateStatus, ActiveReadingGate, DailyAttentionExchangeState, resolveMeditationSubstitutionsUsed } from '../domain/rhythm/attentionExchange';
 import {
   deriveRestorativeStatus,
   type ActiveRestorativeGate,
   type RestorativeProvider,
   type RestorativeStatusView,
 } from '../domain/rhythm/restorativeGate';
-import { generateRecoverySessionId, NativeRecoveryProviderClient } from '../domain/rhythm/recovery';
+import { NativeRecoveryProviderClient } from '../domain/rhythm/recovery';
 import {
   buildCooldownMeditationRequest,
   nativeMeditationBridge,
@@ -253,7 +253,12 @@ function projectPrimaryRestorativeStatus(
     currentDateKey: getLocalDateKey(now),
     acceptedEvidenceDateKeys: [getLocalDateKey(now), getLocalDateKey(gateEntry.createdAt)],
     meditationSubstitutionsUsed:
-      runtime.dailyAttentionExchange?.meditationSubstitutionsUsed ?? 0,
+      runtime.dailyAttentionExchange
+        ? resolveMeditationSubstitutionsUsed(
+            runtime.dailyAttentionExchange,
+            attentionDayId
+          )
+        : 0,
     readerDailyEvidence: runtime.readingEvidence as never,
     readerSessionEvidence: runtime.readerSessionEvidence ?? null,
     meditationEvidence: runtime.meditationEvidence ?? null,
@@ -1398,13 +1403,20 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
   },
 
   selectRestorativeProvider: async (groupId, provider) => {
-    // The opaque provider session id is persisted on the gate BEFORE the
-    // provider launches (one provider session can satisfy exactly one gate).
+    // Stable per-gate/per-provider binding. Re-taps, retries and reselection of
+    // the same provider MUST reuse the persisted id; only a genuine provider
+    // switch (before meaningful progress) derives a different deterministic id.
+    const runtime = RhythmCoordinator.getInstance().getRuntimeSnapshot();
+    const gate = runtime?.activeRestorativeGates?.[groupId];
+    const providerSessionId =
+      gate?.selectedProvider === provider && gate.providerSessionId
+        ? gate.providerSessionId
+        : `${gate?.gateId ?? `gate-${groupId}`}-${provider}`;
     await RhythmCoordinator.getInstance().dispatch({
       type: 'SELECT_RESTORATIVE_PROVIDER',
       groupId,
       provider,
-      providerSessionId: generateRecoverySessionId(),
+      providerSessionId,
       timestamp: Date.now(),
     });
   },
@@ -1418,7 +1430,7 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       sourceCooldownId: gate.gateId,
       sourceRiskGroupId: gate.groupId,
       sourceRhythmicDayId: gate.attentionDayId,
-      createdAtEpochMs: Date.now(),
+      createdAtEpochMs: gate.createdAt ?? Date.now(),
       requiredQualifiedSeconds: gate.requiredMeditationSeconds ?? 1800,
     });
     return nativeMeditationBridge.startMeditationRecoverySession(request);
@@ -1432,13 +1444,14 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const gate = runtime?.activeRestorativeGates?.[groupId];
     if (!gate?.providerSessionId) return false;
     let started = false;
+    const createdAt = gate.createdAt ?? Date.now();
     try {
       started = await new NativeRecoveryProviderClient().startRecoverySession({
         sessionId: gate.providerSessionId,
         requiredSeconds: gate.requiredRestorativeReadingSeconds ?? 1800,
         requiredPages: gate.requiredRestorativeQualifiedPages ?? 11,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+        createdAt,
+        expiresAt: createdAt + 6 * 60 * 60 * 1000,
       });
     } catch {
       started = false;
@@ -1453,9 +1466,27 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const coordinator = RhythmCoordinator.getInstance();
     const runtime = coordinator.getRuntimeSnapshot();
     const gate = runtime?.activeRestorativeGates?.[groupId];
-    if (!gate?.providerSessionId) return;
-    const evidence = await nativeMeditationBridge.queryMeditationStatus(gate.providerSessionId);
-    if (evidence) {
+    if (!gate?.providerSessionId || gate.selectedProvider !== 'meditation') return;
+    if (nativeMeditationBridge.queryMeditationStatusResult) {
+      const result = await nativeMeditationBridge.queryMeditationStatusResult(
+        gate.providerSessionId
+      );
+      if (
+        result.availability === 'available' &&
+        result.evidence?.sessionId === gate.providerSessionId
+      ) {
+        await coordinator.dispatch({
+          type: 'SYNC_MEDITATION_EVIDENCE',
+          evidence: result.evidence,
+          timestamp: Date.now(),
+        });
+      }
+      return;
+    }
+    const evidence = await nativeMeditationBridge.queryMeditationStatus(
+      gate.providerSessionId
+    );
+    if (evidence?.sessionId === gate.providerSessionId) {
       await coordinator.dispatch({
         type: 'SYNC_MEDITATION_EVIDENCE',
         evidence,

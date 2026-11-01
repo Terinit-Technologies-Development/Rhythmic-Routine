@@ -146,6 +146,30 @@ export function isVerifiedMeditationCompletion(input: {
   );
 }
 
+/**
+ * The single trusted-completion rule for a cooldown restorative gate. On top
+ * of the base rule it requires additive identity metadata and binds the
+ * completion to the EXACT cooldown/gate that produced the request. A morning
+ * session can never satisfy a cooldown gate, and a stale completion from
+ * another gate can never leak across.
+ */
+export function isVerifiedCooldownMeditationCompletion(input: {
+  evidence?: MeditationSessionEvidence | null;
+  sessionId: string;
+  requiredQualifiedSeconds?: number;
+  sourceCooldownId: string;
+}): boolean {
+  const { evidence, sessionId, requiredQualifiedSeconds, sourceCooldownId } = input;
+  if (!isVerifiedMeditationCompletion({ evidence, sessionId, requiredQualifiedSeconds })) {
+    return false;
+  }
+  if (!evidence || !hasMeditationIdentityMetadata(evidence)) return false;
+  return (
+    evidence.sessionKind === 'COOLDOWN_RESTORATIVE' &&
+    evidence.sourceCooldownId === sourceCooldownId
+  );
+}
+
 /** Parses an untyped provider row; corrupt rows are reported, never trusted. */
 export function parseMeditationSessionEvidence(
   raw: Record<string, unknown> | null | undefined

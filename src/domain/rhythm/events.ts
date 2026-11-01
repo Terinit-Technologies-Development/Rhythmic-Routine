@@ -33,7 +33,8 @@ import {
   createDailyAttentionExchangeState,
   migrateDailyAttentionExchange,
   reconcileAttentionExchangeForAttentionDay,
-  consumeMeditationSubstitution,
+  recordMeditationCompletion,
+  resolveMeditationSubstitutionsUsed,
   reconcileReadingGate,
 } from './attentionExchange';
 import {
@@ -441,12 +442,22 @@ export function processRhythmEvent(
       const gate = nextRestorativeGates[event.groupId];
       if (!gate) break;
       const meditationAllowed = event.provider !== 'meditation' ||
-        isMeditationPathAllowed(nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0);
+        isMeditationPathAllowed(
+          resolveMeditationSubstitutionsUsed(nextDailyAttentionExchange, attentionDay.id)
+        );
       const selected = selectGateProvider(gate, event.provider, { meditationAllowed });
       if (selected !== gate && selected.selectedProvider === event.provider) {
+        // Stable per-gate/per-provider binding: a double-tap, retry or
+        // reselection of the SAME provider reuses the already-persisted
+        // session id. Only a genuine provider switch (before progress) takes
+        // the newly derived id.
+        const providerSessionId =
+          gate.selectedProvider === event.provider && gate.providerSessionId
+            ? gate.providerSessionId
+            : event.providerSessionId;
         nextRestorativeGates[event.groupId] = {
           ...selected,
-          providerSessionId: event.providerSessionId,
+          providerSessionId,
         };
       }
       break;
@@ -471,10 +482,10 @@ export function processRhythmEvent(
         !event.dailyAttentionExchange.attentionDayId ||
         event.dailyAttentionExchange.attentionDayId === attentionDay.id;
       if (event.dailyAttentionExchange.dateKey === currentDateKey && nativeAttentionDayMatches) {
-        const priorSubstitutionsUsed =
-          nextDailyAttentionExchange.attentionDayId === attentionDay.id
-            ? nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0
-            : 0;
+        const priorSubstitutionsUsed = resolveMeditationSubstitutionsUsed(
+          nextDailyAttentionExchange,
+          attentionDay.id
+        );
         const incomingSubstitutionsUsed =
           event.dailyAttentionExchange.meditationSubstitutionsUsed;
         nextDailyAttentionExchange = {
@@ -494,6 +505,9 @@ export function processRhythmEvent(
               ? incomingSubstitutionsUsed!
               : 0
           ),
+          // The durable completion ledger is JS-owned (native carries only the
+          // numeric projection); a native re-import must never erase it.
+          meditationCompletions: nextDailyAttentionExchange.meditationCompletions ?? [],
         };
       } else if (event.dailyAttentionExchange.dateKey !== currentDateKey) {
         nextDailyAttentionExchange = createDailyAttentionExchangeState(
@@ -875,7 +889,10 @@ export function processRhythmEvent(
       readerDailyEvidence: nextReadingEvidence,
       readerSessionEvidence: nextReaderSessionEvidence,
       meditationEvidence: nextMeditationEvidence,
-      meditationSubstitutionsUsed: nextDailyAttentionExchange.meditationSubstitutionsUsed ?? 0,
+      meditationSubstitutionsUsed: resolveMeditationSubstitutionsUsed(
+        nextDailyAttentionExchange,
+        attentionDay.id
+      ),
     });
     if (!evaluation.gate) {
       delete nextRestorativeGates[groupId];
@@ -883,8 +900,15 @@ export function processRhythmEvent(
     }
     nextRestorativeGates[groupId] = evaluation.gate;
     if (evaluation.substitutionConsumed) {
-      nextDailyAttentionExchange = consumeMeditationSubstitution(
+      nextDailyAttentionExchange = recordMeditationCompletion(
         nextDailyAttentionExchange,
+        {
+          gateId: evaluation.gate.gateId,
+          groupId,
+          providerSessionId: evaluation.gate.providerSessionId ?? '',
+          attentionDayId: evaluation.gate.attentionDayId,
+          completedAt: nowMs,
+        },
         nowMs
       );
     }
