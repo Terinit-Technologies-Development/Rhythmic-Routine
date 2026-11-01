@@ -188,7 +188,8 @@ export function reconcileAttentionExchangeDate(
       (!Number.isFinite(state.attentionDayNextBoundaryAt) ||
         state.attentionDayNextBoundaryAt! > now);
     if (!sameAttentionDay) {
-      return createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+      const next = createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+      return carryCompletionLedgerIntoNewDay(next, state);
     }
     // `dateKey` remains calendar-day scoped for Reader compatibility. Cooldown
     // ordinals and substitutions are Attention-Day scoped and must carry over
@@ -256,7 +257,28 @@ export function reconcileAttentionExchangeForAttentionDay(
         : {}),
     };
   }
-  return createDailyAttentionExchangeState(dateKey, now, attentionDayId);
+  const next = createDailyAttentionExchangeState(dateKey, now, attentionDayId);
+  return carryCompletionLedgerIntoNewDay(next, state);
+}
+
+/**
+ * New Attention Days reset the numeric counter but keep the additive owning-day
+ * completion history needed by PD-2 late completion/cap checks. Legacy states
+ * without a ledger keep their exact previous shape.
+ */
+function carryCompletionLedgerIntoNewDay(
+  next: DailyAttentionExchangeState,
+  previous: DailyAttentionExchangeState
+): DailyAttentionExchangeState {
+  if (previous.meditationCompletions === undefined) {
+    const { meditationCompletions: _ignored, ...rest } = next;
+    void _ignored;
+    return rest;
+  }
+  return {
+    ...next,
+    meditationCompletions: normalizeMeditationCompletions(previous.meditationCompletions),
+  };
 }
 
 /**
@@ -318,12 +340,23 @@ export function recordMeditationCompletion(
 ): DailyAttentionExchangeState {
   const completions = normalizeMeditationCompletions(state.meditationCompletions);
   if (completions.some((item) => item.gateId === entry.gateId)) return state;
-  const used = resolveMeditationSubstitutionsUsed(state, entry.attentionDayId);
-  if (used >= maxSubstitutions) return state;
+  const sameAsCurrentDay =
+    state.attentionDayId === undefined || state.attentionDayId === entry.attentionDayId;
+  const entryDayUsed = Math.max(
+    meditationCompletionsForAttentionDay(state, entry.attentionDayId).length,
+    sameAsCurrentDay ? nonNegativeInteger(state.meditationSubstitutionsUsed) : 0
+  );
+  if (entryDayUsed >= maxSubstitutions) return state;
+  const currentDayUsed = resolveMeditationSubstitutionsUsed(state, state.attentionDayId);
   return {
     ...state,
     meditationCompletions: [...completions, { ...entry }],
-    meditationSubstitutionsUsed: used + 1,
+    // A late completion is charged to its ORIGINAL Attention Day through the
+    // ledger. Only a completion in the current day advances the current-day
+    // numeric projection; an old-day completion must not debit the new day.
+    meditationSubstitutionsUsed: sameAsCurrentDay
+      ? currentDayUsed + 1
+      : currentDayUsed,
     updatedAt: now,
   };
 }

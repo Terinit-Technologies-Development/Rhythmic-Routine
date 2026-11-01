@@ -880,6 +880,13 @@ export function processRhythmEvent(
   // a verified Reader/Meditation completion; the completed gate and its
   // one-time Meditation substitution are projected back to native below.
   for (const [groupId, gate] of Object.entries(nextRestorativeGates)) {
+    // PD-2: the substitution cap belongs to the gate's OWNING Attention Day,
+    // not the day currently in progress. A carried gate therefore checks and
+    // charges its original day while the new day keeps its own counter.
+    const gateAttentionDayId =
+      gate.requirementKind === 'legacy-reading'
+        ? attentionDay.id
+        : gate.attentionDayId;
     const evaluation = evaluateRestorativeGate({
       gate,
       now: nowMs,
@@ -891,7 +898,7 @@ export function processRhythmEvent(
       meditationEvidence: nextMeditationEvidence,
       meditationSubstitutionsUsed: resolveMeditationSubstitutionsUsed(
         nextDailyAttentionExchange,
-        attentionDay.id
+        gateAttentionDayId
       ),
     });
     if (!evaluation.gate) {

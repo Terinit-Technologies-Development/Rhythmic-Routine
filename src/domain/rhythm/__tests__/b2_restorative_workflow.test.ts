@@ -3,14 +3,20 @@ import { describe, test } from 'node:test';
 import {
   createDailyAttentionExchangeState,
   meditationCompletionsForAttentionDay,
+  reconcileAttentionExchangeForAttentionDay,
   recordMeditationCompletion,
   resolveMeditationSubstitutionsUsed,
 } from '../attentionExchange';
 import {
   createRestorativeGateForOrdinal,
+  deriveRestorativeStatus,
   evaluateRestorativeGate,
 } from '../restorativeGate';
 import { isVerifiedCooldownMeditationCompletion } from '../meditationEvidence';
+import { processRhythmEvent } from '../events';
+import { resolveAttentionDay } from '../attentionDay';
+import { getLocalDateKey } from '../allowance';
+import type { RhythmConfiguration, RhythmRuntime } from '../types';
 import type { RecoverySessionInfo } from '../recovery';
 
 const ATTENTION_DAY = 'ad-2026-11-01';
@@ -234,5 +240,203 @@ describe('B2 bound provider evidence (FR-08 / FR-09 / FR-10)', () => {
       meditationSubstitutionsUsed: 1,
     });
     assert.equal(alreadyRecorded.substitutionConsumed, false);
+  });
+});
+
+describe('B2 PD-2 carry and owning-day debit (FR-12 / FR-16 / T06)', () => {
+  test('advancing the Attention Day keeps history and starts a new day counter', () => {
+    const nextDayId = 'ad-20261102-0730';
+    let state = createDailyAttentionExchangeState('2026-11-01', 1_000, ATTENTION_DAY);
+    state = recordMeditationCompletion(
+      state,
+      {
+        gateId: 'gate-old-day',
+        groupId: 'social',
+        providerSessionId: 'm-old',
+        attentionDayId: ATTENTION_DAY,
+        completedAt: 1_000,
+      },
+      1_000
+    );
+    state = { ...state, meditationSubstitutionsUsed: 1 };
+
+    const advanced = reconcileAttentionExchangeForAttentionDay(state, nextDayId, 2_000);
+    assert.equal(resolveMeditationSubstitutionsUsed(advanced, ATTENTION_DAY), 1);
+    assert.equal(resolveMeditationSubstitutionsUsed(advanced, nextDayId), 0);
+    assert.equal(advanced.meditationSubstitutionsUsed, 0);
+  });
+
+  test('an unfinished restorative gate survives the Attention-Day boundary', () => {
+    const currentDayId = 'ad-20261102-0730';
+    const gate = {
+      ...readerGate(),
+      status: 'in-progress' as const,
+      attentionDayId: ATTENTION_DAY,
+    };
+    const evaluation = evaluateRestorativeGate({
+      gate,
+      now: 3_000,
+      attentionDayId: currentDayId,
+      currentDateKey: '2026-11-02',
+      acceptedEvidenceDateKeys: ['2026-11-02', '2026-11-01'],
+      meditationSubstitutionsUsed: 0,
+    });
+    assert.ok(evaluation.gate);
+    assert.equal(evaluation.gate?.gateId, gate.gateId);
+    assert.equal(evaluation.gate?.attentionDayId, ATTENTION_DAY);
+    assert.equal(evaluation.gate?.cooldownEndsAt, 2_000);
+
+    const view = deriveRestorativeStatus({
+      groupId: 'social',
+      gate,
+      cooldownEndsAt: 2_000,
+      now: 3_000,
+      attentionDayId: currentDayId,
+      currentDateKey: '2026-11-02',
+      acceptedEvidenceDateKeys: ['2026-11-02', '2026-11-01'],
+      meditationSubstitutionsUsed: 0,
+    });
+    assert.equal(view.gateId, gate.gateId);
+    assert.notEqual(view.phase, 'complete');
+  });
+
+  test('late Meditation completion is charged once to the original day; current day is unchanged', () => {
+    const now = new Date(2026, 10, 2, 12, 0, 0).getTime();
+    const currentDayId = resolveAttentionDay(now, []).id;
+    const config: RhythmConfiguration = { apps: [], riskGroups: [], routineWindows: [] };
+    const daily = {
+      ...createDailyAttentionExchangeState(getLocalDateKey(now), now, currentDayId),
+      // The new day already consumed one substitution independently.
+      meditationSubstitutionsUsed: 1,
+    };
+    const gate = {
+      ...(createRestorativeGateForOrdinal({
+        groupId: 'social',
+        attentionDayId: ATTENTION_DAY,
+        dailyCooldownOrdinal: 4,
+        createdAt: now - 24 * 60 * 60 * 1000,
+        cooldownEndsAt: now - 1_000,
+        gateId: 'gate-late-meditation',
+      })!),
+      selectedProvider: 'meditation' as const,
+      providerSessionId: 'm-late',
+      status: 'in-progress' as const,
+    };
+    const runtime: RhythmRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      activeRoutineWindowIds: [],
+      activeRestrictions: [],
+      dailyAttentionExchange: daily,
+      activeRestorativeGates: { social: gate },
+      nativeAttentionAuthority: false,
+    };
+    const evidence = {
+      sessionId: 'm-late',
+      protocolVersion: 1,
+      status: 'COMPLETED' as const,
+      requiredQualifiedSeconds: 1800,
+      completedQualifiedSeconds: 1800,
+      completedAtEpochMs: now,
+      lastUpdatedAtEpochMs: now,
+      sessionKind: 'COOLDOWN_RESTORATIVE',
+      sourceCooldownId: gate.gateId,
+      sourceRhythmicDayId: ATTENTION_DAY,
+    };
+
+    const first = processRhythmEvent(
+      runtime,
+      { type: 'SYNC_MEDITATION_EVIDENCE', evidence, timestamp: now },
+      config
+    ).nextRuntime;
+    assert.equal(first.activeRestorativeGates?.['social']?.status, 'satisfied');
+    assert.equal(first.activeRestorativeGates?.['social']?.attentionDayId, ATTENTION_DAY);
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(first.dailyAttentionExchange!, ATTENTION_DAY),
+      1
+    );
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(first.dailyAttentionExchange!, currentDayId),
+      1
+    );
+    assert.equal(first.dailyAttentionExchange?.meditationSubstitutionsUsed, 1);
+
+    // Repeats/imports/restart projection never double-debit either day.
+    const repeated = processRhythmEvent(
+      first,
+      { type: 'SYNC_MEDITATION_EVIDENCE', evidence, timestamp: now + 1_000 },
+      config
+    ).nextRuntime;
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(repeated.dailyAttentionExchange!, ATTENTION_DAY),
+      1
+    );
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(repeated.dailyAttentionExchange!, currentDayId),
+      1
+    );
+  });
+
+  test('a wrong bound completion still holds the carried gate', () => {
+    const now = new Date(2026, 10, 2, 12, 0, 0).getTime();
+    const currentDayId = resolveAttentionDay(now, []).id;
+    const config: RhythmConfiguration = { apps: [], riskGroups: [], routineWindows: [] };
+    const gate = {
+      ...(createRestorativeGateForOrdinal({
+        groupId: 'social',
+        attentionDayId: ATTENTION_DAY,
+        dailyCooldownOrdinal: 4,
+        createdAt: now - 24 * 60 * 60 * 1000,
+        cooldownEndsAt: now - 1_000,
+        gateId: 'gate-wrong-bound',
+      })!),
+      selectedProvider: 'meditation' as const,
+      providerSessionId: 'm-wrong',
+      status: 'in-progress' as const,
+    };
+    const runtime: RhythmRuntime = {
+      state: 'available',
+      activeCooldowns: {},
+      activeAccessLeases: {},
+      activeRoutineWindowIds: [],
+      activeRestrictions: [],
+      dailyAttentionExchange: {
+        ...createDailyAttentionExchangeState(getLocalDateKey(now), now, currentDayId),
+        meditationSubstitutionsUsed: 1,
+      },
+      activeRestorativeGates: { social: gate },
+      nativeAttentionAuthority: false,
+    };
+    const wrong = processRhythmEvent(
+      runtime,
+      {
+        type: 'SYNC_MEDITATION_EVIDENCE',
+        evidence: {
+          sessionId: 'm-wrong',
+          protocolVersion: 1,
+          status: 'COMPLETED',
+          requiredQualifiedSeconds: 1800,
+          completedQualifiedSeconds: 1800,
+          completedAtEpochMs: now,
+          lastUpdatedAtEpochMs: now,
+          sessionKind: 'COOLDOWN_RESTORATIVE',
+          sourceCooldownId: 'some-other-gate',
+          sourceRhythmicDayId: ATTENTION_DAY,
+        },
+        timestamp: now,
+      },
+      config
+    ).nextRuntime;
+
+    assert.notEqual(wrong.activeRestorativeGates?.['social']?.status, 'satisfied');
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(wrong.dailyAttentionExchange!, currentDayId),
+      1
+    );
+    assert.equal(
+      resolveMeditationSubstitutionsUsed(wrong.dailyAttentionExchange!, ATTENTION_DAY),
+      0
+    );
   });
 });

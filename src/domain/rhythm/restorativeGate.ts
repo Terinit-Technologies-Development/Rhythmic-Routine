@@ -339,10 +339,12 @@ export function evaluateRestorativeGate(input: {
   } = input;
 
   // Staleness: legacy gates keep their v1.2 local-date scoping ("natural
-  // completion/expiry"); new gates are scoped to their Attention Day.
+  // completion/expiry"). New gates retain an UNFINISHED obligation across the
+  // Attention-Day boundary (PD-2/FR-12/T06); only an already-satisfied gate is
+  // dropped when its owning day is no longer current.
   const stale = gate.requirementKind === 'legacy-reading'
     ? gate.attentionDateKey !== currentDateKey
-    : gate.attentionDayId !== attentionDayId;
+    : gate.status === 'satisfied' && gate.attentionDayId !== attentionDayId;
   if (stale) {
     return { gate: undefined, phase: 'none', substitutionConsumed: false };
   }
@@ -573,10 +575,13 @@ export function deriveRestorativeStatus(input: {
     ...(gate?.selectedProvider ? { selectedProvider: gate.selectedProvider } : {}),
   };
 
+  // PD-2: an unfinished gate from an earlier Attention Day is still displayed
+  // and enforced with its original identity/timer. Only a completed gate whose
+  // owning day has passed is stale for display purposes.
   const gateStale = gate
     ? gate.requirementKind === 'legacy-reading'
       ? gate.attentionDateKey !== input.currentDateKey
-      : gate.attentionDayId !== input.attentionDayId
+      : gate.status === 'satisfied' && gate.attentionDayId !== input.attentionDayId
     : true;
   if (!gate || gateStale) {
     return { ...base, phase: cooldownActive ? 'separation-only' : 'complete' };

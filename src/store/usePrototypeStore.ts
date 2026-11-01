@@ -256,7 +256,8 @@ function projectPrimaryRestorativeStatus(
       runtime.dailyAttentionExchange
         ? resolveMeditationSubstitutionsUsed(
             runtime.dailyAttentionExchange,
-            attentionDayId
+            // PD-2: a carried gate is capped/charged on its owning day.
+            gateEntry.attentionDayId
           )
         : 0,
     readerDailyEvidence: runtime.readingEvidence as never,
