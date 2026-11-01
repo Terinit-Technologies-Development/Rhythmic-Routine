@@ -51,7 +51,7 @@ class MeditationEvidenceWireTest {
         MeditationStatusProviderClient.parseSessionRow(
             "morning-ad-20260928-0830",
             columns,
-            values,
+            values.filterKeys { it in columns },
         )
 
     private fun assertNoIdentity(wire: Map<String, Any?>) {
@@ -98,7 +98,13 @@ class MeditationEvidenceWireTest {
             MeditationContract.COLUMN_SOURCE_RHYTHMIC_DAY_ID
         val result = parse(missingCooldownColumn, row(sourceCooldownId = "should-not-count"))
         assertFalse(result.identityMetadataAvailable)
-        assertNoIdentity(MeditationEvidenceWire.toWireMap(result.evidence!!, result.identityMetadataAvailable))
+        val evidence = result.evidence!!
+        assertNull(evidence.sourceCooldownId)
+        val requirement = MorningEnforcement.requirement("ad-20260928-0830", 100L)
+        // Legacy raw evidence would look complete; the result-aware seam must reject.
+        assertTrue(MorningEnforcement.isVerifiedCompletion(requirement, evidence))
+        assertFalse(MorningEnforcement.isVerifiedCompletion(requirement, result))
+        assertNoIdentity(MeditationEvidenceWire.toWireMap(evidence, result.identityMetadataAvailable))
 
         val missingKindAndDay = baseColumns + MeditationContract.COLUMN_SOURCE_COOLDOWN_ID
         val second = parse(missingKindAndDay)
@@ -135,6 +141,113 @@ class MeditationEvidenceWireTest {
             NativeMeditationAvailability.SESSION_MISSING,
             null,
         )
+    }
+
+    @Test
+    fun `service qualification seam requires full identity availability`() {
+        val day = "ad-20260928-0830"
+        val requirement = MorningEnforcement.requirement(day, 100L)
+        val attentionDay = NativeAttentionDayState(day, 200L, 100L)
+        val schedule = NativeRoutineSchedule(emptyList(), emptySet())
+        val migration = MorningEnforcement.migrationFor("fresh", day, 100L)
+
+        fun qualified(result: NativeMeditationSessionResult) =
+            MorningEnforcement.reconcileRequirementsWithResults(
+                existing = listOf(requirement),
+                attentionDay = attentionDay,
+                schedule = schedule,
+                migration = migration,
+                now = 300L,
+                evidenceBySession = mapOf(requirement.sessionId to result),
+            ).single().satisfiedAt != null
+
+        val full = parse(baseColumns + identityColumns)
+        assertTrue(qualified(full))
+
+        val partialMissingCooldown = parse(
+            baseColumns + MeditationContract.COLUMN_SESSION_KIND +
+                MeditationContract.COLUMN_SOURCE_RHYTHMIC_DAY_ID,
+            row(sourceCooldownId = "must-not-count"),
+        )
+        assertFalse(qualified(partialMissingCooldown))
+
+        val legacy = parse(baseColumns)
+        assertFalse(qualified(legacy))
+
+        val wrongIdentity = parse(
+            baseColumns + identityColumns,
+            row(sourceDay = "ad-20260927-0830"),
+        )
+        assertFalse(qualified(wrongIdentity))
+
+        assertFalse(qualified(parse(
+            baseColumns + identityColumns,
+            row(sessionId = "other-session"),
+        )))
+        assertFalse(qualified(parse(
+            baseColumns + identityColumns,
+            row(sessionKind = "COOLDOWN_RESTORATIVE"),
+        )))
+        assertFalse(qualified(parse(
+            baseColumns + identityColumns,
+            row(sourceCooldownId = "cd-1"),
+        )))
+
+        val fullEvidence = parse(baseColumns + identityColumns).evidence!!
+        assertFalse(
+            qualified(
+                NativeMeditationSessionResult(
+                    NativeMeditationAvailability.PERMISSION_DENIED,
+                    fullEvidence,
+                    identityMetadataAvailable = true,
+                )
+            )
+        )
+        assertFalse(
+            qualified(
+                NativeMeditationSessionResult(
+                    NativeMeditationAvailability.QUERY_FAILED,
+                    null,
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `detailed production mapper preserves outcome and availability`() {
+        val full = parse(baseColumns + identityColumns)
+        val wire = MeditationDetailedResultWire.toWireMap(full)
+        assertEquals("available", wire["queryStatus"])
+        assertEquals("available", wire["availability"])
+        assertEquals(true, wire["identityMetadataAvailable"])
+        val evidence = (wire["evidence"] as Map<*, *>)
+        assertTrue(evidence.containsKey(MeditationContract.COLUMN_SOURCE_COOLDOWN_ID))
+        assertNull(evidence[MeditationContract.COLUMN_SOURCE_COOLDOWN_ID])
+
+        val expected = mapOf(
+            NativeMeditationAvailability.SESSION_MISSING to "session-missing",
+            NativeMeditationAvailability.CORRUPT to "corrupt",
+            NativeMeditationAvailability.PROTOCOL_INCOMPATIBLE to "protocol-incompatible",
+            NativeMeditationAvailability.PERMISSION_DENIED to "permission-denied",
+            NativeMeditationAvailability.UNTRUSTED_SIGNATURE to "untrusted-signature",
+            NativeMeditationAvailability.NOT_INSTALLED to "not-installed",
+            NativeMeditationAvailability.UNAVAILABLE to "unavailable",
+            NativeMeditationAvailability.QUERY_FAILED to "query-failed",
+        )
+        for ((availability, status) in expected) {
+            val result = MeditationDetailedResultWire.toWireMap(
+                NativeMeditationSessionResult(availability, null, identityMetadataAvailable = false)
+            )
+            assertEquals(status, result["queryStatus"])
+            assertNull(result["evidence"])
+        }
+
+        val forced = full.copy(identityMetadataAvailable = false)
+        val forcedWire = MeditationDetailedResultWire.toWireMap(forced)
+        val forcedEvidence = forcedWire["evidence"] as Map<*, *>
+        assertFalse(forcedEvidence.containsKey(MeditationContract.COLUMN_SESSION_KIND))
+        assertFalse(forcedEvidence.containsKey(MeditationContract.COLUMN_SOURCE_COOLDOWN_ID))
+        assertEquals("unavailable", MeditationDetailedResultWire.unavailable()["queryStatus"])
     }
 
     @Test

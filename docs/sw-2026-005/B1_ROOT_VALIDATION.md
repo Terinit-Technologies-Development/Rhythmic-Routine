@@ -1,4 +1,4 @@
-# B1 morning enforcement — root validation
+# B1 morning enforcement â€” root validation
 
 Candidate builds on accepted boundary contract 30747783b66e8969ae4aadfafa6e60281f9239ed. Morning enforcement now creates deterministic persisted requirements, carries actual unfinished bindings, verifies exact native Meditation identity, and enforces the hold in native and JS decisions with Essential/companion access and lease refusal.
 
@@ -18,9 +18,9 @@ Native invocation used official Gradle 9.3.1, Android Studio JBR, the generated 
 
 Detailed command logs and fresh XML counts are retained in the orchestration workspace as `outputs/rhythmic-sw2026-005/b1-r7-{native-tests,native-counts,test,typecheck,lint,js-checks}` with the respective `.txt`/`.json` extensions. The earlier R3 full raw log was accidentally overwritten and is explicitly documented as unavailable; its retained terminal compiler excerpt is not a full raw log.
 
-These are local source/JVM checks. Storage concurrency regressions exercise fake-store and pure production seams, not physical SharedPreferences disk failures, Binder timing, process death or reboot. No APK installation, physical T01–25, final signing, C2, device readiness or release acceptance is claimed. B2 remains a separate serial lane. Independent pinned-source review is required after this candidate commit.
+These are local source/JVM checks. Storage concurrency regressions exercise fake-store and pure production seams, not physical SharedPreferences disk failures, Binder timing, process death or reboot. No APK installation, physical T01â€“25, final signing, C2, device readiness or release acceptance is claimed. B2 remains a separate serial lane. Independent pinned-source review is required after this candidate commit.
 
-## Classification publication follow-up — SW-2026-005 FR-07/17, POL-08/09, T07/T24
+## Classification publication follow-up â€” SW-2026-005 FR-07/17, POL-08/09, T07/T24
 
 Root found that indefinitely unioning historical Essential membership could retain an exemption after deliberate reclassification. Explicit classification projections are now distinguished from missing fields. Native gate/morning persistence preserves the latest accepted classification, while authoritative JS projections can apply forward and reverse reclassification. A promise queue serializes overlapping native sync publications and remains usable after a rejected publication. This repairs projection ownership; it does not change which classifications the owner may select.
 
@@ -38,16 +38,16 @@ Detailed evidence uses the same orchestration output directory with `b1-r9-` pre
 The earlier Gemini review independently executed 112 fresh tests on intermediate f14ff5969201bcfafdf60c9874e8bbf82af89283, but timed out before an authoritative verdict and remains UNKNOWN. That intermediate review is not acceptance of this follow-up. A separately installed Codex build has now passed an actual GPT-6.1 Terra high-effort readiness turn; a distinct independent review of the new checked commit is required.
 
 
-## 31 October 2026 — R10–R13 exhaustion persistence and exact recovery
+## 31 October 2026 â€” R10â€“R13 exhaustion persistence and exact recovery
 
-Root corrected source after independent Terra F1 and subsequent root inspection: exhaustion allocation and its CD4 restorative gate share the canonical atomic persistence bundle; failed recovery keeps the unresolved cooldown witness at expiry; recovery uses persisted immutable Attention Day and exact group/kind/ordinal/creation/gate identity, never the current schedule. New optional cooldown attentionDayId metadata survives native/JS serialization and import. Legacy identity that cannot be established remains unresolved. Existing Emergency Access behavior is preserved under the owner’s explicit 31 October exception, with mandatory morning focus unchanged.
+Root corrected source after independent Terra F1 and subsequent root inspection: exhaustion allocation and its CD4 restorative gate share the canonical atomic persistence bundle; failed recovery keeps the unresolved cooldown witness at expiry; recovery uses persisted immutable Attention Day and exact group/kind/ordinal/creation/gate identity, never the current schedule. New optional cooldown attentionDayId metadata survives native/JS serialization and import. Legacy identity that cannot be established remains unresolved. Existing Emergency Access behavior is preserved under the ownerâ€™s explicit 31 October exception, with mandatory morning focus unchanged.
 
 Actual root checks: 118 native tests across 13 JUnit suites, zero failures/errors/skips; 463 JavaScript tests across 90 suites, zero failures/cancellations/skips (86.386 seconds); typecheck and lint exit 0. Native Gradle task succeeded in 2m03s. Evidence: outputs/rhythmic-sw2026-005/b1-r13-native-tests.txt, b1-r13-native-counts.json, b1-r13-test.txt, b1-r13-typecheck.txt, b1-r13-lint.txt and b1-r13-js-checks.json in the orchestration workspace.
 
 This is tested corrective source, not independent acceptance, installed-service proof or physical acceptance. Formal reviews at the earlier b174 snapshot remain BLOCKED. Independent inspection of the new diff is still required. Confirmed open programme findings include failed lease-write acknowledgements (F3), null morning source omission at the native/JS evidence boundary (F4), failed first-morning creation leaving no hold (F5), stale asynchronous timestamps regressing JS state (F6), misleading morning-only cooldown UI (F7), and Insights substitution projection limitations needing B2 ledger verification (F8). These findings must not be hidden by the passing suites.
 
 
-## 1 November 2026 — R14–R16 first-morning persistence failure
+## 1 November 2026 â€” R14â€“R16 first-morning persistence failure
 
 When first eligible morning creation cannot commit, the native service retains the exact current-day binding as a process-local fail-closed intent. The effective-restriction predicate, bridge snapshot and diagnostics use the production effective projection. Persisted historical pending obligations remain carried; an exact persisted completion or durable retry supersedes its transient copy. Wrong identity, creation time, kind or source cannot clear a transient failure. Startup reconciles morning requirements before usage admission. Essential/companion reachability and the approved Emergency Access exception remain unchanged; Emergency Access never bypasses morning focus.
 
@@ -56,7 +56,7 @@ Actual root checks after the original OpenCode session completed and was paused:
 Direct tests exercise production projection/identity helpers, first-creation intent, retry, exact completion, wrong binding, previous-day transient exclusion and persisted pending carry. They do not execute an installed accessibility service or prove physical disk-failure recovery. Process death before a successful durable commit loses the transient copy; startup must rederive the eligible identity. These are tested corrections, not independent B1 acceptance or C2/device readiness. Independent review of this new diff remains required. F3/F4/F6/F7 and B2 substitution-ledger work remain open.
 
 
-## 1 November 2026 — R17–R18 explicit-null morning evidence wire identity
+## 1 November 2026 â€” R17â€“R18 explicit-null morning evidence wire identity
 
 The production native evidence converter now preserves the intentional null cooldown source for morning sessions. Its mandatory identity-presence argument comes directly from the native parser; legacy or partial columns and explicit fallback metadata-unavailable results cannot gain fabricated identity. The frozen seven-column protocol remains compatible. Direct parser-to-converter regressions cover complete/partial/legacy/fallback cases, and Kotlin conversion and JavaScript parsing consume one shared wire fixture. Coordinator diagnostics require identity metadata before claiming provider-verified satisfaction.
 
@@ -65,7 +65,7 @@ Actual root checks: 128 native tests across 14 suites, zero failures/errors/skip
 The first R18 native attempt failed before tests because a generated Expo plugin JAR lacked its implementation class. That failure is preserved separately. Root rebuilt only generated plugin outputs, verified the implementation class was restored, then ran all tests freshly; no product or dependency source repair was needed. Actual Expo null serialization and installed cross-app IPC remain device-gate work. These checks are not independent B1 acceptance. F3 lease-write acknowledgements, F6 delayed-response state regression, F7 UI and B2 work remain open.
 
 
-## 1 November 2026 — R19–R23 lease acknowledgement and failure-state recovery
+## 1 November 2026 â€” R19â€“R23 lease acknowledgement and failure-state recovery
 
 Native lease start/end now return actual accepted-persistence results, with scheduler side effects after successful commit inside the canonical snapshot lock. A shared production seam has JVM failure/success/idempotency tests. The JavaScript provider preserves false, thrown and unavailable outcomes; coordinator lease acknowledgements precede explicit start/end and group-deletion reducer mutations. State operations use one serialized queue. Remaining lease effects execute before history/restriction effects; rejected transitions restore their prior runtime while retaining tracked native effects that actually committed. This is not a claim of cross-system atomicity for arbitrary storage failures.
 
@@ -78,10 +78,21 @@ Android: 133 tests across 15 suites, zero failures/errors/skips, fresh Gradle ru
 Independent review of the new diff is still required. Real installed-service disk faults, rendered UI, multi-effect partial native persistence and cross-app physical acceptance are not proved by these seams. The existing configuration-preference ordering remains visible in the source; no broad distributed-transaction guarantee is claimed. F6 delayed evidence ordering, F7 morning-only UI, B2/B3 and the C gates remain open. The owner's approved Emergency Access exception under existing Accountability remains, with compulsory morning focus and Essential safety unchanged.
 
 
-## 1 November 2026 — R24–R25 delayed morning evidence
+## 1 November 2026 â€” R24â€“R25 delayed morning evidence
 
 Morning observations now revalidate the current immutable requirement and full provider identity after awaiting the query, and apply valid evidence at receipt time. Missing cooldown-source metadata cannot masquerade as explicit null. Diagnostics pair the displayed requirement with its own satisfaction state. Deferred production-coordinator regressions cover rejected wrong binding, serialized queued work, old carried completion and a still-pending current obligation without cap debit.
 
 Root corrected two test-fixture assumptions while the original engineer was paused: model an already-enforcing historical migration, and compare the final diagnostic against canonical display ordering after all obligations complete. Earlier failed/cancelled attempts are preserved. Final focused run: 6 tests pass, zero failures/cancellations/skips. Final full run: 477 tests pass, zero failures/cancellations/skips (63.613 seconds); typecheck and lint exit 0. Evidence: b1-r25c-{focused,test,typecheck,lint}.txt and b1-r25c-js-checks.json. All 38 recorded native input hashes remain identical; 133 native tests are reused on that explicit scope, not claimed as a fresh Android run.
 
 Independent review remains pending. No installed-device or Binder acceptance is claimed. A separate native path currently drops identity-metadata availability before morning qualification; it remains open for the next corrective pass along with detailed query diagnostics, morning-only UI and later programme gates.
+
+
+## 1 November 2026 — R26–R27 query outcomes and native identity qualification
+
+The additive detailed query API preserves query-time failure classification, identity-column availability and explicit-null morning source. Existing provider V1 and legacy query API remain supported; ambiguous legacy null is not declared a positively missing session. A shared native detailed mapper is exercised directly and used by the Expo module. Native morning reconciliation retains the complete query result outside the persistence lock, then requires available outcome and complete metadata before exact-binding qualification inside the accepted-snapshot operation. The older trusted raw-evidence adapter has no remaining service caller.
+
+A real parser regression filters values to actual returned columns: a partial nine-column row has null source and appears complete to the old raw predicate, while the result-aware path rejects it. Valid ten-column explicit-null completion succeeds. Legacy seven columns, wrong identity/day/kind/source and failed result with evidence cannot satisfy. JavaScript bridge and coordinator reject failed outcomes even if contradictory completion evidence is attached; malformed modern success is corrupt.
+
+Root checked actual production seams after the original engineer completed and paused. Fresh Android: 135 tests, 15 suites, zero failures/errors/skips, build success in 1m20s; b1-r27-native-tests.txt and b1-r27-native-counts.json (39 native input hashes). Focused JavaScript: nine pass, zero failures/cancellations/skips, b1-r27b-focused.txt. Full JavaScript: 485 pass, 94 suites, zero failures/cancellations/skips, 64.076 seconds, b1-r27b-test.txt. Final typecheck and lint both exit0/no warnings, b1-r27c-{typecheck,lint}.txt.
+
+Root interventions while paused: optional-method assertion in tests; additional contradictory-error regression proved the adapter still exposed evidence; root added strict positive-result validation and malformed-success regressions. An unreachable comparison left after narrowing was removed after the full test run, with final type/lint checks; it always evaluated false and changes no emitted result. Earlier failed checks, including that type error and the genuine error-evidence regression, remain saved. No test result was substituted for installed Binder, signature or device acceptance. Independent review remains pending; F7 morning-only UI and later B2/B3/C gates remain open.

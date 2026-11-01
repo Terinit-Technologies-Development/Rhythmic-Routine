@@ -13,6 +13,7 @@ enum class NativeMeditationAvailability {
     SESSION_MISSING,
     CORRUPT,
     AVAILABLE,
+    QUERY_FAILED,
     UNAVAILABLE,
 }
 
@@ -116,7 +117,7 @@ object MeditationStatusProviderClient {
         } catch (_: SecurityException) {
             NativeMeditationSessionResult(NativeMeditationAvailability.PERMISSION_DENIED, null)
         } catch (_: Exception) {
-            NativeMeditationSessionResult(NativeMeditationAvailability.UNAVAILABLE, null)
+            NativeMeditationSessionResult(NativeMeditationAvailability.QUERY_FAILED, null)
         }
     }
 
@@ -189,6 +190,20 @@ object MeditationStatusProviderClient {
         NativeMeditationAvailability.PROTOCOL_INCOMPATIBLE -> "protocol-incompatible"
         NativeMeditationAvailability.SESSION_MISSING,
         NativeMeditationAvailability.CORRUPT,
+        NativeMeditationAvailability.QUERY_FAILED,
+        NativeMeditationAvailability.UNAVAILABLE -> "unavailable"
+    }
+
+    /** Additive detailed query status; distinguishes failures from absence. */
+    internal fun queryStatusString(availability: NativeMeditationAvailability): String = when (availability) {
+        NativeMeditationAvailability.AVAILABLE -> "available"
+        NativeMeditationAvailability.NOT_INSTALLED -> "not-installed"
+        NativeMeditationAvailability.UNTRUSTED_SIGNATURE -> "untrusted-signature"
+        NativeMeditationAvailability.PERMISSION_DENIED -> "permission-denied"
+        NativeMeditationAvailability.PROTOCOL_INCOMPATIBLE -> "protocol-incompatible"
+        NativeMeditationAvailability.SESSION_MISSING -> "session-missing"
+        NativeMeditationAvailability.CORRUPT -> "corrupt"
+        NativeMeditationAvailability.QUERY_FAILED -> "query-failed"
         NativeMeditationAvailability.UNAVAILABLE -> "unavailable"
     }
 

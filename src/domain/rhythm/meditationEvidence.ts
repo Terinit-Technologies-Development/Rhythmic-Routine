@@ -72,6 +72,18 @@ export function hasMeditationIdentityMetadata(
   );
 }
 
+export type MeditationQueryStatus =
+  | 'available'
+  | 'not-installed'
+  | 'untrusted-signature'
+  | 'permission-denied'
+  | 'protocol-incompatible'
+  | 'session-missing'
+  | 'corrupt'
+  | 'query-failed'
+  | 'unavailable'
+  | 'legacy-ambiguous-null';
+
 export interface MeditationEvidenceResult {
   availability: MeditationProviderAvailability;
   /** Present only when the provider answered for the exact session id. */
@@ -80,6 +92,8 @@ export interface MeditationEvidenceResult {
   sessionMissing?: boolean;
   /** True only when the three additive identity columns were returned. */
   identityMetadataAvailable?: boolean;
+  /** Additive detailed reason; legacy bridges may omit it. */
+  queryStatus?: MeditationQueryStatus;
 }
 
 /** Wire payload sent to Meditation (Bundle fields of extra_request_payload). */

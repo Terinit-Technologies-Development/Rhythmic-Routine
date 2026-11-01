@@ -193,6 +193,9 @@ export const FallbackModule = {
   queryMeditationStatus: async (
     _sessionId: string
   ): Promise<NativeMeditationSessionEvidence | null> => null,
+  queryMeditationStatusDetailed: async (
+    _sessionId: string
+  ): Promise<Record<string, unknown> | null> => null,
   seedGroupAllowanceExhaustionForQa: async (
     _groupId: string,
     _packageName: string

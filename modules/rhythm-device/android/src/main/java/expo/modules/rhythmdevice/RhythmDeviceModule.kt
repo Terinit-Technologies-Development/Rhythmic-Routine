@@ -606,6 +606,13 @@ class RhythmDeviceModule : Module() {
       return@AsyncFunction meditationEvidenceMap(evidence, result.identityMetadataAvailable)
     }
 
+    AsyncFunction("queryMeditationStatusDetailed") { sessionId: String ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction MeditationDetailedResultWire.unavailable()
+      val result = MeditationStatusProviderClient.query(context, sessionId)
+      return@AsyncFunction MeditationDetailedResultWire.toWireMap(result)
+    }
+
     AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
       val context = appContext.reactContext
         ?: return@AsyncFunction unavailableDailyEvidence(dateKey)

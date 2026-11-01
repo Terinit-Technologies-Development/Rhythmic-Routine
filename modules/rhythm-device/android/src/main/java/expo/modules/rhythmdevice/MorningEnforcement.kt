@@ -137,13 +137,13 @@ object MorningEnforcement {
      * its own deterministic tuple; completion promotion only uses trusted
      * provider evidence for that exact tuple.
      */
-    fun reconcileRequirements(
+    fun reconcileRequirementsWithResults(
         existing: List<NativeMorningMeditationState>,
         attentionDay: NativeAttentionDayState,
         schedule: NativeRoutineSchedule,
         migration: NativeMorningMigrationState,
         now: Long,
-        evidenceBySession: Map<String, NativeMeditationSessionEvidence>,
+        evidenceBySession: Map<String, NativeMeditationSessionResult>,
     ): List<NativeMorningMeditationState> {
         val byDay = LinkedHashMap<String, NativeMorningMeditationState>()
         for (item in existing) byDay[item.attentionDayId] = item
@@ -158,19 +158,51 @@ object MorningEnforcement {
                 sessionKind = MORNING_SESSION_KIND,
                 sourceCooldownId = SOURCE_COOLDOWN_ID,
             )
-            val evidence = evidenceBySession[normalized.sessionId]
-            if (normalized.satisfiedAt == null && evidence != null &&
-                isVerifiedCompletion(normalized, evidence)
+            val evidenceResult = evidenceBySession[normalized.sessionId]
+            if (normalized.satisfiedAt == null && evidenceResult != null &&
+                isVerifiedCompletion(normalized, evidenceResult)
             ) {
                 normalized.copy(
                     satisfied = true,
-                    satisfiedAt = evidence.completedAtEpochMs ?: now,
+                    satisfiedAt = evidenceResult.evidence?.completedAtEpochMs ?: now,
                 )
             } else {
                 normalized
             }
         }.sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
     }
+
+    /** Legacy/pure adapter: trusted only when caller already proved metadata. */
+    fun reconcileRequirements(
+        existing: List<NativeMorningMeditationState>,
+        attentionDay: NativeAttentionDayState,
+        schedule: NativeRoutineSchedule,
+        migration: NativeMorningMigrationState,
+        now: Long,
+        evidenceBySession: Map<String, NativeMeditationSessionEvidence>,
+    ): List<NativeMorningMeditationState> =
+        reconcileRequirementsWithResults(
+            existing = existing,
+            attentionDay = attentionDay,
+            schedule = schedule,
+            migration = migration,
+            now = now,
+            evidenceBySession = evidenceBySession.mapValues { (_, evidence) ->
+                NativeMeditationSessionResult(
+                    NativeMeditationAvailability.AVAILABLE,
+                    evidence,
+                    identityMetadataAvailable = true,
+                )
+            },
+        )
+
+    fun isVerifiedCompletion(
+        requirement: NativeMorningMeditationState,
+        result: NativeMeditationSessionResult,
+    ): Boolean =
+        result.availability == NativeMeditationAvailability.AVAILABLE &&
+            result.identityMetadataAvailable &&
+            result.evidence?.let { isVerifiedCompletion(requirement, it) } == true
 
     fun reconcile(
         existing: NativeMorningMeditationState?,

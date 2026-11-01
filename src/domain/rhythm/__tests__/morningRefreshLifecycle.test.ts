@@ -285,6 +285,31 @@ describe('F6 — delayed morning provider result sequencing', () => {
       assert.ok(afterOld.activeReadingGates?.social);
       assert.equal(afterOld.dailyAttentionExchange?.meditationSubstitutionsUsed ?? 0, 0);
 
+      const denied = coordinator.refreshMorningMeditationEvidence(now - 86_400_000);
+      for (let i = 0; i < 50 && !deferred; i += 1) await Promise.resolve();
+      assert.ok(deferred);
+      const deniedDeferred = deferred as DeferredQuery;
+      await Promise.race([
+        deniedDeferred.entered,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('provider query did not start')), 2000)
+        ),
+      ]);
+      deniedDeferred.resolve({
+        availability: 'permission-denied',
+        queryStatus: 'permission-denied',
+        identityMetadataAvailable: true,
+        evidence: exactEvidence(current!.sessionId, current!.attentionDayId),
+      });
+      await denied;
+      assert.equal(
+        coordinator.getRuntime()?.morningMeditation?.requirements?.find(
+          (item) => item.sessionId === current!.sessionId
+        )?.satisfiedAt,
+        undefined
+      );
+      assert.equal(coordinator.getMorningMeditationDiagnostics().satisfied, false);
+
       const third = coordinator.refreshMorningMeditationEvidence(now - 86_400_000);
       for (let i = 0; i < 50 && !deferred; i += 1) await Promise.resolve();
       assert.ok(deferred);

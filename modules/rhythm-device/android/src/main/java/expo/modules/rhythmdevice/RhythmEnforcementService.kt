@@ -1978,10 +1978,10 @@ class RhythmEnforcementService : AccessibilityService() {
         ): Boolean {
             // Provider/Binder reads happen OUTSIDE the persistence lock.
             val initial = RestorativeEnforcement.load(context)
-            val evidenceBySession = LinkedHashMap<String, NativeMeditationSessionEvidence>()
+            val evidenceBySession = LinkedHashMap<String, NativeMeditationSessionResult>()
             for (requirement in initial.allMorningRequirements().filter { it.satisfiedAt == null }) {
-                MeditationStatusProviderClient.query(context, requirement.sessionId).evidence
-                    ?.let { evidenceBySession[it.sessionId] = it }
+                val result = MeditationStatusProviderClient.query(context, requirement.sessionId)
+                evidenceBySession[requirement.sessionId] = result
             }
             val cohort = if (hasPriorNativeAttentionState(context)) "upgraded" else "fresh"
 
@@ -1996,7 +1996,7 @@ class RhythmEnforcementService : AccessibilityService() {
                     now = now,
                 )
                 val existing = latest.allMorningRequirements()
-                val next = MorningEnforcement.reconcileRequirements(
+                val next = MorningEnforcement.reconcileRequirementsWithResults(
                     existing = existing,
                     attentionDay = attentionDay,
                     schedule = schedule,

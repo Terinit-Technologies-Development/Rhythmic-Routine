@@ -40,6 +40,7 @@ import {
 import type {
   MeditationEvidenceBridge,
   MeditationProviderAvailability,
+  MeditationQueryStatus,
 } from '../domain/rhythm/meditationEvidence';
 import { hasMeditationIdentityMetadata } from '../domain/rhythm/meditationEvidence';
 
@@ -968,6 +969,7 @@ export class RhythmCoordinator {
         evidence?: import('../domain/rhythm/meditationEvidence').MeditationSessionEvidence;
         identityMetadataAvailable?: boolean;
         sessionMissing?: boolean;
+        queryStatus?: MeditationQueryStatus;
       };
       if (this.meditationBridge.queryMeditationStatusResult) {
         result = await this.meditationBridge.queryMeditationStatusResult(
@@ -985,6 +987,9 @@ export class RhythmCoordinator {
       }
       const identityMetadataAvailable =
         result.identityMetadataAvailable ?? hasMeditationIdentityMetadata(result.evidence);
+      const positiveOutcome =
+        result.availability === 'available' &&
+        (result.queryStatus === undefined || result.queryStatus === 'available');
       const appliedAt = Date.now();
       const engine = this.engine;
       const currentRequirement = engine?.getRuntime().morningMeditation?.requirement;
@@ -1006,9 +1011,17 @@ export class RhythmCoordinator {
         satisfied: diagnosticBefore.satisfied,
         availability: result.availability,
         identityMetadataAvailable,
-        ...(result.evidence
+        ...(positiveOutcome && result.evidence
           ? {}
-          : { providerError: result.sessionMissing ? 'session-missing' : 'session-unavailable' }),
+          : {
+              providerError:
+                result.queryStatus ??
+                (!positiveOutcome
+                  ? result.availability
+                  : result.sessionMissing
+                  ? 'session-missing'
+                  : 'session-unavailable'),
+            }),
         updatedAt: appliedAt,
       };
 
@@ -1018,6 +1031,7 @@ export class RhythmCoordinator {
       if (
         !engine ||
         !result.evidence ||
+        !positiveOutcome ||
         !identityMetadataAvailable ||
         !sameBinding ||
         !evidenceExact
