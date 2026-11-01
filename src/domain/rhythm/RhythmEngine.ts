@@ -323,6 +323,39 @@ export class RhythmEngine {
     return this.runtime.activeRestrictions.map((r) => r.appId);
   }
 
+  /** Snapshot/restore only native lease state for acknowledged-effect failure. */
+  public getAccessLeasesSnapshot(): Record<string, import('../../types/domain').AccessLease> {
+    return Object.fromEntries(
+      Object.entries(this.runtime.activeAccessLeases).map(([id, lease]) => [id, { ...lease }])
+    );
+  }
+
+  public restoreAccessLeases(
+    leases: Record<string, import('../../types/domain').AccessLease>
+  ): void {
+    this.runtime.activeAccessLeases = Object.fromEntries(
+      Object.entries(leases).map(([id, lease]) => [id, { ...lease }])
+    );
+  }
+
+  /** Restore a full pre-event runtime inside the coordinator's serialized transaction. */
+  public restoreRuntime(snapshot: RhythmRuntime): void {
+    this.runtime = {
+      ...snapshot,
+      activeCooldowns: Object.fromEntries(
+        Object.entries(snapshot.activeCooldowns).map(([id, value]) => [id, { ...value }])
+      ),
+      activeAccessLeases: Object.fromEntries(
+        Object.entries(snapshot.activeAccessLeases).map(([id, value]) => [id, { ...value }])
+      ),
+      activeRestrictions: snapshot.activeRestrictions.map((item) => ({
+        appId: item.appId,
+        reasons: [...item.reasons],
+      })),
+      activeRoutineWindowIds: [...snapshot.activeRoutineWindowIds],
+    };
+  }
+
   public toPersistedRuntime(now: number = Date.now()): PersistedRuntime {
     const res: PersistedRuntime = {
       state: this.runtime.state,

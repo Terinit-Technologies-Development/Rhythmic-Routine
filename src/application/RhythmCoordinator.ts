@@ -1,6 +1,7 @@
 import { getPlatformServices } from '../platform/PlatformServices';
 import { RhythmEngine } from '../domain/rhythm/RhythmEngine';
 import {
+  EMERGENCY_ACCESS_MINUTES,
   EngineStatus,
   RhythmConfiguration,
   RhythmEffect,
@@ -41,6 +42,15 @@ import type {
   MeditationProviderAvailability,
 } from '../domain/rhythm/meditationEvidence';
 import { hasMeditationIdentityMetadata } from '../domain/rhythm/meditationEvidence';
+
+class AccessLeaseEffectError extends Error {
+  constructor(
+    message: string,
+    readonly appliedLeaseEffects: { type: 'start' | 'end'; groupId: string }[] = []
+  ) {
+    super(message);
+  }
+}
 
 export interface MorningMeditationDiagnostics {
   requirement?: MorningMeditationRequirement;
@@ -274,6 +284,8 @@ export class RhythmCoordinator {
   private unsubscribeActivity?: () => void;
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private isInitialized = false;
+  private initializationPromise?: Promise<RhythmRuntime>;
+  private stateQueue: Promise<void> = Promise.resolve();
   private evidenceRefreshPromise?: Promise<void>;
   private morningRefreshPromise?: Promise<void>;
   private morningDiagnostics: MorningMeditationDiagnostics = {
@@ -300,10 +312,43 @@ export class RhythmCoordinator {
     return RhythmCoordinator.instance;
   }
 
+  /** One serialized state-transaction boundary for dispatch/reconcile/sync/import. */
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.stateQueue.then(operation, operation);
+    this.stateQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  /** Public mutation/lifecycle admission: never accept a partial failed startup. */
+  private async ensureReady(): Promise<void> {
+    if (this.isInitialized && this.engine && this.config) return;
+    await this.initialize();
+    if (!this.isInitialized || !this.engine || !this.config) {
+      throw new Error('Rhythm Engine failed to initialize');
+    }
+  }
+
   /**
    * Initializes the coordinator and bootstraps the Rhythm Engine.
    */
   public async initialize(): Promise<RhythmRuntime> {
+    if (this.initializationPromise) return this.initializationPromise;
+    if (this.isInitialized && this.engine) {
+      return this.engine.getRuntime();
+    }
+    const promise = this.runExclusive(() => this.initializeLocked());
+    this.initializationPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.initializationPromise === promise) this.initializationPromise = undefined;
+    }
+  }
+
+  private async initializeLocked(): Promise<RhythmRuntime> {
     if (this.isInitialized && this.engine) {
       return this.engine.getRuntime();
     }
@@ -314,7 +359,6 @@ export class RhythmCoordinator {
     this.engine = engine;
     this.config = config;
     this.status = status;
-    this.isInitialized = true;
 
     const now = Date.now();
 
@@ -323,7 +367,9 @@ export class RhythmCoordinator {
       importNativeState: true,
       finalSync: true,
     });
-    await this.refreshMorningMeditationEvidence(now);
+    await this.refreshMorningMeditationEvidenceLocked(now);
+
+    this.isInitialized = true;
 
     // Subscribe to platform usage activity events
     const { usage } = getPlatformServices();
@@ -355,10 +401,22 @@ export class RhythmCoordinator {
   /**
    * Centralized executor for engine effects.
    */
-  private async executeEffects(effects: RhythmEffect[]): Promise<void> {
+  private async executeEffects(
+    effects: RhythmEffect[],
+    options?: { skipNativeLease?: boolean }
+  ): Promise<void> {
     const { restrictions, storage } = getPlatformServices();
+    const appliedLeaseEffects: { type: 'start' | 'end'; groupId: string }[] = [];
+    const orderedEffects = [
+      ...effects.filter(
+        (effect) => effect.type === 'START_ACCESS_LEASE' || effect.type === 'END_ACCESS_LEASE'
+      ),
+      ...effects.filter(
+        (effect) => effect.type !== 'START_ACCESS_LEASE' && effect.type !== 'END_ACCESS_LEASE'
+      ),
+    ];
 
-    for (const effect of effects) {
+    for (const effect of orderedEffects) {
       switch (effect.type) {
         case 'APPLY_RESTRICTIONS':
           await restrictions.applyRestrictions(effect.appIds);
@@ -367,19 +425,47 @@ export class RhythmCoordinator {
           await restrictions.clearRestrictions(effect.appIds);
           break;
         case 'START_ACCESS_LEASE': {
+          if (options?.skipNativeLease) break;
           const group = this.config?.riskGroups.find((item) => item.id === effect.groupId);
-          if (group && restrictions.startAccessLease) {
-            await restrictions.startAccessLease({
-              groupId: effect.groupId,
-              appIds: group.appIds,
-              startsAt: Date.now(),
-              endsAt: effect.endsAt,
-            });
+          if (!group || !restrictions.startAccessLease) {
+            throw new AccessLeaseEffectError(
+              'Native access lease start is unavailable',
+              appliedLeaseEffects
+            );
           }
+          const result = await restrictions.startAccessLease({
+            groupId: effect.groupId,
+            appIds: group.appIds,
+            startsAt: Date.now(),
+            endsAt: effect.endsAt,
+          });
+          if (result?.status !== 'applied' || result.groupId !== effect.groupId) {
+            throw new AccessLeaseEffectError(
+              `Native access lease start was not acknowledged: ${result?.reason ?? 'unknown'}`,
+              appliedLeaseEffects
+            );
+          }
+          appliedLeaseEffects.push({ type: 'start', groupId: effect.groupId });
           break;
         }
         case 'END_ACCESS_LEASE':
-          await restrictions.endAccessLease?.(effect.groupId);
+          if (options?.skipNativeLease) break;
+          if (!restrictions.endAccessLease) {
+            throw new AccessLeaseEffectError(
+              'Native access lease end is unavailable',
+              appliedLeaseEffects
+            );
+          }
+          {
+            const result = await restrictions.endAccessLease(effect.groupId);
+            if (result?.status !== 'applied' || result.groupId !== effect.groupId) {
+              throw new AccessLeaseEffectError(
+                `Native access lease end was not acknowledged: ${result?.reason ?? 'unknown'}`,
+                appliedLeaseEffects
+              );
+            }
+            appliedLeaseEffects.push({ type: 'end', groupId: effect.groupId });
+          }
           break;
         case 'RECORD_HISTORY':
           await storage.appendHistoryEvent(effect.event);
@@ -404,20 +490,108 @@ export class RhythmCoordinator {
   }
 
   /**
+   * Native lease acknowledgement must happen BEFORE the reducer mutates runtime
+   * state. A failed start/end throws and leaves no optimistic lease/history.
+   */
+  private async acknowledgeLeaseEvent(event: RhythmEvent): Promise<boolean> {
+    if (event.type === 'RISK_GROUP_DELETED') {
+      const lease = this.engine?.getRuntime().activeAccessLeases?.[event.groupId];
+      if (!lease) return false;
+      const { restrictions } = getPlatformServices();
+      if (!restrictions.endAccessLease) {
+        throw new Error('Native access lease end is unavailable');
+      }
+      const result = await restrictions.endAccessLease(event.groupId);
+      if (result?.status !== 'applied' || result.groupId !== event.groupId) {
+        throw new Error(
+          `Native access lease end was not acknowledged: ${result?.reason ?? 'unknown'}`
+        );
+      }
+      return true;
+    }
+    if (event.type !== 'START_ACCESS_LEASE' && event.type !== 'END_ACCESS_LEASE') {
+      return false;
+    }
+    const { restrictions } = getPlatformServices();
+    if (event.type === 'START_ACCESS_LEASE') {
+      const group = this.config?.riskGroups.find((item) => item.id === event.groupId);
+      if (!group) throw new Error(`Risk group not found: ${event.groupId}`);
+      if (!restrictions.startAccessLease) {
+        throw new Error('Native access lease start is unavailable');
+      }
+      const result = await restrictions.startAccessLease({
+        groupId: event.groupId,
+        appIds: group.appIds,
+        startsAt: event.timestamp,
+        endsAt: event.timestamp + (event.durationMinutes ?? EMERGENCY_ACCESS_MINUTES) * 60_000,
+      });
+      if (result?.status !== 'applied' || result.groupId !== event.groupId) {
+        throw new Error(
+          `Native access lease start was not acknowledged: ${result?.reason ?? 'unknown'}`
+        );
+      }
+      return true;
+    }
+    if (!restrictions.endAccessLease) {
+      throw new Error('Native access lease end is unavailable');
+    }
+    const result = await restrictions.endAccessLease(event.groupId);
+    if (result?.status !== 'applied' || result.groupId !== event.groupId) {
+      throw new Error(
+        `Native access lease end was not acknowledged: ${result?.reason ?? 'unknown'}`
+      );
+    }
+    return true;
+  }
+
+  private async dispatchEngineEvent(
+    event: RhythmEvent,
+    options?: { skipNativeLease?: boolean }
+  ): Promise<RhythmEffect[]> {
+    const engine = this.engine;
+    if (!engine) throw new Error('Rhythm Engine failed to initialize');
+    const runtimeSnapshot = engine.getRuntime();
+    const effects = engine.dispatch(event);
+    try {
+      await this.executeEffects(effects, options);
+    } catch (error) {
+      if (error instanceof AccessLeaseEffectError) {
+        const restored = {
+          ...runtimeSnapshot,
+          activeAccessLeases: { ...runtimeSnapshot.activeAccessLeases },
+        };
+        const currentLeases = engine.getRuntime().activeAccessLeases;
+        for (const applied of error.appliedLeaseEffects) {
+          if (applied.type === 'end') {
+            delete restored.activeAccessLeases[applied.groupId];
+          } else if (currentLeases[applied.groupId]) {
+            restored.activeAccessLeases[applied.groupId] = currentLeases[applied.groupId];
+          }
+        }
+        engine.restoreRuntime(restored);
+      }
+      throw error;
+    }
+    return effects;
+  }
+
+  /**
    * Dispatches an event into the engine and executes resulting effects.
    */
   public async dispatch(event: RhythmEvent): Promise<RhythmRuntime> {
-    if (!this.engine || !this.config) {
-      await this.initialize();
-    }
-    if (!this.engine || !this.config) {
+    await this.ensureReady();
+    return this.runExclusive(() => this.dispatchLocked(event));
+  }
+
+  private async dispatchLocked(event: RhythmEvent): Promise<RhythmRuntime> {
+    if (!this.isInitialized || !this.engine || !this.config) {
       throw new Error('Rhythm Engine failed to initialize');
     }
-
     const { storage } = getPlatformServices();
-    const effects = this.engine.dispatch(event);
-
-    await this.executeEffects(effects);
+    const nativeLeaseAcknowledged = await this.acknowledgeLeaseEvent(event);
+    await this.dispatchEngineEvent(event, {
+      skipNativeLease: nativeLeaseAcknowledged,
+    });
 
     // Persist runtime state
     const now = 'timestamp' in event ? event.timestamp : Date.now();
@@ -543,8 +717,18 @@ export class RhythmCoordinator {
     now: number = Date.now(),
     options?: { syncNative?: boolean; refreshEvidence?: boolean }
   ): Promise<RhythmRuntime> {
+    await this.ensureReady();
+    return this.runExclusive(() => this.reconcileLocked(now, options));
+  }
+
+  private async reconcileLocked(
+    now: number,
+    options?: { syncNative?: boolean; refreshEvidence?: boolean }
+  ): Promise<RhythmRuntime> {
+    // Startup owns this queue boundary before it can mark activation complete.
+    // Public reconciliation separately requires ensureReady().
     if (!this.engine || !this.config) {
-      return this.initialize();
+      throw new Error('Rhythm Engine failed to initialize');
     }
     await reconcileRhythm(this.engine, this.config, now);
     const runtime = this.engine.getRuntime();
@@ -555,7 +739,7 @@ export class RhythmCoordinator {
       await this.refreshDailyEvidence(now, false);
     }
     if (runtime.morningMeditation?.requirement?.satisfiedAt === undefined) {
-      await this.refreshMorningMeditationEvidence(now);
+      await this.refreshMorningMeditationEvidenceLocked(now);
     }
     if (options?.syncNative !== false) {
       await this.syncNativeState();
@@ -591,7 +775,7 @@ export class RhythmCoordinator {
       await this.importNativeStateOnResume(now);
     }
 
-    await this.reconcile(now, {
+    await this.reconcileLocked(now, {
       syncNative: false,
       refreshEvidence: false,
     });
@@ -633,39 +817,40 @@ export class RhythmCoordinator {
    * Reconciles native background state into engine and synchronizes outward.
    */
   public async handleAppResume(): Promise<void> {
-    if (!this.engine || !this.config) {
-      await this.initialize();
-      return;
-    }
+    await this.ensureReady();
+    return this.runExclusive(async () => {
+      const now = Date.now();
+      // Import native policy/gates before usage refresh can dispatch and sync JS
+      // projections; stale JavaScript state must never be written over Android authority.
+      await this.importNativeStateOnResume(now);
 
-    const now = Date.now();
-    // Import native policy/gates before usage refresh can dispatch and sync JS
-    // projections; stale JavaScript state must never be written over Android authority.
-    await this.importNativeStateOnResume(now);
-
-    // Explicitly trigger an immediate bounded activity events refresh to update
-    // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
-    const { usage } = getPlatformServices();
-    if (usage.refreshActivityEvents) {
-      try {
-        await usage.refreshActivityEvents();
-      } catch {
-        // Platform usage refresh boundary
+      // Explicitly trigger an immediate bounded activity events refresh to update
+      // TypeScript Risk Group session continuity without waiting for the 60s periodic timer.
+      const { usage } = getPlatformServices();
+      if (usage.refreshActivityEvents) {
+        try {
+          await usage.refreshActivityEvents();
+        } catch {
+          // Platform usage refresh boundary
+        }
       }
-    }
 
-    await this.reconcilePlatformActivation(now, {
-      importNativeState: false,
-      finalSync: true,
+      await this.reconcilePlatformActivation(now, {
+        importNativeState: false,
+        finalSync: true,
+      });
+      await this.refreshMorningMeditationEvidenceLocked(now);
+
+      this.notifyListeners();
     });
-    await this.refreshMorningMeditationEvidence(now);
-
-    this.notifyListeners();
   }
 
   /** Refreshes Reader Protocol V2 evidence for the current local date on demand. */
   public async refreshDailyReadingEvidence(now: number = Date.now()): Promise<void> {
-    await this.refreshDailyEvidence(now, true, true);
+    await this.ensureReady();
+    return this.runExclusive(async () => {
+      await this.refreshDailyEvidence(now, true, true);
+    });
   }
 
   private async refreshDailyEvidence(now: number, force: boolean, reconcileNative: boolean = false): Promise<void> {
@@ -716,6 +901,11 @@ export class RhythmCoordinator {
    * cadence; presentation components never read evidence directly.
    */
   public async refreshMorningMeditationEvidence(now: number = Date.now()): Promise<void> {
+    await this.ensureReady();
+    return this.runExclusive(() => this.refreshMorningMeditationEvidenceLocked(now));
+  }
+
+  private async refreshMorningMeditationEvidenceLocked(now: number = Date.now()): Promise<void> {
     if (!this.engine) return;
     if (this.morningRefreshPromise) {
       await this.morningRefreshPromise;
@@ -815,9 +1005,7 @@ export class RhythmCoordinator {
   public async launchMorningMeditation(
     now: number = Date.now()
   ): Promise<{ ok: boolean; sessionId?: string; reason?: string }> {
-    if (!this.engine) {
-      await this.initialize();
-    }
+    await this.ensureReady();
     const requirement = this.engine?.getRuntime().morningMeditation?.requirement;
     if (!requirement) return { ok: false, reason: 'no-morning-requirement' };
     if (requirement.satisfiedAt !== undefined) {
@@ -855,11 +1043,12 @@ export class RhythmCoordinator {
    * Updates configuration, persists preferences, and executes restriction effects immediately.
    */
   public async updateConfig(nextConfig: Partial<RhythmConfiguration>): Promise<void> {
-    if (!this.config || !this.engine) {
-      await this.initialize();
-    }
-    if (!this.config || !this.engine) return;
+    await this.ensureReady();
+    return this.runExclusive(() => this.updateConfigLocked(nextConfig));
+  }
 
+  private async updateConfigLocked(nextConfig: Partial<RhythmConfiguration>): Promise<void> {
+    if (!this.config || !this.engine) return;
     const candidateConfig: RhythmConfiguration = {
       ...this.config,
       ...nextConfig,
@@ -887,8 +1076,16 @@ export class RhythmCoordinator {
     this.config = candidateConfig;
 
     // Execute effects emitted directly from updateConfiguration
+    const leaseSnapshot = this.engine.getAccessLeasesSnapshot();
     const effects = this.engine.updateConfiguration(candidateConfig);
-    await this.executeEffects(effects);
+    try {
+      await this.executeEffects(effects);
+    } catch (error) {
+      if (error instanceof AccessLeaseEffectError) {
+        this.engine?.restoreAccessLeases(leaseSnapshot);
+      }
+      throw error;
+    }
 
     await storage.saveRuntime(this.engine.toPersistedRuntime(Date.now()));
     await this.syncNativeState();
@@ -921,14 +1118,12 @@ export class RhythmCoordinator {
     nextMinutes: number,
     nowMs: number = Date.now()
   ): Promise<GroupAllowanceEditResult & { groupId: string }> {
-    if (!this.config || !this.engine) {
-      try {
-        await this.initialize();
-      } catch {
-        return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
-      }
+    try {
+      await this.ensureReady();
+    } catch {
+      return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
     }
-    if (!this.config || !this.engine) {
+    if (!this.isInitialized || !this.engine || !this.config) {
       return { ok: false, nextMinutes, groupId, reason: 'unavailable' };
     }
 
@@ -980,10 +1175,12 @@ export class RhythmCoordinator {
     nowMs: number = Date.now(),
     validActivityIds?: readonly string[]
   ): Promise<{ ok: boolean; groupId: string; activityId: string }> {
-    if (!this.config || !this.engine) {
-      await this.initialize();
+    try {
+      await this.ensureReady();
+    } catch {
+      return { ok: false, groupId, activityId };
     }
-    if (!this.config || !this.engine) {
+    if (!this.isInitialized || !this.engine || !this.config) {
       return { ok: false, groupId, activityId };
     }
 
@@ -1023,10 +1220,7 @@ export class RhythmCoordinator {
    * leases, usage, and session, syncs native state, and persists.
    */
   public async deleteRiskGroup(groupId: string, nowMs: number = Date.now()): Promise<void> {
-    if (!this.engine || !this.config) {
-      await this.initialize();
-    }
-    if (!this.engine || !this.config) return;
+    await this.ensureReady();
 
     await this.dispatch({
       type: 'RISK_GROUP_DELETED',
@@ -1052,15 +1246,17 @@ export class RhythmCoordinator {
    * reconciles group membership, and updates configuration.
    */
   public async refreshInstalledApps(): Promise<{ apps: DeviceApp[]; riskGroups: RiskGroup[] }> {
-    if (!this.config || !this.engine) {
-      await this.initialize();
-    }
-    if (!this.config || !this.engine) {
+    try {
+      await this.ensureReady();
+    } catch {
       return { apps: [], riskGroups: [] };
     }
 
     const { usage } = getPlatformServices();
     const discoveredApps = await usage.getInstalledApps();
+    if (!this.isInitialized || !this.engine || !this.config) {
+      return { apps: [], riskGroups: [] };
+    }
     if (!discoveredApps || discoveredApps.length === 0) {
       return { apps: this.config.apps, riskGroups: this.config.riskGroups };
     }

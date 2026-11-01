@@ -1,14 +1,26 @@
-import { Platform } from 'react-native';
 import {
   NativeAccessLeasePolicy,
   RestrictionCapability,
+  RestrictionLeaseResult,
   RestrictionProvider,
   RestrictionResult,
 } from '../RestrictionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 
+function getPlatformOS(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Platform } = require('react-native');
+    return Platform?.OS || 'web';
+  } catch {
+    return 'web';
+  }
+}
+
 export class NativeRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
+
+  constructor(private readonly device: typeof RhythmDeviceModule = RhythmDeviceModule) {}
 
   async applyRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
@@ -55,19 +67,43 @@ export class NativeRestrictionProvider implements RestrictionProvider {
     };
   }
 
-  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<void> {
+  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<RestrictionLeaseResult> {
+    if (typeof this.device.startAccessLease !== 'function') {
+      return { status: 'unsupported', groupId: lease.groupId, reason: 'native-lease-method-unavailable' };
+    }
     try {
-      await RhythmDeviceModule.startAccessLease(lease.groupId, lease.appIds, lease.endsAt);
-    } catch {
-      // Platform restriction boundary
+      const accepted = await this.device.startAccessLease(
+        lease.groupId,
+        lease.appIds,
+        lease.endsAt
+      );
+      return accepted === true
+        ? { status: 'applied', groupId: lease.groupId }
+        : { status: 'failed', groupId: lease.groupId, reason: 'native-lease-start-not-persisted' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        groupId: lease.groupId,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
-  async endAccessLease(groupId: string): Promise<void> {
+  async endAccessLease(groupId: string): Promise<RestrictionLeaseResult> {
+    if (typeof this.device.endAccessLease !== 'function') {
+      return { status: 'unsupported', groupId, reason: 'native-lease-method-unavailable' };
+    }
     try {
-      await RhythmDeviceModule.endAccessLease(groupId);
-    } catch {
-      // Platform restriction boundary
+      const accepted = await this.device.endAccessLease(groupId);
+      return accepted === true
+        ? { status: 'applied', groupId }
+        : { status: 'failed', groupId, reason: 'native-lease-end-not-persisted' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        groupId,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -76,10 +112,11 @@ export class NativeRestrictionProvider implements RestrictionProvider {
   }
 
   async getCapability(): Promise<RestrictionCapability> {
+    const platformOS = getPlatformOS();
     try {
       const perms = await RhythmDeviceModule.checkPermissions();
 
-      if (Platform.OS === 'ios') {
+      if (platformOS === 'ios') {
         const hasAuth = perms.familyControlsStatus === 'approved';
         const hasSelection = perms.hasSelection === true;
         const isEnforced = hasAuth && hasSelection && perms.hasRestrictionPermission === true;
@@ -120,10 +157,10 @@ export class NativeRestrictionProvider implements RestrictionProvider {
     } catch {
       return {
         status: 'foundation-only',
-        mode: Platform.OS === 'ios' ? 'system-activity-threshold' : 'continuous-session',
+        mode: platformOS === 'ios' ? 'system-activity-threshold' : 'continuous-session',
         supportsRoutineWindows: true,
         supportsGroupCooldowns: true,
-        supportsContinuousSessionGap: Platform.OS === 'android',
+        supportsContinuousSessionGap: platformOS === 'android',
         supportsEmergencyOverride: true,
         reason: 'Native module unavailable or uninitialized',
       };

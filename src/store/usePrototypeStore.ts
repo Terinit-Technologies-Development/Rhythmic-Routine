@@ -283,6 +283,8 @@ interface PrototypeState {
   // UI Dialog Controls
   demoSwitcherVisible: boolean;
   emergencyModalVisible: boolean;
+  emergencyAccessError?: string | null;
+  clearEmergencyAccessError: () => void;
   timeSelector: TimeSelectorConfig;
   appEdit: AppEditConfig;
 
@@ -1234,6 +1236,8 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
 
   demoSwitcherVisible: false,
   emergencyModalVisible: false,
+  emergencyAccessError: undefined,
+  clearEmergencyAccessError: () => set({ emergencyAccessError: undefined }),
   timeSelector: { visible: false },
   appEdit: { visible: false },
 
@@ -2092,13 +2096,24 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const immutablePayload = freezePayload(clonePayload(mutation.payload));
     const requires = requiresPartnerApproval(state.accountability, mutation.operation);
     if (!requires) {
-      const execResult = await executeRegisteredMutation(
-        mutation.operation,
-        immutablePayload,
-        { kind: 'disabled-mode' },
-        get
-      );
-      return { status: 'executed', result: execResult };
+      try {
+        const execResult = await executeRegisteredMutation(
+          mutation.operation,
+          immutablePayload,
+          { kind: 'disabled-mode' },
+          get
+        );
+        return { status: 'executed', result: execResult };
+      } catch (error) {
+        if (mutation.operation === 'start-access-lease') {
+          set({
+            emergencyAccessError:
+              'Emergency access could not be confirmed. Check your current restriction status before trying again.',
+            emergencyModalVisible: true,
+          });
+        }
+        throw error;
+      }
     }
 
     const enabledPartners = getEnabledPartners(state.accountability);
@@ -2192,6 +2207,13 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         return result;
       } catch (error) {
         cleanupPendingApprovalSecrets(pending);
+        if (pending.operation === 'start-access-lease') {
+          set({
+            emergencyAccessError:
+              'Emergency access could not be confirmed. Check your current restriction status, then request approval before trying again.',
+            emergencyModalVisible: true,
+          });
+        }
         throw error;
       } finally {
         protectedMutationInFlight = false;

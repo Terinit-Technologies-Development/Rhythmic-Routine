@@ -30,6 +30,12 @@ export interface NativeAccessLeasePolicy {
   endsAt: number;
 }
 
+export interface RestrictionLeaseResult {
+  status: RestrictionApplyStatus;
+  groupId: string;
+  reason?: string;
+}
+
 export interface RestrictionProvider {
   /**
    * Applies shielding restrictions to the given app IDs.
@@ -54,10 +60,10 @@ export interface RestrictionProvider {
   /**
    * Registers a native access lease with the underlying platform.
    */
-  startAccessLease?(lease: NativeAccessLeasePolicy): Promise<void>;
+  startAccessLease?(lease: NativeAccessLeasePolicy): Promise<RestrictionLeaseResult>;
 
   /**
    * Ends an active access lease on the underlying platform.
    */
-  endAccessLease?(groupId: string): Promise<void>;
+  endAccessLease?(groupId: string): Promise<RestrictionLeaseResult>;
 }

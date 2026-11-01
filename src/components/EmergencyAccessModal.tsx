@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,10 @@ export const EmergencyAccessModal: React.FC = () => {
   const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const emergencyAccessError = usePrototypeStore((s) => s.emergencyAccessError);
+  const clearEmergencyAccessError = usePrototypeStore((s) => s.clearEmergencyAccessError);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!visible) return null;
 
@@ -25,19 +29,39 @@ export const EmergencyAccessModal: React.FC = () => {
   const durationMinutes = policy.defaultMinutes;
   const targetGroup = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
 
+  const closeModal = () => {
+    setVisible(false);
+    setError(null);
+    clearEmergencyAccessError();
+  };
+
   const handleGrantOverride = async () => {
     const groupId = targetGroup?.id || 'social';
-    setVisible(false);
-    await requestProtectedMutation({
-      operation: 'start-access-lease',
-      summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
-      payload: { groupId, durationMinutes },
-    });
+    setError(null);
+    setSubmitting(true);
+    try {
+      const outcome = await requestProtectedMutation({
+        operation: 'start-access-lease',
+        summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
+        payload: { groupId, durationMinutes },
+      });
+      if (outcome.status === 'executed' || outcome.status === 'pending-approval') {
+        setVisible(false);
+        clearEmergencyAccessError();
+        setError(null);
+      }
+    } catch {
+      setError(
+        'Emergency access could not be confirmed. Check your current restriction status before trying again.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <View style={styles.overlay}>
-      <TouchableWithoutFeedback onPress={() => setVisible(false)}>
+      <TouchableWithoutFeedback onPress={closeModal}>
         <View style={StyleSheet.absoluteFill} />
       </TouchableWithoutFeedback>
 
@@ -56,10 +80,14 @@ export const EmergencyAccessModal: React.FC = () => {
           Your active cooldown will continue running in the background and restrictions will resume automatically when the lease expires.
         </Text>
 
+        {error || emergencyAccessError ? (
+          <Text style={styles.errorText}>{error ?? emergencyAccessError}</Text>
+        ) : null}
+
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.cancelBtn}
-            onPress={() => setVisible(false)}
+            onPress={closeModal}
             activeOpacity={0.8}
           >
             <Text style={styles.cancelBtnText}>Stay in Rhythm</Text>
@@ -68,6 +96,7 @@ export const EmergencyAccessModal: React.FC = () => {
           <TouchableOpacity
             style={styles.unlockBtn}
             onPress={handleGrantOverride}
+            disabled={submitting}
             activeOpacity={0.8}
           >
             <View style={styles.unlockRow}>
@@ -127,6 +156,14 @@ const styles = StyleSheet.create({
   bold: {
     fontWeight: '700',
     color: colors.text,
+  },
+  errorText: {
+    width: '100%',
+    marginBottom: 12,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.coralDark,
+    textAlign: 'center',
   },
   actions: {
     width: '100%',

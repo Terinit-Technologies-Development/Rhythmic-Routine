@@ -481,29 +481,30 @@ class RhythmDeviceModule : Module() {
     AsyncFunction("startAccessLease") { groupId: String, packageNames: List<String>, endsAt: Double ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       val now = System.currentTimeMillis()
-      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      val leasesJson = prefs.getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null)
-      val (existingLeases, _) = if (leasesJson != null) RhythmEnforcementService.parseAndPruneLeases(leasesJson, now) else Pair(emptyList(), false)
-
-      val updatedList = existingLeases.filter { it.groupId != groupId }.toMutableList()
       val newLease = NativeAccessLease(groupId, packageNames.toSet(), endsAt.toLong())
-      updatedList.add(newLease)
-      RhythmEnforcementService.saveLeases(context, updatedList)
-      RhythmEnforcementService.instance?.scheduleLeaseExpiry(newLease)
-      return@AsyncFunction true
+      val saved = NativePolicyPersistence.withReadSnapshot {
+        AccessLeasePersistence.start(
+          existingLeases = RhythmEnforcementService.loadActiveLeases(context, now),
+          newLease = newLease,
+          persist = { RhythmEnforcementService.saveLeases(context, it) },
+          scheduleExpiry = { RhythmEnforcementService.instance?.scheduleLeaseExpiry(it) },
+        )
+      }
+      return@AsyncFunction saved
     }
 
     AsyncFunction("endAccessLease") { groupId: String ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       val now = System.currentTimeMillis()
-      val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
-      val leasesJson = prefs.getString(RhythmNativePolicyKeys.ACCESS_LEASES_JSON, null)
-      val (existingLeases, _) = if (leasesJson != null) RhythmEnforcementService.parseAndPruneLeases(leasesJson, now) else Pair(emptyList(), false)
-
-      val updatedList = existingLeases.filter { it.groupId != groupId }
-      RhythmEnforcementService.saveLeases(context, updatedList)
-      RhythmEnforcementService.instance?.cancelLeaseExpiry(groupId)
-      return@AsyncFunction true
+      val saved = NativePolicyPersistence.withReadSnapshot {
+        AccessLeasePersistence.end(
+          existingLeases = RhythmEnforcementService.loadActiveLeases(context, now),
+          groupId = groupId,
+          persist = { RhythmEnforcementService.saveLeases(context, it) },
+          cancelExpiry = { RhythmEnforcementService.instance?.cancelLeaseExpiry(it) },
+        )
+      }
+      return@AsyncFunction saved
     }
 
     AsyncFunction("isReaderAvailable") {
