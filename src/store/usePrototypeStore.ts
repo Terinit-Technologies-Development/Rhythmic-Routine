@@ -29,7 +29,7 @@ import { MockUsageProvider } from '../platform/mock/MockUsageProvider';
 import { createUniqueGroupId } from '../domain/selectors';
 import { RhythmCoordinator } from '../application/RhythmCoordinator';
 import { PermissionState } from '../platform/PermissionProvider';
-import { getPrimaryCooldown, RhythmRuntime } from '../domain/rhythm/types';
+import { getPrimaryCooldown, RhythmRuntime, MorningMeditationRuntimeState } from '../domain/rhythm/types';
 import { deriveAttentionGateStatus, AttentionGateStatus, ActiveReadingGate, DailyAttentionExchangeState } from '../domain/rhythm/attentionExchange';
 import {
   deriveRestorativeStatus,
@@ -207,6 +207,20 @@ function attentionStateProjection(runtime: RhythmRuntime, now = Date.now()) {
       ? { ...runtime.dailyAttentionExchange }
       : undefined,
     readingEvidence: runtime.readingEvidence ? { ...runtime.readingEvidence } : undefined,
+    morningMeditation: runtime.morningMeditation
+      ? {
+          ...runtime.morningMeditation,
+          ...(runtime.morningMeditation.requirement
+            ? { requirement: { ...runtime.morningMeditation.requirement } }
+            : {}),
+          ...(runtime.morningMeditation.requirements
+            ? { requirements: runtime.morningMeditation.requirements.map((item) => ({ ...item })) }
+            : {}),
+          ...(runtime.morningMeditation.migration
+            ? { migration: { ...runtime.morningMeditation.migration } }
+            : {}),
+        }
+      : undefined,
     activeRestorativeGates: Object.fromEntries(
       Object.entries(runtime.activeRestorativeGates ?? {}).map(([groupId, gate]) => [groupId, { ...gate }])
     ) as Record<string, ActiveRestorativeGate>,
@@ -255,6 +269,7 @@ interface PrototypeState {
   activeReadingGates?: Record<string, ActiveReadingGate>;
   dailyAttentionExchange?: DailyAttentionExchangeState;
   readingEvidence?: ReadingEvidenceSnapshot;
+  morningMeditation?: MorningMeditationRuntimeState;
   /** Pass 3: authoritative Restorative Gate state (one per cooldown instance). */
   activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
   /** Pass 3: Restorative Gate status projection for the primary gate. */

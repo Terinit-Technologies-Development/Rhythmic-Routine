@@ -20,9 +20,12 @@ import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
 import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
 import { formatSecondsToHHMMSS } from '../src/domain/selectors';
+import { deriveTouchGrassPresentation } from '../src/domain/rhythm/touchGrassPresentation';
 
 export default function TouchGrassScreen() {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
+  const rhythmState = usePrototypeStore((s) => s.rhythmState);
+  const morningMeditation = usePrototypeStore((s) => s.morningMeditation);
   const attentionStatus = usePrototypeStore((s) => s.activeAttentionGateStatus);
   const refreshReadingEvidence = usePrototypeStore((s) => s.refreshReadingEvidence);
   const openRhythmicReader = usePrototypeStore((s) => s.openRhythmicReader);
@@ -70,23 +73,16 @@ export default function TouchGrassScreen() {
     ? [configuredActivity, ...offlineActivities.filter((a) => a.id !== configuredActivity.id)].slice(0, 4)
     : offlineActivities.slice(0, 4);
   const countdownSeconds = useRemainingSeconds(activeTimerEndsAt);
-  const isPostCooldownAttention = Boolean(
-    attentionStatus && attentionStatus.phase !== 'none' && attentionStatus.phase !== 'cooldown-active'
-  );
-  const isReaderEvidenceUnavailable = attentionStatus?.phase === 'reader-unavailable';
-  const isReaderEvidenceIncompatible = attentionStatus?.phase === 'reader-incompatible';
-  const hasReadingRequirement = Boolean(
-    attentionStatus &&
-    (attentionStatus.requiredReadingSeconds > 0 || attentionStatus.requiredQualifiedPages > 0)
-  );
-  const afterCooldownProgress = [
-    attentionStatus?.remainingReadingSeconds
-      ? `${formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)} reading remaining`
-      : undefined,
-    attentionStatus?.remainingQualifiedPages
-      ? `${attentionStatus.remainingQualifiedPages} qualified pages remaining`
-      : undefined,
-  ].filter(Boolean).join(' · ');
+  const presentation = deriveTouchGrassPresentation({
+    morning: morningMeditation,
+    hasActiveCooldown:
+      rhythmState === 'cooldown' && countdownSeconds > 0,
+    attention: attentionStatus,
+    groupName: group?.name,
+    allowanceMinutes: threshold,
+    cooldownMinutes: recovery,
+  });
+  const isPostCooldownAttention = presentation.showReadingRequirements;
 
   const continueReading = async () => {
     try {
@@ -118,24 +114,8 @@ export default function TouchGrassScreen() {
             <Sprout size={24} color={colors.forest} strokeWidth={2.3} />
           </View>
 
-          <Text style={styles.title}>
-            {isPostCooldownAttention
-              ? 'Productive attention 🌱'
-              : group ? `${group.name} Cooldown 🌱` : 'Touch grass 🌱'}
-          </Text>
-          <Text style={styles.subtitle}>
-            {isPostCooldownAttention
-              ? isReaderEvidenceUnavailable
-                ? 'The cooldown has ended. Reader evidence is unavailable, so productive attention cannot be verified yet.'
-                : isReaderEvidenceIncompatible
-                  ? 'The cooldown has ended. Reader evidence is incompatible with the required protocol.'
-                  : attentionStatus?.phase === 'satisfied'
-                    ? 'Both reading requirements are verified. Rhythm is updating your access.'
-                    : 'The cooldown has ended. Complete both reading requirements to regain access.'
-              : group
-                ? `${threshold} min group allowance reached · ${recovery} min recovery break.${hasReadingRequirement ? `\nAfter the timer: ${afterCooldownProgress || 'reading requirements verified'}.` : ''}\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
-                : `Recovery break active.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`}
-          </Text>
+          <Text style={styles.title}>{presentation.title}</Text>
+          <Text style={styles.subtitle}>{presentation.subtitle}</Text>
         </View>
 
         {/* Hero Illustration & Live Timer Card */}
@@ -148,11 +128,13 @@ export default function TouchGrassScreen() {
           {/* Floating Frosted Glass Card */}
           <View style={styles.timerCard}>
             <View style={styles.cooldownBadge}>
-              {isPostCooldownAttention
+              {presentation.mode === 'morning' || presentation.mode === 'morning-and-cooldown' || presentation.mode === 'morning-and-attention'
+                ? <Sprout size={12} color={colors.forestDark} strokeWidth={2.5} />
+                : isPostCooldownAttention
                 ? <BookOpen size={12} color={colors.forestDark} strokeWidth={2.5} />
                 : <Lock size={12} color={colors.forestDark} strokeWidth={2.5} />}
               <Text style={styles.cooldownBadgeText}>
-                {isPostCooldownAttention ? 'Productive attention' : 'Cooldown in progress'}
+                {presentation.badge}
               </Text>
             </View>
 
@@ -179,7 +161,7 @@ export default function TouchGrassScreen() {
                   </TouchableOpacity>
                 )}
               </View>
-            ) : (
+            ) : presentation.showCooldownTimer ? (
               <View style={styles.digitsRow}>
                 <View style={styles.digitCol}>
                   <Text style={styles.digitNumber}>{hrs.toString().padStart(2, '0')}</Text>
@@ -195,6 +177,19 @@ export default function TouchGrassScreen() {
                   <Text style={styles.digitNumber}>{secs.toString().padStart(2, '0')}</Text>
                   <Text style={styles.digitUnit}>SEC</Text>
                 </View>
+              </View>
+            ) : (
+              <View style={styles.attentionRequirements}>
+                <Text style={styles.attentionRequirementPrimary}>
+                  {presentation.showMorningFocus
+                    ? 'Morning obligation in progress'
+                    : 'No active hold'}
+                </Text>
+                <Text style={styles.attentionRequirementSecondary}>
+                  {presentation.showMorningFocus
+                    ? 'Use the morning meditation card below; the bound session is verified by Routine.'
+                    : 'Nothing is blocking access right now.'}
+                </Text>
               </View>
             )}
           </View>
@@ -269,7 +264,7 @@ export default function TouchGrassScreen() {
           onPress={() => setEmergencyModalVisible(true)}
           activeOpacity={0.7}
         >
-          <Text style={styles.emergencyLinkText}>Need emergency access?</Text>
+          <Text style={styles.emergencyLinkText}>{presentation.emergencyLinkText}</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
