@@ -200,7 +200,23 @@ class RhythmEnforcementService : AccessibilityService() {
             endsAt = now + policy.cooldownMinutes * 60_000L,
             attentionDayId = loadAttentionDayState(applicationContext, now).id,
         )
-        ExhaustionAttempt.run(
+        runExhaustionAttemptLocked(intent)
+    }
+
+    /**
+     * Lock order for exhaustion is ALWAYS:
+     *   1. service monitor (this)
+     *   2. NativePolicyPersistence monitor
+     *
+     * The first attempt enters through [exhaustGroup]; a scheduled retry
+     * re-enters [runExhaustionAttemptUnderServiceMonitor] and acquires the
+     * service monitor BEFORE touching the accepted-state persistence lock.
+     * This prevents the persistence->service retry inversion while keeping
+     * allocation/recovery reads as one accepted snapshot.
+     */
+    private fun runExhaustionAttemptLocked(intent: ExhaustionRetryController.Pending) {
+        runExhaustionAttemptUnderServiceMonitor(
+            serviceMonitor = this,
             intent = intent,
             retryController = exhaustionController,
             attempt = { retry ->
@@ -245,7 +261,11 @@ class RhythmEnforcementService : AccessibilityService() {
         )
     }
 
-    /** Production attempt function used for the first write and every retry. */
+    /**
+     * Production attempt function used for the first write and every retry.
+     * The caller already holds the service monitor; this method adds only the
+     * accepted-state persistence lock for the atomic allocation snapshot.
+     */
     private fun attemptExhaustion(
         policy: NativeRiskGroupPolicy,
         intent: ExhaustionRetryController.Pending,
@@ -348,6 +368,10 @@ class RhythmEnforcementService : AccessibilityService() {
      * Recovers a legacy/split-commit CD4+ cooldown that is committed without its
      * deterministic restorative gate. The gate is rebuilt from the cooldown's
      * immutable ordinal/metadata and persisted atomically; retries are idempotent.
+     *
+     * Callers must already hold the service monitor (the exhaustion helper does).
+     * Recovery itself only needs the persistence lock, so this remains the
+     * reentrant service -> persistence order.
      */
     @Synchronized
     private fun ensureCommittedRestorativeGate(

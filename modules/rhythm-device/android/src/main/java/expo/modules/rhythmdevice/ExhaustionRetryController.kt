@@ -71,6 +71,7 @@ internal object ExhaustionAttempt {
         attempt: (ExhaustionRetryController.Pending) -> ExhaustionAttemptOutcome,
         onHold: (ExhaustionRetryController.Pending) -> Unit,
         onConverged: (ExhaustionRetryController.Pending, Boolean) -> Unit,
+        onRetry: ((ExhaustionRetryController.Pending) -> Unit)? = null,
     ): ExhaustionAttemptOutcome {
         val outcome = try {
             attempt(intent)
@@ -83,9 +84,46 @@ internal object ExhaustionAttempt {
         } else {
             onHold(intent)
             retryController.markFailed(intent) { retry ->
-                run(retry, retryController, attempt, onHold, onConverged)
+                if (onRetry != null) {
+                    onRetry(retry)
+                } else {
+                    run(retry, retryController, attempt, onHold, onConverged)
+                }
             }
         }
         return outcome
     }
+}
+
+/**
+ * Production lock boundary for the first attempt, scheduled retries, and
+ * already-committed recovery branches. The service monitor is acquired BEFORE
+ * the attempt enters NativePolicyPersistence; the same monitor wraps retries.
+ * Lock order is therefore service -> persistence, never the reverse.
+ */
+internal fun runExhaustionAttemptUnderServiceMonitor(
+    serviceMonitor: Any,
+    intent: ExhaustionRetryController.Pending,
+    retryController: ExhaustionRetryController,
+    attempt: (ExhaustionRetryController.Pending) -> ExhaustionAttemptOutcome,
+    onHold: (ExhaustionRetryController.Pending) -> Unit,
+    onConverged: (ExhaustionRetryController.Pending, Boolean) -> Unit,
+): ExhaustionAttemptOutcome = synchronized(serviceMonitor) {
+    ExhaustionAttempt.run(
+        intent = intent,
+        retryController = retryController,
+        attempt = attempt,
+        onHold = onHold,
+        onConverged = onConverged,
+        onRetry = { retry ->
+            runExhaustionAttemptUnderServiceMonitor(
+                serviceMonitor = serviceMonitor,
+                intent = retry,
+                retryController = retryController,
+                attempt = attempt,
+                onHold = onHold,
+                onConverged = onConverged,
+            )
+        },
+    )
 }
