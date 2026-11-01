@@ -509,16 +509,17 @@ class MorningEnforcementTest {
             ).firstOrNull { it.attentionDayId == attentionDay.id }
         )
 
-        // Inactive next day creates no new obligation and does not carry a
-        // never-durable failed intent as historical backlog.
+        // Inactive next day creates no NEW current-day obligation, but the real
+        // unfinished old failed binding remains carried and retryable.
         val inactiveSchedule = schedule(window(days = setOf(1)))
         val inactiveDay = day(tuesday, inactiveSchedule)
-        assertNull(
+        assertEquals(
+            intended.sessionId,
             MorningEnforcement.effectivePendingMorning(
                 persisted = emptyList(),
                 failedCurrentDay = listOf(intended),
                 currentAttentionDayId = inactiveDay.id,
-            )
+            )?.sessionId,
         )
         assertNull(
             MorningEnforcement.reconcileRequirements(
@@ -577,15 +578,17 @@ class MorningEnforcementTest {
         )
 
         val previousDayFailed = requirement("ad-20260927-0830", 50L)
-        assertNull(
+        assertEquals(
+            previousDayFailed.sessionId,
             MorningEnforcement.effectivePendingMorning(
                 emptyList(), listOf(previousDayFailed), day,
-            )
+            )?.sessionId,
         )
-        assertTrue(
+        assertEquals(
+            1,
             MorningEnforcement.effectiveMorningRequirements(
                 emptyList(), listOf(previousDayFailed), day,
-            ).isEmpty()
+            ).size,
         )
         assertEquals(
             failed.sessionId,
@@ -620,7 +623,7 @@ class MorningEnforcementTest {
     }
 
     @Test
-    fun `effective transient failures require exact unpersisted current binding`() {
+    fun `effective transient failures require exact unpersisted binding across days`() {
         fun requirement(day: String, createdAt: Long) = NativeMorningMeditationState(
             attentionDayId = day,
             sessionId = "morning-$day",
@@ -673,12 +676,160 @@ class MorningEnforcementTest {
                 day,
             ).size
         )
-        assertTrue(
+        assertEquals(
+            1,
             MorningEnforcement.effectiveFailedMorningIntents(
                 emptyList(),
                 listOf(requirement("ad-20260927-0830", 50L)),
                 day,
+            ).size
+        )
+    }
+
+    @Test
+    fun `multiple failed intents carry and successful persistence clears only its exact binding`() {
+        fun requirement(day: String, createdAt: Long) = NativeMorningMeditationState(
+            attentionDayId = day,
+            sessionId = "morning-$day",
+            requiredQualifiedSeconds = 1800,
+            createdAt = createdAt,
+            satisfied = false,
+            sourceRhythmicDayId = day,
+            sessionKind = "MORNING_REQUIRED",
+        )
+        val first = requirement("ad-20260927-0830", 50L)
+        val second = requirement("ad-20260928-0830", 100L)
+        val effective = MorningEnforcement.effectiveMorningRequirements(
+            persisted = emptyList(),
+            failedCurrentDay = listOf(first, second),
+            currentAttentionDayId = "ad-20260929-0830",
+        )
+        assertEquals(listOf(first.sessionId, second.sessionId), effective.map { it.sessionId })
+        assertEquals(
+            first.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                emptyList(), listOf(first, second), "ad-20260929-0830",
+            )?.sessionId
+        )
+
+        val persistedFirst = listOf(first.copy())
+        val remainingFailure = MorningEnforcement.effectiveFailedMorningIntents(
+            persisted = persistedFirst,
+            failedCurrentDay = listOf(first, second),
+            currentAttentionDayId = "ad-20260929-0830",
+        )
+        assertEquals(listOf(second.sessionId), remainingFailure.map { it.sessionId })
+        assertEquals(
+            first.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                persistedFirst, listOf(first, second), "ad-20260929-0830",
+            )?.sessionId
+        )
+
+        val completedFirst = listOf(first.copy(satisfied = true, satisfiedAt = 300L))
+        assertEquals(
+            second.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                completedFirst, listOf(first, second), "ad-20260929-0830",
+            )?.sessionId
+        )
+    }
+
+    @Test
+    fun `service commit seam retains and clears only exact failed intents`() {
+        fun requirement(day: String, createdAt: Long) = NativeMorningMeditationState(
+            attentionDayId = day,
+            sessionId = "morning-$day",
+            requiredQualifiedSeconds = 1800,
+            createdAt = createdAt,
+            satisfied = false,
+            sourceRhythmicDayId = day,
+            sessionKind = "MORNING_REQUIRED",
+        )
+        val first = requirement("ad-20260927-0830", 50L)
+        val second = requirement("ad-20260928-0830", 100L)
+        val attentionDay = NativeAttentionDayState("ad-20260929-0830", 200L, 100L)
+        val migration = MorningEnforcement.migrationFor("fresh", attentionDay.id, 100L)
+        assertFalse(
+            MorningEnforcement.morningTransitionNeedsPersistence(
+                next = emptyList(),
+                persisted = emptyList(),
+                oldestPending = null,
+                persistedOldestPending = null,
+                migration = migration,
+                persistedMigration = migration,
+                attentionDay = attentionDay,
+                persistedAttentionDay = attentionDay,
+            )
+        )
+        assertTrue(
+            MorningEnforcement.morningTransitionNeedsPersistence(
+                next = listOf(first),
+                persisted = emptyList(),
+                oldestPending = first,
+                persistedOldestPending = null,
+                migration = migration,
+                persistedMigration = migration,
+                attentionDay = attentionDay,
+                persistedAttentionDay = attentionDay,
+            )
+        )
+
+        val firstFailure = MorningEnforcement.failedIntentsAfterFailedCommit(
+            persisted = emptyList(),
+            pendingTarget = listOf(first),
+            failedBefore = emptyList(),
+        )
+        assertEquals(listOf(first), firstFailure)
+
+        val retryFailure = MorningEnforcement.failedIntentsAfterFailedCommit(
+            persisted = emptyList(),
+            pendingTarget = listOf(first),
+            failedBefore = firstFailure,
+        )
+        assertEquals(listOf(first), retryFailure)
+
+        val afterSuccess = MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+            persisted = listOf(first.copy()),
+            failedBefore = retryFailure,
+        )
+        assertTrue(afterSuccess.isEmpty())
+        assertEquals(
+            first.sessionId,
+            MorningEnforcement.effectivePendingMorning(
+                listOf(first.copy()), afterSuccess, "ad-20260929-0830",
+            )?.sessionId
+        )
+
+        val wrongIdentityCompletion = listOf(first.copy(sessionId = "wrong"))
+        assertEquals(
+            listOf(first),
+            MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+                wrongIdentityCompletion,
+                firstFailure,
+            ),
+        )
+        assertTrue(
+            MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+                listOf(first.copy(satisfied = true, satisfiedAt = 300L)),
+                firstFailure,
             ).isEmpty()
+        )
+        assertEquals(
+            "a no-op success cannot clear an unrepresented failed intent",
+            listOf(first),
+            MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+                emptyList(),
+                firstFailure,
+            ),
+        )
+
+        assertEquals(
+            listOf(second),
+            MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+                listOf(first.copy()),
+                listOf(first, second),
+            )
         )
     }
 

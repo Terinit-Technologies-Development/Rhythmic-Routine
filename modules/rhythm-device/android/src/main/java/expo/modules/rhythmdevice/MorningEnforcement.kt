@@ -229,21 +229,68 @@ object MorningEnforcement {
      * predicate, bridge snapshot and diagnostics.
      *
      * - Persisted historical pending obligations are retained (oldest-first).
-     * - A process-local failed creation intent is eligible only for the current
-     *   Attention Day and only when the authoritative persisted state does not
-     *   prove that EXACT immutable binding is complete.
+     * - A process-local failed creation intent is carried across days until its
+     *   exact immutable binding is durably represented.
      * - Persisted rows win over a failed copy for the same day; an unrelated
      *   completion identity never clears the failed intent.
      */
+    /**
+     * Failed intents retained after a successful/no-op persistence. Only exact
+     * immutable bindings now represented durably are cleared; persisted creation
+     * alone does not mark the obligation complete.
+     */
+    fun failedIntentsAfterSuccessfulCommit(
+        persisted: List<NativeMorningMeditationState>,
+        failedBefore: Collection<NativeMorningMeditationState>,
+    ): List<NativeMorningMeditationState> =
+        failedBefore
+            .filterNot { failed -> persisted.any { sameMorningBinding(it, failed) } }
+            .distinctBy { it.attentionDayId }
+            .sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+
+    /**
+     * Failed intents retained after a failed commit: every prior real intent plus
+     * any still-unpersisted pending target. Existing intents win for the same day
+     * so the original immutable binding is never replaced by a recomputation.
+     */
+    fun failedIntentsAfterFailedCommit(
+        persisted: List<NativeMorningMeditationState>,
+        pendingTarget: List<NativeMorningMeditationState>,
+        failedBefore: Collection<NativeMorningMeditationState>,
+    ): List<NativeMorningMeditationState> {
+        val byDay = LinkedHashMap<String, NativeMorningMeditationState>()
+        failedBefore.sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+            .forEach { byDay[it.attentionDayId] = it }
+        pendingTarget
+            .filter { it.satisfiedAt == null }
+            .filterNot { target -> persisted.any { sameMorningBinding(it, target) } }
+            .forEach { byDay.putIfAbsent(it.attentionDayId, it) }
+        return byDay.values.sortedWith(compareBy({ it.createdAt }, { it.attentionDayId }))
+    }
+
+    fun morningTransitionNeedsPersistence(
+        next: List<NativeMorningMeditationState>,
+        persisted: List<NativeMorningMeditationState>,
+        oldestPending: NativeMorningMeditationState?,
+        persistedOldestPending: NativeMorningMeditationState?,
+        migration: NativeMorningMigrationState,
+        persistedMigration: NativeMorningMigrationState?,
+        attentionDay: NativeAttentionDayState,
+        persistedAttentionDay: NativeAttentionDayState?,
+    ): Boolean =
+        next != persisted ||
+            oldestPending != persistedOldestPending ||
+            migration != persistedMigration ||
+            attentionDay != persistedAttentionDay
+
     fun effectiveMorningRequirements(
         persisted: List<NativeMorningMeditationState>,
         failedCurrentDay: Collection<NativeMorningMeditationState>,
-        currentAttentionDayId: String,
+        currentAttentionDayId: String, // legacy API; failed intents carry across days
     ): List<NativeMorningMeditationState> {
         val result = persisted.toMutableList()
         val persistedByDay = persisted.associateBy { it.attentionDayId }
         for (failed in failedCurrentDay) {
-            if (failed.attentionDayId != currentAttentionDayId) continue
             val existing = persistedByDay[failed.attentionDayId]
             if (existing == null) {
                 if (result.none { it.sessionId == failed.sessionId }) result.add(failed)
@@ -293,7 +340,7 @@ object MorningEnforcement {
     fun effectiveFailedMorningIntents(
         persisted: List<NativeMorningMeditationState>,
         failedCurrentDay: Collection<NativeMorningMeditationState>,
-        currentAttentionDayId: String,
+        currentAttentionDayId: String, // legacy API; failed intents carry across days
     ): List<NativeMorningMeditationState> {
         val effective = effectiveMorningRequirements(
             persisted,
@@ -301,7 +348,6 @@ object MorningEnforcement {
             currentAttentionDayId,
         )
         return failedCurrentDay
-            .filter { it.attentionDayId == currentAttentionDayId }
             .filter { failed ->
                 effective.any { sameMorningBinding(it, failed) } &&
                     persisted.none { sameMorningBinding(it, failed) }

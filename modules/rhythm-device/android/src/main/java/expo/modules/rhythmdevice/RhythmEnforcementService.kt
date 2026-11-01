@@ -886,6 +886,8 @@ class RhythmEnforcementService : AccessibilityService() {
         /** Process-local fail-closed binding when the first durable morning commit fails. */
         private val failedMorningRequirements =
             java.util.concurrent.ConcurrentHashMap<String, NativeMorningMeditationState>()
+        // Limitation: process death before ANY durable success cannot preserve this
+        // RAM-only intent. Startup can recreate only the current eligible binding.
         @Volatile private var morningPersistenceFailureStage: String? = null
         @Volatile private var morningPersistenceFailureAt: Long = 0L
         fun getLocalDateKey(timestamp: Long = System.currentTimeMillis()): String = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
@@ -1976,16 +1978,23 @@ class RhythmEnforcementService : AccessibilityService() {
             context: Context,
             now: Long = System.currentTimeMillis()
         ): Boolean {
-            // Provider/Binder reads happen OUTSIDE the persistence lock.
+            // Provider/Binder reads happen OUTSIDE the persistence lock. Include
+            // real in-process failed bindings so an old obligation is retried,
+            // never recomputed from calendar history.
             val initial = RestorativeEnforcement.load(context)
+            val initialFailed = failedMorningRequirementsSnapshot()
+            val initialRequirements = (initial.allMorningRequirements() + initialFailed)
+                .associateBy { it.attentionDayId }
+                .values
             val evidenceBySession = LinkedHashMap<String, NativeMeditationSessionResult>()
-            for (requirement in initial.allMorningRequirements().filter { it.satisfiedAt == null }) {
+            for (requirement in initialRequirements.filter { it.satisfiedAt == null }) {
                 val result = MeditationStatusProviderClient.query(context, requirement.sessionId)
                 evidenceBySession[requirement.sessionId] = result
             }
             val cohort = if (hasPriorNativeAttentionState(context)) "upgraded" else "fresh"
 
-            // Reload the latest accepted snapshot, rebase, then commit atomically.
+            // Reload the latest accepted snapshot, merge real failed intents,
+            // rebase, then commit atomically.
             return NativePolicyPersistence.withReadSnapshot {
                 val latest = RestorativeEnforcement.load(context)
                 val schedule = loadRoutineSchedule(context)
@@ -1995,7 +2004,12 @@ class RhythmEnforcementService : AccessibilityService() {
                     attentionDayId = attentionDay.id,
                     now = now,
                 )
-                val existing = latest.allMorningRequirements()
+                val persistedRequirements = latest.allMorningRequirements()
+                val existing = MorningEnforcement.effectiveMorningRequirements(
+                    persisted = persistedRequirements,
+                    failedCurrentDay = failedMorningRequirements.values,
+                    currentAttentionDayId = attentionDay.id,
+                )
                 val next = MorningEnforcement.reconcileRequirementsWithResults(
                     existing = existing,
                     attentionDay = attentionDay,
@@ -2007,13 +2021,18 @@ class RhythmEnforcementService : AccessibilityService() {
                 val oldestPending = next.filter { it.satisfiedAt == null }
                     .minWithOrNull(compareBy({ it.createdAt }, { it.attentionDayId }))
                     ?: next.firstOrNull()
-                if (
-                    next == existing &&
-                    oldestPending == latest.morningMeditation &&
-                    migration == latest.morningMigration &&
-                    attentionDay == latest.attentionDay
+                if (!MorningEnforcement.morningTransitionNeedsPersistence(
+                        next = next,
+                        persisted = persistedRequirements,
+                        oldestPending = oldestPending,
+                        persistedOldestPending = latest.morningMeditation,
+                        migration = migration,
+                        persistedMigration = latest.morningMigration,
+                        attentionDay = attentionDay,
+                        persistedAttentionDay = latest.attentionDay,
+                    )
                 ) {
-                    clearMorningFailure(attentionDay.id)
+                    clearPersistedMorningFailures(persistedRequirements)
                     return@withReadSnapshot true
                 }
                 val saved = RestorativeEnforcement.persist(
@@ -2026,15 +2045,9 @@ class RhythmEnforcementService : AccessibilityService() {
                     ),
                 )
                 if (saved) {
-                    clearMorningFailure(attentionDay.id)
+                    clearPersistedMorningFailures(next)
                 } else {
-                    next.firstOrNull {
-                        it.attentionDayId == attentionDay.id && it.satisfiedAt == null
-                    }?.let { requirement ->
-                        failedMorningRequirements[attentionDay.id] = requirement
-                        morningPersistenceFailureStage = "morning-requirement-commit"
-                        morningPersistenceFailureAt = now
-                    }
+                    recordUnpersistedMorningFailures(next, persistedRequirements, now)
                 }
                 saved
             }
@@ -2056,11 +2069,43 @@ class RhythmEnforcementService : AccessibilityService() {
             return RestorativeEnforcement.load(context).restorativeGates.isNotEmpty()
         }
 
-        private fun clearMorningFailure(attentionDayId: String) {
-            failedMorningRequirements.remove(attentionDayId)
+        private fun replaceFailedMorningIntents(
+            intents: Collection<NativeMorningMeditationState>,
+        ) {
+            failedMorningRequirements.clear()
+            intents.forEach { failedMorningRequirements[it.attentionDayId] = it }
             if (failedMorningRequirements.isEmpty()) {
                 morningPersistenceFailureStage = null
                 morningPersistenceFailureAt = 0L
+            }
+        }
+
+        private fun clearPersistedMorningFailures(
+            persisted: List<NativeMorningMeditationState>,
+        ) {
+            replaceFailedMorningIntents(
+                MorningEnforcement.failedIntentsAfterSuccessfulCommit(
+                    persisted,
+                    failedMorningRequirements.values,
+                )
+            )
+        }
+
+        private fun recordUnpersistedMorningFailures(
+            next: List<NativeMorningMeditationState>,
+            persisted: List<NativeMorningMeditationState>,
+            now: Long,
+        ) {
+            replaceFailedMorningIntents(
+                MorningEnforcement.failedIntentsAfterFailedCommit(
+                    persisted,
+                    next,
+                    failedMorningRequirements.values,
+                )
+            )
+            if (failedMorningRequirements.isNotEmpty()) {
+                morningPersistenceFailureStage = "morning-requirement-commit"
+                morningPersistenceFailureAt = now
             }
         }
 
