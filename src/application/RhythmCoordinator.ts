@@ -33,7 +33,7 @@ import {
   buildMorningMeditationRequest,
 } from '../platform/NativeMeditationBridge';
 import {
-  isMorningMeditationSatisfied,
+  isMorningEvidenceForRequirement,
   attentionDayStartedAtFromId,
   type MorningMeditationRequirement,
 } from '../domain/rhythm/morningMeditation';
@@ -905,6 +905,33 @@ export class RhythmCoordinator {
     return this.runExclusive(() => this.refreshMorningMeditationEvidenceLocked(now));
   }
 
+  private morningDiagnosticProjection(): {
+    requirement?: MorningMeditationRequirement;
+    satisfied: boolean;
+  } {
+    const state = this.engine?.getRuntime().morningMeditation;
+    const requirements = state?.requirements?.length
+      ? state.requirements
+      : state?.requirement
+      ? [state.requirement]
+      : [];
+    const represented =
+      state?.requirement ??
+      requirements.find((item) => item.satisfiedAt === undefined) ??
+      requirements[0];
+    const committed = represented
+      ? requirements.find(
+          (item) =>
+            item.sessionId === represented.sessionId &&
+            item.attentionDayId === represented.attentionDayId
+        ) ?? represented
+      : undefined;
+    return {
+      ...(represented ? { requirement: represented } : {}),
+      satisfied: committed?.satisfiedAt !== undefined,
+    };
+  }
+
   private async refreshMorningMeditationEvidenceLocked(now: number = Date.now()): Promise<void> {
     if (!this.engine) return;
     if (this.morningRefreshPromise) {
@@ -958,35 +985,63 @@ export class RhythmCoordinator {
       }
       const identityMetadataAvailable =
         result.identityMetadataAvailable ?? hasMeditationIdentityMetadata(result.evidence);
-      const providerVerified = identityMetadataAvailable &&
-        isMorningMeditationSatisfied({ requirement, evidence: result.evidence });
+      const appliedAt = Date.now();
+      const engine = this.engine;
+      const currentRequirement = engine?.getRuntime().morningMeditation?.requirement;
+      const sameBinding = Boolean(
+        currentRequirement &&
+          currentRequirement.sessionId === requirement.sessionId &&
+          currentRequirement.attentionDayId === requirement.attentionDayId &&
+          currentRequirement.createdAt === requirement.createdAt
+      );
+      const evidenceExact = Boolean(
+        currentRequirement &&
+          isMorningEvidenceForRequirement(currentRequirement, result.evidence)
+      );
+      const diagnosticBefore = this.morningDiagnosticProjection();
       this.morningDiagnostics = {
-        requirement,
-        satisfied: requirement.satisfiedAt !== undefined || providerVerified,
+        ...(diagnosticBefore.requirement
+          ? { requirement: diagnosticBefore.requirement }
+          : {}),
+        satisfied: diagnosticBefore.satisfied,
         availability: result.availability,
         identityMetadataAvailable,
         ...(result.evidence
           ? {}
           : { providerError: result.sessionMissing ? 'session-missing' : 'session-unavailable' }),
-        updatedAt: now,
+        updatedAt: appliedAt,
       };
 
-      // An old provider without identity metadata is a visible capability
-      // limitation. It can never satisfy the morning gate and dispatch is
-      // skipped so no naked seven-column row is treated as a match.
-      if (!result.evidence || !identityMetadataAvailable) {
+      // Reject wrong ID/kind/day/source/partial metadata and stale requirement
+      // bindings BEFORE dispatching. A delayed provider row must not touch
+      // unrelated gate/ledger/date state.
+      if (
+        !engine ||
+        !result.evidence ||
+        !identityMetadataAvailable ||
+        !sameBinding ||
+        !evidenceExact
+      ) {
         this.notifyListeners();
         return;
       }
-      if (!this.engine) return;
-      const engine = this.engine;
       const effects = engine.dispatch({
         type: 'SYNC_MEDITATION_EVIDENCE',
         evidence: result.evidence,
-        timestamp: now,
+        timestamp: appliedAt,
       });
       await this.executeEffects(effects);
-      await getPlatformServices().storage.saveRuntime(engine.toPersistedRuntime(now));
+      const diagnosticAfter = this.morningDiagnosticProjection();
+      this.morningDiagnostics = {
+        ...(diagnosticAfter.requirement
+          ? { requirement: diagnosticAfter.requirement }
+          : {}),
+        satisfied: diagnosticAfter.satisfied,
+        availability: result.availability,
+        identityMetadataAvailable,
+        updatedAt: appliedAt,
+      };
+      await getPlatformServices().storage.saveRuntime(engine.toPersistedRuntime(appliedAt));
       await this.syncNativeState();
       this.notifyListeners();
     })();

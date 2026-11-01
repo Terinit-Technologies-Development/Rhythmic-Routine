@@ -8,6 +8,7 @@ import {
 } from '../meditationEvidence';
 import {
   createMorningMeditationRequirement,
+  isMorningEvidenceForRequirement,
   isMorningMeditationSatisfied,
 } from '../morningMeditation';
 
@@ -78,6 +79,22 @@ describe('R17 — native evidence wire identity', () => {
     assert.equal(hasMeditationIdentityMetadata(evidence), false);
     const requirement = createMorningMeditationRequirement('ad-20260928-0830', 1800, 1);
     assert.equal(isMorningMeditationSatisfied({ requirement, evidence }), false);
+  });
+
+  test('missing cooldown field is not treated as verified explicit null', () => {
+    const requirement = createMorningMeditationRequirement('ad-20260928-0830', 1800, 1);
+    const missingCooldown: Record<string, unknown> = { ...morningWire };
+    delete missingCooldown.sourceCooldownId;
+    const parsed = parseMeditationSessionEvidence(missingCooldown);
+    assert.equal(hasMeditationIdentityMetadata(parsed), false);
+    assert.equal(isMorningEvidenceForRequirement(requirement, parsed), false);
+    assert.equal(isMorningMeditationSatisfied({ requirement, evidence: parsed }), false);
+
+    const forgedIdentity = {
+      ...parseMeditationSessionEvidence(morningWire)!,
+      sourceCooldownId: undefined,
+    };
+    assert.equal(isMorningEvidenceForRequirement(requirement, forgedIdentity), false);
   });
 
   test('wrong or incomplete morning identity cannot satisfy', () => {

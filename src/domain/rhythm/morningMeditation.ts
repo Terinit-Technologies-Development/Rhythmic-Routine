@@ -1,6 +1,7 @@
 import type { RoutineWindow } from '../../types/domain';
 import {
   DEFAULT_MEDITATION_REQUIRED_SECONDS,
+  MEDITATION_PROTOCOL_VERSION,
   isVerifiedMeditationCompletion,
   type MeditationSessionEvidence,
 } from './meditationEvidence';
@@ -201,6 +202,21 @@ export function createMorningMigrationState(
       };
 }
 
+/** True only for the exact bound session and owning-day identity metadata. */
+export function isMorningEvidenceForRequirement(
+  requirement: MorningMeditationRequirement,
+  evidence?: MeditationSessionEvidence | null
+): boolean {
+  return Boolean(
+    evidence &&
+      evidence.sessionId === requirement.sessionId &&
+      evidence.protocolVersion === MEDITATION_PROTOCOL_VERSION &&
+      evidence.sessionKind === MORNING_SESSION_KIND &&
+      evidence.sourceRhythmicDayId === requirement.attentionDayId &&
+      evidence.sourceCooldownId === null
+  );
+}
+
 /** True only for the exact MORNING_REQUIRED binding and owning day. */
 export function isVerifiedMorningMeditationCompletion(input: {
   requirement?: MorningMeditationRequirement;
@@ -208,9 +224,7 @@ export function isVerifiedMorningMeditationCompletion(input: {
 }): boolean {
   const { requirement, evidence } = input;
   if (!requirement || !evidence) return false;
-  if (evidence.sessionKind !== MORNING_SESSION_KIND) return false;
-  if (evidence.sourceRhythmicDayId !== requirement.attentionDayId) return false;
-  if (evidence.sourceCooldownId != null) return false;
+  if (!isMorningEvidenceForRequirement(requirement, evidence)) return false;
   return isVerifiedMeditationCompletion({
     evidence,
     sessionId: requirement.sessionId,
