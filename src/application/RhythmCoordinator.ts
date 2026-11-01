@@ -767,12 +767,12 @@ export class RhythmCoordinator {
         };
       }
       const identityMetadataAvailable =
-        result.identityMetadataAvailable ?? Boolean(result.evidence?.sessionKind);
+        result.identityMetadataAvailable ?? hasMeditationIdentityMetadata(result.evidence);
+      const providerVerified = identityMetadataAvailable &&
+        isMorningMeditationSatisfied({ requirement, evidence: result.evidence });
       this.morningDiagnostics = {
         requirement,
-        satisfied:
-          requirement.satisfiedAt !== undefined ||
-          isMorningMeditationSatisfied({ requirement, evidence: result.evidence }),
+        satisfied: requirement.satisfiedAt !== undefined || providerVerified,
         availability: result.availability,
         identityMetadataAvailable,
         ...(result.evidence

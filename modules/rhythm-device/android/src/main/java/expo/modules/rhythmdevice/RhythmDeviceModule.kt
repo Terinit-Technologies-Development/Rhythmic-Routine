@@ -601,7 +601,8 @@ class RhythmDeviceModule : Module() {
     AsyncFunction("queryMeditationStatus") { sessionId: String ->
       val context = appContext.reactContext ?: return@AsyncFunction null
       val result = MeditationStatusProviderClient.query(context, sessionId)
-      return@AsyncFunction result.evidence?.let { meditationEvidenceMap(it) }
+      val evidence = result.evidence ?: return@AsyncFunction null
+      return@AsyncFunction meditationEvidenceMap(evidence, result.identityMetadataAvailable)
     }
 
     AsyncFunction("queryDailyReadingEvidence") { dateKey: String ->
@@ -637,18 +638,10 @@ class RhythmDeviceModule : Module() {
     put("updatedAtEpochMs", evidence.updatedAtEpochMs.toDouble())
   }
 
-  private fun meditationEvidenceMap(evidence: NativeMeditationSessionEvidence): Map<String, Any?> = buildMap {
-    put(MeditationContract.COLUMN_SESSION_ID, evidence.sessionId)
-    put(MeditationContract.COLUMN_PROTOCOL_VERSION, evidence.protocolVersion)
-    put(MeditationContract.COLUMN_STATUS, evidence.status)
-    put(MeditationContract.COLUMN_REQUIRED_QUALIFIED_SECONDS, evidence.requiredQualifiedSeconds)
-    put(MeditationContract.COLUMN_COMPLETED_QUALIFIED_SECONDS, evidence.completedQualifiedSeconds)
-    put(MeditationContract.COLUMN_COMPLETED_AT_EPOCH_MS, evidence.completedAtEpochMs?.toDouble())
-    put(MeditationContract.COLUMN_LAST_UPDATED_AT_EPOCH_MS, evidence.lastUpdatedAtEpochMs?.toDouble())
-    evidence.sessionKind?.let { put(MeditationContract.COLUMN_SESSION_KIND, it) }
-    evidence.sourceCooldownId?.let { put(MeditationContract.COLUMN_SOURCE_COOLDOWN_ID, it) }
-    evidence.sourceRhythmicDayId?.let { put(MeditationContract.COLUMN_SOURCE_RHYTHMIC_DAY_ID, it) }
-  }
+  private fun meditationEvidenceMap(
+    evidence: NativeMeditationSessionEvidence,
+    identityMetadataAvailable: Boolean
+  ): Map<String, Any?> = MeditationEvidenceWire.toWireMap(evidence, identityMetadataAvailable)
 
   private fun attentionExchangeSnapshot(context: Context, now: Long): Map<String, Any?> {
     val dateKey = RhythmEnforcementService.getLocalDateKey(now)

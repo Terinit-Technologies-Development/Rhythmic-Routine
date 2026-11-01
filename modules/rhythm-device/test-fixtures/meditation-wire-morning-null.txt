@@ -1,0 +1,10 @@
+sessionId=morning-ad-20260928-0830
+protocolVersion=1
+status=COMPLETED
+requiredQualifiedSeconds=1800
+completedQualifiedSeconds=1800
+completedAtEpochMs=1790243200000
+lastUpdatedAtEpochMs=1790243260000
+sessionKind=MORNING_REQUIRED
+sourceCooldownId=null
+sourceRhythmicDayId=ad-20260928-0830
