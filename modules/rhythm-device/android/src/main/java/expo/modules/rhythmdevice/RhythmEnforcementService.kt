@@ -748,7 +748,12 @@ class RhythmEnforcementService : AccessibilityService() {
         }
     }
     fun onCooldownPoliciesChanged() { scheduleNearestCooldownExpiry(); recheckForeground() }
-    fun onRoutineScheduleChanged() { scheduleNextRoutineBoundary(); recheckForeground() }
+    fun onRoutineScheduleChanged() { scheduleNextRoutineBoundary() }
+    /**
+     * Rechecks only after the schedule's morning reconciliation has run, so an
+     * unchanged managed foreground observes the newly created/failed closed hold.
+     */
+    fun onMorningRequirementChanged() = recheckForeground()
     private fun recheckForeground() { val now = System.currentTimeMillis(); lastForegroundPackage?.let { if (isEffectivelyRestricted(applicationContext, it, now)) presentIntervention(it, findGroupPolicyForPackage(loadRiskGroupPolicies(applicationContext), it), loadCooldownForPackage(it, now)?.endsAt) } }
 
     fun reconcileUsage(fromTime: Long? = null, toTime: Long = System.currentTimeMillis()) {

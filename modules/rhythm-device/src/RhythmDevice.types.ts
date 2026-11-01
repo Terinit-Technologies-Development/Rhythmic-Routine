@@ -191,6 +191,7 @@ export interface NativeMorningMeditationInput {
   satisfiedAt?: number | null;
   sourceRhythmicDayId?: string;
   sessionKind?: string;
+  sourceCooldownId?: string | null;
   expiresAtEpochMs?: number | null;
 }
 

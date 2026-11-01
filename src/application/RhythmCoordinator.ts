@@ -7,6 +7,7 @@ import {
   RhythmEffect,
   RhythmEvent,
   RhythmRuntime,
+  type MorningMeditationRuntimeState,
 } from '../domain/rhythm/types';
 import type {
   NativeAttentionExchangeSnapshot,
@@ -174,75 +175,7 @@ function createNativeAttentionImportEvent(
       }
     : undefined;
 
-  const toMorningRequirement = (raw: NativeMorningMeditationInput | null | undefined) => {
-    if (
-      !raw ||
-      typeof raw.attentionDayId !== 'string' ||
-      raw.attentionDayId.length === 0 ||
-      typeof raw.sessionId !== 'string' ||
-      raw.sessionId.length === 0 ||
-      !Number.isInteger(raw.requiredQualifiedSeconds) ||
-      raw.requiredQualifiedSeconds <= 0
-    ) {
-      return undefined;
-    }
-    return {
-      attentionDayId: raw.attentionDayId,
-      sessionId: raw.sessionId,
-      requiredQualifiedSeconds: raw.requiredQualifiedSeconds,
-      ...(isFiniteNonNegative(raw.createdAt) ? { createdAt: raw.createdAt } : {}),
-      ...(typeof raw.sourceRhythmicDayId === 'string'
-        ? { sourceRhythmicDayId: raw.sourceRhythmicDayId }
-        : {}),
-      sessionKind: 'MORNING_REQUIRED' as const,
-      sourceCooldownId: null,
-      ...(isFiniteNonNegative(raw.satisfiedAt) ? { satisfiedAt: raw.satisfiedAt } : {}),
-      ...(isFiniteNonNegative(raw.expiresAtEpochMs)
-        ? { expiresAtEpochMs: raw.expiresAtEpochMs }
-        : {}),
-    };
-  };
-  const nativeMorningRequirements = (
-    Array.isArray(snapshot.morningRequirements)
-      ? snapshot.morningRequirements
-      : snapshot.morningMeditation
-      ? [snapshot.morningMeditation]
-      : []
-  )
-    .map(toMorningRequirement)
-    .filter(
-      (item): item is NonNullable<ReturnType<typeof toMorningRequirement>> =>
-        item !== undefined
-    );
-  const nativeMorningRequirement =
-    nativeMorningRequirements.find((item) => item.satisfiedAt === undefined) ??
-    nativeMorningRequirements[0];
-  const nativeMorningMigration = snapshot.morningMigration &&
-    Number.isFinite(snapshot.morningMigration.migratedAt) &&
-    typeof snapshot.morningMigration.migrationAttentionDayId === 'string'
-    ? {
-        migratedAt: snapshot.morningMigration.migratedAt,
-        migrationAttentionDayId: snapshot.morningMigration.migrationAttentionDayId,
-        ...(typeof snapshot.morningMigration.enforceableFromAttentionDayId === 'string'
-          ? {
-              enforceableFromAttentionDayId:
-                snapshot.morningMigration.enforceableFromAttentionDayId,
-            }
-          : {}),
-      }
-    : undefined;
-  const morningMeditation =
-    nativeMorningRequirements.length > 0 || nativeMorningMigration
-      ? {
-          ...(nativeMorningRequirement
-            ? { requirement: nativeMorningRequirement }
-            : {}),
-          ...(nativeMorningRequirements.length > 0
-            ? { requirements: nativeMorningRequirements }
-            : {}),
-          ...(nativeMorningMigration ? { migration: nativeMorningMigration } : {}),
-        }
-      : undefined;
+  const morningMeditation = createNativeMorningProjection(snapshot);
 
   return {
     type: 'SYNC_NATIVE_ATTENTION_EXCHANGE',
@@ -273,6 +206,100 @@ function createNativeAttentionImportEvent(
     ...(readingEvidence ? { readingEvidence } : {}),
     ...(morningMeditation ? { morningMeditation } : {}),
     timestamp: now,
+  };
+}
+
+/**
+ * Builds the native morning projection independently of the unrelated
+ * attention-exchange initialization flag. Missing fields stay unknown (never
+ * fabricated/cleared); the current oldest pending native binding is retained
+ * exactly, including its native creation time and owning Attention Day.
+ */
+export function createNativeMorningProjection(
+  snapshot: NativeAttentionExchangeSnapshot | null | undefined
+): MorningMeditationRuntimeState | undefined {
+  if (!snapshot) return undefined;
+  const toMorningRequirement = (raw: NativeMorningMeditationInput | null | undefined) => {
+    if (
+      !raw ||
+      typeof raw.attentionDayId !== 'string' ||
+      raw.attentionDayId.length === 0 ||
+      typeof raw.sessionId !== 'string' ||
+      raw.sessionId.length === 0 ||
+      raw.sessionId !== `morning-${raw.attentionDayId}` ||
+      !Number.isInteger(raw.requiredQualifiedSeconds) ||
+      raw.requiredQualifiedSeconds <= 0 ||
+      (raw.sourceCooldownId !== undefined && raw.sourceCooldownId !== null) ||
+      (typeof raw.sourceRhythmicDayId === 'string' &&
+        raw.sourceRhythmicDayId.length > 0 &&
+        raw.sourceRhythmicDayId !== raw.attentionDayId) ||
+      (typeof raw.sessionKind === 'string' &&
+        raw.sessionKind.length > 0 &&
+        raw.sessionKind !== 'MORNING_REQUIRED')
+    ) {
+      return undefined;
+    }
+    return {
+      attentionDayId: raw.attentionDayId,
+      sessionId: raw.sessionId,
+      requiredQualifiedSeconds: raw.requiredQualifiedSeconds,
+      ...(isFiniteNonNegative(raw.createdAt) ? { createdAt: raw.createdAt } : {}),
+      ...(typeof raw.sourceRhythmicDayId === 'string' &&
+      raw.sourceRhythmicDayId.length > 0
+        ? { sourceRhythmicDayId: raw.sourceRhythmicDayId }
+        : {}),
+      sessionKind: 'MORNING_REQUIRED' as const,
+      sourceCooldownId: null,
+      ...(raw.satisfied === true && isFiniteNonNegative(raw.satisfiedAt)
+        ? { satisfiedAt: raw.satisfiedAt }
+        : {}),
+      ...(isFiniteNonNegative(raw.expiresAtEpochMs)
+        ? { expiresAtEpochMs: raw.expiresAtEpochMs }
+        : {}),
+    };
+  };
+  const requirements = (
+    Array.isArray(snapshot.morningRequirements)
+      ? snapshot.morningRequirements
+      : snapshot.morningMeditation
+      ? [snapshot.morningMeditation]
+      : []
+  )
+    .map(toMorningRequirement)
+    .filter(
+      (item): item is NonNullable<ReturnType<typeof toMorningRequirement>> =>
+        item !== undefined
+    )
+    .sort(
+      (a, b) =>
+        (a.createdAt ?? 0) - (b.createdAt ?? 0) ||
+        a.attentionDayId.localeCompare(b.attentionDayId)
+    );
+  const requirement =
+    requirements.find((item) => item.satisfiedAt === undefined) ??
+    requirements[0];
+  const rawMigration = snapshot.morningMigration;
+  const migration = rawMigration &&
+    Number.isFinite(rawMigration.migratedAt) &&
+    typeof rawMigration.migrationAttentionDayId === 'string' &&
+    rawMigration.migrationAttentionDayId.length > 0
+    ? {
+        migratedAt: rawMigration.migratedAt,
+        migrationAttentionDayId: rawMigration.migrationAttentionDayId,
+        ...(typeof rawMigration.enforceableFromAttentionDayId === 'string' &&
+        rawMigration.enforceableFromAttentionDayId.length > 0
+          ? {
+              enforceableFromAttentionDayId:
+                rawMigration.enforceableFromAttentionDayId,
+            }
+          : {}),
+      }
+    : undefined;
+  if (requirements.length === 0 && !migration) return undefined;
+  return {
+    ...(requirement ? { requirement } : {}),
+    ...(requirements.length > 0 ? { requirements } : {}),
+    ...(migration ? { migration } : {}),
   };
 }
 
@@ -642,9 +669,20 @@ export class RhythmCoordinator {
         if (event) {
           const effects = this.engine.dispatch(event);
           await this.executeEffects(effects);
-        } else if (!this.engine.getRuntime().nativeAttentionAuthority) {
-          const effects = this.engine.dispatch({ type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED', timestamp: now });
-          await this.executeEffects(effects);
+        } else {
+          if (!this.engine.getRuntime().nativeAttentionAuthority) {
+            const effects = this.engine.dispatch({ type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED', timestamp: now });
+            await this.executeEffects(effects);
+          }
+          const morningProjection = createNativeMorningProjection(snapshot);
+          if (morningProjection) {
+            const morningEffects = this.engine.dispatch({
+              type: 'SYNC_NATIVE_MORNING_PROJECTION',
+              morningMeditation: morningProjection,
+              timestamp: now,
+            });
+            await this.executeEffects(morningEffects);
+          }
         }
       } else if (snapshot) {
         // Upgrade bridge for pre-v1.2 native cooldowns: restore existing timers
@@ -690,6 +728,20 @@ export class RhythmCoordinator {
           timestamp: now,
         });
         await this.executeEffects(effects);
+
+        // Morning state is independent of attentionStateInitialized. A bridge
+        // that predates attention-exchange metadata can still own a valid
+        // carried obligation; import it without inventing attention authority,
+        // counters, cooldown metadata, or migration metadata.
+        const morningProjection = createNativeMorningProjection(snapshot);
+        if (morningProjection) {
+          const morningEffects = this.engine.dispatch({
+            type: 'SYNC_NATIVE_MORNING_PROJECTION',
+            morningMeditation: morningProjection,
+            timestamp: now,
+          });
+          await this.executeEffects(morningEffects);
+        }
       }
 
       return;

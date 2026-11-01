@@ -1,6 +1,6 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
 import RhythmDeviceModule from '../../modules/rhythm-device';
-import { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import { NativeAttentionExchangeSnapshot, NativeRoutineWindowInput } from '../../modules/rhythm-device/src/RhythmDevice.types';
 import { offlineActivities } from '../data/mockData';
 import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
 import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
@@ -211,6 +211,56 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
     })),
   };
   return JSON.stringify(payload);
+}
+
+/**
+ * Projects windows in SEMANTIC configuration order. The native Attention Day
+ * resolver takes the first usable Morning Buffer clock, so sorting by id would
+ * silently choose a different boundary than the JS resolver.
+ */
+export function projectNativeRoutineSchedule(config: RhythmConfiguration): {
+  windows: NativeRoutineWindowInput[];
+  allRiskPackages: string[];
+} {
+  const allRiskPackages = config.apps
+    .filter((a) => a.classification === 'risk')
+    .map((a) => a.id)
+    .sort();
+
+  const windows = config.routineWindows
+    .filter(
+      (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
+        w.type === 'morning-buffer' ||
+        w.type === 'evening-wind-down'
+    )
+    .map((w) => {
+      const protectedPackageNames = new Set<string>();
+      for (const gid of w.protectedGroupIds) {
+        const grp = config.riskGroups.find((g) => g.id === gid);
+        if (grp) {
+          for (const pkg of grp.appIds) {
+            protectedPackageNames.add(pkg);
+          }
+        }
+      }
+      return {
+        id: w.id,
+        type: w.type,
+        startTime: w.startTime,
+        endTime: w.endTime ?? '00:00',
+        activeDays: [...w.activeDays].sort(),
+        protectedPackages: Array.from(protectedPackageNames).sort(),
+        enabled: w.enabled,
+      };
+    });
+
+  return { windows, allRiskPackages };
+}
+
+/** Android payload + idempotency fingerprint preserve semantic window order. */
+export function projectNativeRoutineSchedulePayload(config: RhythmConfiguration) {
+  const { windows, allRiskPackages } = projectNativeRoutineSchedule(config);
+  return sanitizeForNative({ windows, allRiskPackages });
 }
 
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
@@ -615,44 +665,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         // 3. Sync native routine schedule with explicit window types and allRiskPackages
         this.syncStage = 'routine-schedule';
         if (RhythmDeviceModule.setRoutineSchedule) {
-          const allRiskPackages = config.apps
-            .filter((a) => a.classification === 'risk')
-            .map((a) => a.id)
-            .sort();
-
-          const scheduleWindows = config.routineWindows
-            .filter(
-              (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
-                w.type === 'morning-buffer' ||
-                w.type === 'evening-wind-down'
-            )
-            .map((w) => {
-              const protectedPackageNames = new Set<string>();
-              for (const gid of w.protectedGroupIds) {
-                const grp = config.riskGroups.find((g) => g.id === gid);
-                if (grp) {
-                  for (const pkg of grp.appIds) {
-                    protectedPackageNames.add(pkg);
-                  }
-                }
-              }
-
-              return {
-                id: w.id,
-                type: w.type,
-                startTime: w.startTime,
-                endTime: w.endTime ?? '00:00',
-                activeDays: [...w.activeDays].sort(),
-                protectedPackages: Array.from(protectedPackageNames).sort(),
-                enabled: w.enabled,
-              };
-            })
-            .sort((a, b) => a.id.localeCompare(b.id));
-
-          const scheduleInput = sanitizeForNative({
-            windows: scheduleWindows,
-            allRiskPackages,
-          });
+          const scheduleInput = projectNativeRoutineSchedulePayload(config);
           const schedSig = JSON.stringify(scheduleInput);
           if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
             const saved = await RhythmDeviceModule.setRoutineSchedule(scheduleInput);

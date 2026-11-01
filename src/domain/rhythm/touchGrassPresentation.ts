@@ -1,4 +1,5 @@
 import type { AttentionGateStatus } from './attentionExchange';
+import type { RestorativeGatePhase } from './restorativeGate';
 import type { MorningMeditationRuntimeState } from './types';
 
 export type TouchGrassPresentationMode =
@@ -7,6 +8,7 @@ export type TouchGrassPresentationMode =
   | 'morning-and-attention'
   | 'cooldown'
   | 'attention'
+  | 'restorative'
   | 'none';
 
 export interface TouchGrassPresentation {
@@ -17,6 +19,7 @@ export interface TouchGrassPresentation {
   showCooldownTimer: boolean;
   showReadingRequirements: boolean;
   showMorningFocus: boolean;
+  showRestorativeHold: boolean;
   showCooldownFacts: boolean;
   emergencyLinkText: string;
 }
@@ -25,11 +28,20 @@ export function deriveTouchGrassPresentation(input: {
   morning?: MorningMeditationRuntimeState;
   hasActiveCooldown: boolean;
   attention?: AttentionGateStatus;
+  restorativeHold?: boolean;
+  restorativeGroupName?: string;
+  restorativeProvider?: 'reader' | 'meditation';
+  restorativePhase?: RestorativeGatePhase;
   groupName?: string;
   allowanceMinutes?: number;
   cooldownMinutes?: number;
 }): TouchGrassPresentation {
-  const morningPending = input.morning?.state === 'morning-meditation-required';
+  const morningPending =
+    input.morning?.state === 'morning-meditation-required' ||
+    Boolean(
+      input.morning?.requirement &&
+        input.morning.requirement.satisfiedAt === undefined
+    );
   const attentionActive = Boolean(
     input.attention &&
       input.attention.phase !== 'none' &&
@@ -41,6 +53,27 @@ export function deriveTouchGrassPresentation(input: {
       : 'Recovery break active.';
   const morningText =
     'Complete the bound morning meditation session to reopen managed nonessential apps. Essential apps, Routine and Meditation stay available.';
+  const restorativeHold = input.restorativeHold === true;
+  const restorativeUnavailable =
+    input.restorativePhase === 'reader-unavailable' ||
+    input.restorativePhase === 'reader-incompatible' ||
+    input.restorativePhase === 'meditation-unavailable' ||
+    input.restorativePhase === 'meditation-incompatible';
+  const restorativeProviderLabel =
+    input.restorativeProvider === 'reader'
+      ? 'bound Reader session'
+      : input.restorativeProvider === 'meditation'
+      ? 'bound Meditation session'
+      : 'Reader or Meditation session';
+  const restorativeText = !restorativeHold
+    ? ''
+    : `${restorativeUnavailable
+        ? 'The selected restorative verification is currently unavailable'
+        : 'A bound restorative requirement is still pending'}${
+        input.restorativeGroupName ? ` for ${input.restorativeGroupName}` : ''
+      }. Complete the ${restorativeProviderLabel} shown below; the obligation remains open until verified.`;
+  const withRestorative = (text: string) =>
+    restorativeHold ? `${text}\n${restorativeText}` : text;
   const emergencyLinkText = morningPending
     ? 'Emergency access cannot bypass morning focus'
     : 'Need emergency access?';
@@ -50,10 +83,11 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'morning-and-attention',
       title: 'Morning focus · Productive attention 🌱',
       badge: 'Morning focus · attention',
-      subtitle: `${morningText}\nThe cooldown has ended. Complete the verified productive-attention requirements too.`,
+      subtitle: withRestorative(`${morningText}\nThe cooldown has ended. Complete the verified productive-attention requirements too.`),
       showCooldownTimer: false,
       showReadingRequirements: true,
       showMorningFocus: true,
+      showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
     };
@@ -64,10 +98,11 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'morning-and-cooldown',
       title: 'Morning focus · Cooldown 🌱',
       badge: 'Morning focus · Cooldown',
-      subtitle: `${morningText}\n${cooldownFacts}`,
+      subtitle: withRestorative(`${morningText}\n${cooldownFacts}`),
       showCooldownTimer: true,
       showReadingRequirements: false,
       showMorningFocus: true,
+      showRestorativeHold: restorativeHold,
       showCooldownFacts: true,
       emergencyLinkText,
     };
@@ -78,10 +113,11 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'morning',
       title: 'Morning meditation required 🌱',
       badge: 'Morning focus',
-      subtitle: morningText,
+      subtitle: withRestorative(morningText),
       showCooldownTimer: false,
       showReadingRequirements: false,
       showMorningFocus: true,
+      showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
     };
@@ -92,17 +128,19 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'attention',
       title: 'Productive attention 🌱',
       badge: 'Productive attention',
-      subtitle:
+      subtitle: withRestorative(
         input.attention?.phase === 'reader-unavailable'
           ? 'The cooldown has ended. Reader evidence is unavailable, so productive attention cannot be verified yet.'
           : input.attention?.phase === 'reader-incompatible'
           ? 'The cooldown has ended. Reader evidence is incompatible with the required protocol.'
           : input.attention?.phase === 'satisfied'
           ? 'Both reading requirements are verified. Rhythm is updating your access.'
-          : 'The cooldown has ended. Complete both reading requirements to regain access.',
+          : 'The cooldown has ended. Complete both reading requirements to regain access.'
+      ),
       showCooldownTimer: false,
       showReadingRequirements: true,
       showMorningFocus: false,
+      showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
     };
@@ -113,11 +151,27 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'cooldown',
       title: input.groupName ? `${input.groupName} Cooldown 🌱` : 'Cooldown 🌱',
       badge: 'Cooldown in progress',
-      subtitle: cooldownFacts,
+      subtitle: withRestorative(cooldownFacts),
       showCooldownTimer: true,
       showReadingRequirements: false,
       showMorningFocus: false,
+      showRestorativeHold: restorativeHold,
       showCooldownFacts: true,
+      emergencyLinkText,
+    };
+  }
+
+  if (restorativeHold) {
+    return {
+      mode: 'restorative',
+      title: 'Restorative obligation pending 🌱',
+      badge: 'Restorative hold',
+      subtitle: restorativeText,
+      showCooldownTimer: false,
+      showReadingRequirements: false,
+      showMorningFocus: false,
+      showRestorativeHold: true,
+      showCooldownFacts: false,
       emergencyLinkText,
     };
   }
@@ -126,10 +180,11 @@ export function deriveTouchGrassPresentation(input: {
     mode: 'none',
     title: 'Touch grass 🌱',
     badge: 'No active hold',
-    subtitle: 'No active cooldown or morning obligation. Open the apps you choose consciously.',
+    subtitle: 'No active cooldown, morning obligation or restorative requirement. Routine schedule policy may still apply.',
     showCooldownTimer: false,
     showReadingRequirements: false,
     showMorningFocus: false,
+    showRestorativeHold: false,
     showCooldownFacts: false,
     emergencyLinkText,
   };

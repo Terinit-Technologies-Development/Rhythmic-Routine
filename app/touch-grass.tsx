@@ -32,6 +32,7 @@ export default function TouchGrassScreen() {
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const restorativeStatus = usePrototypeStore((s) => s.restorativeStatus);
+  const activeRestorativeGates = usePrototypeStore((s) => s.activeRestorativeGates);
   const selectRestorativeProvider = usePrototypeStore((s) => s.selectRestorativeProvider);
   const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
   const launchReaderForGate = usePrototypeStore((s) => s.launchReaderForGate);
@@ -41,6 +42,29 @@ export default function TouchGrassScreen() {
   const group = activeRiskGroupId
     ? riskGroups.find((g) => g.id === activeRiskGroupId)
     : undefined;
+  const restorativeGroup = restorativeStatus?.groupId
+    ? riskGroups.find((g) => g.id === restorativeStatus.groupId)
+    : group;
+  const pendingRestorativeGate = Object.values(activeRestorativeGates ?? {}).find(
+    (gate) => gate.status !== 'satisfied'
+  );
+  const restorativeHold = Boolean(
+    pendingRestorativeGate ||
+      (restorativeStatus &&
+        restorativeStatus.requirementKind !== 'none' &&
+        !restorativeStatus.gateSatisfied)
+  );
+  const restorativeGroupId =
+    pendingRestorativeGate?.groupId ?? restorativeStatus?.groupId;
+  const restorativeGroupName = restorativeGroupId
+    ? riskGroups.find((g) => g.id === restorativeGroupId)?.name
+    : restorativeGroup?.name;
+  const restorativeProvider =
+    pendingRestorativeGate?.selectedProvider ?? restorativeStatus?.selectedProvider;
+  const restorativePhase =
+    restorativeStatus?.groupId === restorativeGroupId
+      ? restorativeStatus?.phase
+      : undefined;
   const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
   const recovery = group?.cooldownMinutes;
 
@@ -78,6 +102,10 @@ export default function TouchGrassScreen() {
     hasActiveCooldown:
       rhythmState === 'cooldown' && countdownSeconds > 0,
     attention: attentionStatus,
+    restorativeHold,
+    restorativeGroupName,
+    restorativeProvider,
+    restorativePhase,
     groupName: group?.name,
     allowanceMinutes: threshold,
     cooldownMinutes: recovery,
@@ -183,12 +211,16 @@ export default function TouchGrassScreen() {
                 <Text style={styles.attentionRequirementPrimary}>
                   {presentation.showMorningFocus
                     ? 'Morning obligation in progress'
+                    : presentation.showRestorativeHold
+                    ? 'Restorative obligation in progress'
                     : 'No active hold'}
                 </Text>
                 <Text style={styles.attentionRequirementSecondary}>
                   {presentation.showMorningFocus
                     ? 'Use the morning meditation card below; the bound session is verified by Routine.'
-                    : 'Nothing is blocking access right now.'}
+                    : presentation.showRestorativeHold
+                    ? 'Complete the restorative task below; other routine policy may still apply.'
+                    : 'No cooldown, morning task or restorative task is currently blocking access.'}
                 </Text>
               </View>
             )}

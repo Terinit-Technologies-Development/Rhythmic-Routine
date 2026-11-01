@@ -640,6 +640,23 @@ export function processRhythmEvent(
       break;
     }
 
+    case 'SYNC_NATIVE_MORNING_PROJECTION': {
+      // Add-only morning import for bridges without attention-exchange state.
+      // Do not set native attention authority, counters, cooldowns or usage.
+      if (event.morningMeditation.migration) {
+        nextMorningCurrent = {
+          ...nextMorningCurrent,
+          migration: event.morningMeditation.migration,
+        };
+      }
+      nextMorningCurrent = mergeNativeMorningProjection(
+        nextMorningCurrent,
+        event.morningMeditation,
+        attentionDay.id
+      );
+      break;
+    }
+
     case 'UPDATE_DAILY_ALLOWANCE':
     case 'UPDATE_GROUP_ALLOWANCE':
     case 'UPDATE_GROUP_RECOVERY_ACTIVITY':

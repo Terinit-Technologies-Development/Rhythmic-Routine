@@ -143,8 +143,8 @@ describe('Pass 5 — Native Enforcement Blocker Remediation', () => {
   // ---------------------------------------------------------------------
   // 2. Capability truth (native module AND Accessibility)
   // ---------------------------------------------------------------------
-  describe('2. Capability truth requires module availability AND Accessibility', () => {
-    it('module available + Accessibility recognised → enforced', async () => {
+  describe('2. Capability truth requires module availability, Accessibility and a running service', () => {
+    it('module available + Accessibility recognised + service running → enforced', async () => {
       process.env.RHYTHM_PLATFORM_OVERRIDE = 'android';
       stub('getNativeModuleDiagnostics', async () => ({ available: true, source: 'native' }));
       stub('checkPermissions', async () => ({
@@ -152,6 +152,8 @@ describe('Pass 5 — Native Enforcement Blocker Remediation', () => {
         hasRestrictionPermission: true,
         familyControlsStatus: 'unsupported',
       }));
+
+      stub('getEnforcementDiagnostics', async () => ({ serviceRunning: true }));
 
       const state = await new NativePermissionProvider().getStatus();
       assert.equal(state.usageAccess, 'granted');

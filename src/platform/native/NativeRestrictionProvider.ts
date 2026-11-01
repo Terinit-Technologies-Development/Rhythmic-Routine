@@ -20,7 +20,10 @@ function getPlatformOS(): string {
 export class NativeRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
 
-  constructor(private readonly device: typeof RhythmDeviceModule = RhythmDeviceModule) {}
+  constructor(
+    private readonly device: typeof RhythmDeviceModule = RhythmDeviceModule,
+    private readonly platformOS: () => string = getPlatformOS
+  ) {}
 
   async applyRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
@@ -112,9 +115,9 @@ export class NativeRestrictionProvider implements RestrictionProvider {
   }
 
   async getCapability(): Promise<RestrictionCapability> {
-    const platformOS = getPlatformOS();
+    const platformOS = this.platformOS();
     try {
-      const perms = await RhythmDeviceModule.checkPermissions();
+      const perms = await this.device.checkPermissions();
 
       if (platformOS === 'ios') {
         const hasAuth = perms.familyControlsStatus === 'approved';
@@ -139,10 +142,52 @@ export class NativeRestrictionProvider implements RestrictionProvider {
         };
       }
 
-      // Android: enforcement capability requires BOTH the real native module
-      // and the Accessibility enforcement service.
-      const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
-      const isEnforced = moduleDiagnostics.available && perms.hasRestrictionPermission === true;
+      // Android: enforcement capability requires the real native module,
+      // accessibility permission AND a positively running enforcement service.
+      let moduleDiagnostics: { available: boolean } | undefined;
+      try {
+        moduleDiagnostics = await this.device.getNativeModuleDiagnostics();
+      } catch {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android native module diagnostics are unavailable; enforcement readiness is unconfirmed',
+        };
+      }
+      if (!moduleDiagnostics?.available) {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android Rhythm native enforcement module is unavailable',
+        };
+      }
+      let enforcement: { serviceRunning?: boolean } | undefined;
+      try {
+        enforcement = await this.device.getEnforcementDiagnostics();
+      } catch {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android intervention permission is enabled but the enforcement service is not confirmed running',
+        };
+      }
+      const serviceRunning = enforcement?.serviceRunning === true;
+      const isEnforced =
+        moduleDiagnostics.available &&
+        perms.hasRestrictionPermission === true &&
+        serviceRunning;
       return {
         status: isEnforced ? 'enforced' : 'foundation-only',
         mode: 'continuous-session',
@@ -152,7 +197,9 @@ export class NativeRestrictionProvider implements RestrictionProvider {
         supportsEmergencyOverride: true,
         reason: isEnforced
           ? 'Android Rhythm accessibility intervention service active'
-          : 'Android requires enabling Rhythm accessibility intervention in System Settings',
+          : perms.hasRestrictionPermission !== true
+          ? 'Android requires enabling Rhythm accessibility intervention in System Settings'
+          : 'Android intervention permission is enabled but the enforcement service is not confirmed running',
       };
     } catch {
       return {

@@ -275,6 +275,11 @@ export type RhythmEvent =
       timestamp: number;
     }
   | { type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED'; timestamp: number }
+  | {
+      type: 'SYNC_NATIVE_MORNING_PROJECTION';
+      morningMeditation: MorningMeditationRuntimeState;
+      timestamp: number;
+    }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; legacy?: boolean; timestamp: number }
   | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }

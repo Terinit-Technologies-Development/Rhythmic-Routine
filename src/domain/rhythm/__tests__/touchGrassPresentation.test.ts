@@ -92,11 +92,76 @@ describe('F7 — Touch Grass presentation precedence', () => {
     assert.equal(neutral.mode, 'none');
     assert.equal(neutral.showCooldownTimer, false);
     assert.equal(neutral.showMorningFocus, false);
+    assert.doesNotMatch(neutral.subtitle, /all apps|free|unrestricted/i);
 
     const satisfied = deriveTouchGrassPresentation({
       morning: { ...morningPending, state: 'available', requirement: { ...morningPending.requirement!, satisfiedAt: 2 } },
       hasActiveCooldown: false,
     });
     assert.equal(satisfied.mode, 'none');
+  });
+
+  test('restorative-only after cooldown expiry never claims no active hold', () => {
+    const view = deriveTouchGrassPresentation({
+      hasActiveCooldown: false,
+      restorativeHold: true,
+      restorativeGroupName: 'Social Feeds',
+      restorativeProvider: 'reader',
+      restorativePhase: 'reader-in-progress',
+    });
+
+    assert.equal(view.mode, 'restorative');
+    assert.equal(view.badge, 'Restorative hold');
+    assert.equal(view.showRestorativeHold, true);
+    assert.doesNotMatch(view.badge, /No active hold/);
+    assert.match(view.subtitle, /bound restorative requirement/);
+    assert.match(view.subtitle, /bound Reader session/);
+  });
+
+  test('restorative hold coexists with morning, cooldown and reading without hiding either', () => {
+    const withMorning = deriveTouchGrassPresentation({
+      morning: morningPending,
+      hasActiveCooldown: false,
+      restorativeHold: true,
+      restorativeProvider: 'meditation',
+      restorativePhase: 'meditation-unavailable',
+    });
+    assert.equal(withMorning.mode, 'morning');
+    assert.equal(withMorning.showMorningFocus, true);
+    assert.equal(withMorning.showRestorativeHold, true);
+    assert.match(withMorning.subtitle, /verification is currently unavailable/);
+    assert.match(withMorning.subtitle, /bound Meditation session/);
+
+    const withCooldown = deriveTouchGrassPresentation({
+      hasActiveCooldown: true,
+      restorativeHold: true,
+      restorativeProvider: 'reader',
+      restorativePhase: 'pending-selection',
+    });
+    assert.equal(withCooldown.mode, 'cooldown');
+    assert.equal(withCooldown.showCooldownTimer, true);
+    assert.equal(withCooldown.showRestorativeHold, true);
+
+    const withAttention = deriveTouchGrassPresentation({
+      hasActiveCooldown: false,
+      attention,
+      restorativeHold: true,
+      restorativeProvider: 'reader',
+    });
+    assert.equal(withAttention.mode, 'attention');
+    assert.equal(withAttention.showReadingRequirements, true);
+    assert.equal(withAttention.showRestorativeHold, true);
+  });
+
+  test('completed restorative gate and completed morning do not invent holds', () => {
+    const completed = deriveTouchGrassPresentation({
+      hasActiveCooldown: false,
+      restorativeHold: false,
+      restorativeProvider: 'reader',
+      restorativePhase: 'complete',
+    });
+    assert.equal(completed.mode, 'none');
+    assert.equal(completed.showRestorativeHold, false);
+    assert.doesNotMatch(completed.badge, /Restorative hold/);
   });
 });

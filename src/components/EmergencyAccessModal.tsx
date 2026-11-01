@@ -11,6 +11,7 @@ import { HeartHandshake, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import { getPlatformAccessLeasePolicy } from '../types/domain';
+import { deriveEmergencyAccessPresentation } from '../domain/rhythm/emergencyAccessPresentation';
 
 export const EmergencyAccessModal: React.FC = () => {
   const visible = usePrototypeStore((s) => s.emergencyModalVisible);
@@ -18,6 +19,7 @@ export const EmergencyAccessModal: React.FC = () => {
   const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const morningMeditation = usePrototypeStore((s) => s.morningMeditation);
   const emergencyAccessError = usePrototypeStore((s) => s.emergencyAccessError);
   const clearEmergencyAccessError = usePrototypeStore((s) => s.clearEmergencyAccessError);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +30,17 @@ export const EmergencyAccessModal: React.FC = () => {
   const policy = getPlatformAccessLeasePolicy(Platform.OS);
   const durationMinutes = policy.defaultMinutes;
   const targetGroup = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
+  const morningFocusActive =
+    morningMeditation?.state === 'morning-meditation-required' ||
+    Boolean(
+      morningMeditation?.requirement &&
+        morningMeditation.requirement.satisfiedAt === undefined
+    );
+  const presentation = deriveEmergencyAccessPresentation({
+    morningFocusActive,
+    durationMinutes,
+    groupName: targetGroup?.name,
+  });
 
   const closeModal = () => {
     setVisible(false);
@@ -73,11 +86,7 @@ export const EmergencyAccessModal: React.FC = () => {
         <Text style={styles.title}>Need emergency access?</Text>
 
         <Text style={styles.message}>
-          Take a gentle breath. Rhythm is here to protect your attention, not to lock you out.
-          {'\n\n'}
-          You will receive <Text style={styles.bold}>{durationMinutes} minutes</Text> of temporary access to <Text style={styles.bold}>{targetGroup?.name ?? 'your apps'}</Text>.
-          {'\n\n'}
-          Your active cooldown will continue running in the background and restrictions will resume automatically when the lease expires.
+          {presentation.message}
         </Text>
 
         {error || emergencyAccessError ? (
@@ -101,7 +110,9 @@ export const EmergencyAccessModal: React.FC = () => {
           >
             <View style={styles.unlockRow}>
               <ShieldAlert size={16} color={colors.amberDark} />
-              <Text style={styles.unlockBtnText}>Grant {durationMinutes}-Min Override</Text>
+              <Text style={styles.unlockBtnText}>
+                {presentation.actionLabel}
+              </Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -152,10 +163,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 24,
-  },
-  bold: {
-    fontWeight: '700',
-    color: colors.text,
   },
   errorText: {
     width: '100%',

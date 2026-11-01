@@ -23,6 +23,28 @@ internal fun finishNativePolicyReset(cleared: Boolean, resetRuntime: () -> Unit)
   return true
 }
 
+/**
+ * Accepted schedule writes must reconcile the morning requirement before the
+ * foreground is rechecked. Rechecking first can observe the old, hold-free
+ * state and delay intervention until an unrelated boundary/foreground event.
+ * A failed (RAM-only) morning commit is still an effective fail-closed intent;
+ * recheck runs unconditionally after the reconcile attempt.
+ */
+internal fun applyAcceptedRoutineScheduleChange(
+  scheduleNextBoundary: () -> Unit,
+  reconcileMorning: () -> Boolean,
+  recheckForeground: () -> Unit,
+): Boolean {
+  scheduleNextBoundary()
+  val morningCommitted = try {
+    reconcileMorning()
+  } catch (_: Throwable) {
+    false
+  }
+  recheckForeground()
+  return morningCommitted
+}
+
 class RhythmDeviceModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("RhythmDevice")
@@ -247,10 +269,19 @@ class RhythmDeviceModule : Module() {
       val schedule = RhythmEnforcementService.parseRoutineScheduleInput(scheduleInput)
       val saved = RhythmEnforcementService.saveRoutineSchedule(context, schedule)
       if (saved) {
-        RhythmEnforcementService.instance?.onRoutineScheduleChanged()
-        RhythmEnforcementService.reconcileMorningRequirement(
-          context,
-          System.currentTimeMillis()
+        applyAcceptedRoutineScheduleChange(
+          scheduleNextBoundary = {
+            RhythmEnforcementService.instance?.onRoutineScheduleChanged()
+          },
+          reconcileMorning = {
+            RhythmEnforcementService.reconcileMorningRequirement(
+              context,
+              System.currentTimeMillis(),
+            )
+          },
+          recheckForeground = {
+            RhythmEnforcementService.instance?.onMorningRequirementChanged()
+          },
         )
       }
       return@AsyncFunction saved
