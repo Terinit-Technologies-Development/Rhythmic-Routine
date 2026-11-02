@@ -42,6 +42,10 @@ import {
   buildCooldownMeditationRequest,
   nativeMeditationBridge,
 } from '../platform/NativeMeditationBridge';
+import type {
+  MeditationProviderAvailability,
+  MeditationQueryStatus,
+} from '../domain/rhythm/meditationEvidence';
 import { ReadingEvidenceSnapshot } from '../domain/rhythm/readingEvidence';
 import {
   DailyRhythmSummary,
@@ -266,6 +270,18 @@ function projectPrimaryRestorativeStatus(
   });
 }
 
+/** Read-only provider diagnostics; never includes session ids or activity data. */
+export interface RestorativeProviderDiagnostics {
+  meditation?: {
+    /** Keeps a diagnostic from a previous gate from being shown out of context. */
+    gateId?: string;
+    availability: MeditationProviderAvailability;
+    queryStatus?: MeditationQueryStatus;
+    sessionMissing?: boolean;
+    updatedAt: number;
+  };
+}
+
 interface PrototypeState {
   // Domain data (projected from RhythmCoordinator / Engine)
   rhythmState: RhythmState;
@@ -280,6 +296,8 @@ interface PrototypeState {
   activeRestorativeGates?: Record<string, ActiveRestorativeGate>;
   /** Pass 3: Restorative Gate status projection for the primary gate. */
   restorativeStatus?: RestorativeStatusView;
+  /** Typed provider query result for honest UI copy; read-only projection. */
+  restorativeProviderDiagnostics?: RestorativeProviderDiagnostics;
   apps: DeviceApp[];
   riskGroups: RiskGroup[];
   routineWindows: RoutineWindow[];
@@ -1472,6 +1490,17 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
       const result = await nativeMeditationBridge.queryMeditationStatusResult(
         gate.providerSessionId
       );
+      set({
+        restorativeProviderDiagnostics: {
+          meditation: {
+            gateId: gate.gateId,
+            availability: result.availability,
+            ...(result.queryStatus ? { queryStatus: result.queryStatus } : {}),
+            ...(result.sessionMissing ? { sessionMissing: true } : {}),
+            updatedAt: Date.now(),
+          },
+        },
+      });
       if (
         result.availability === 'available' &&
         result.evidence?.sessionId === gate.providerSessionId
@@ -1487,6 +1516,16 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
     const evidence = await nativeMeditationBridge.queryMeditationStatus(
       gate.providerSessionId
     );
+    set({
+      restorativeProviderDiagnostics: {
+        meditation: {
+          gateId: gate.gateId,
+          availability: evidence ? 'available' : 'unavailable',
+          queryStatus: evidence ? 'available' : 'legacy-ambiguous-null',
+          updatedAt: Date.now(),
+        },
+      },
+    });
     if (evidence?.sessionId === gate.providerSessionId) {
       await coordinator.dispatch({
         type: 'SYNC_MEDITATION_EVIDENCE',

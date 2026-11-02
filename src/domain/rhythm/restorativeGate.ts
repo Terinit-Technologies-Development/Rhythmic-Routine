@@ -521,6 +521,19 @@ export function evaluateRestorativeGate(input: {
   }
 }
 
+export interface RestorativeObligationView {
+  kind:
+    | 'select-provider'
+    | 'reader-daily-baseline'
+    | 'reader-recovery-session'
+    | 'meditation-session';
+  provider?: RestorativeProvider;
+  requiredSeconds: number;
+  requiredQualifiedPages?: number;
+  verifiedSeconds: number;
+  verifiedQualifiedPages?: number;
+}
+
 export interface RestorativeStatusView {
   groupId: string;
   gateId?: string;
@@ -532,6 +545,81 @@ export interface RestorativeStatusView {
   gateSatisfied: boolean;
   selectedProvider?: RestorativeProvider;
   meditationPathsRemaining: number;
+  /** Read-only evidence/requirement projection for the selected obligation. */
+  obligation?: RestorativeObligationView;
+  /** An unfinished gate carried from an earlier Attention Day. */
+  carriedObligation?: boolean;
+}
+
+function deriveRestorativeObligationView(input: {
+  gate: ActiveRestorativeGate;
+  readerDailyEvidence?: ReadingEvidenceAvailability;
+  readerSessionEvidence?: RecoverySessionInfo | null;
+  meditationEvidence?: MeditationSessionEvidence | null;
+  acceptedEvidenceDateKeys: string[];
+}): RestorativeObligationView {
+  const {
+    gate,
+    readerDailyEvidence,
+    readerSessionEvidence,
+    meditationEvidence,
+    acceptedEvidenceDateKeys,
+  } = input;
+
+  if (gate.requirementKind === 'baseline-reading' || gate.requirementKind === 'legacy-reading') {
+    const trusted = isTrustedDailyEvidenceForKeys(readerDailyEvidence, acceptedEvidenceDateKeys)
+      ? readerDailyEvidence
+      : undefined;
+    return {
+      kind: 'reader-daily-baseline',
+      provider: 'reader',
+      requiredSeconds: gate.requiredReadingSeconds ?? 0,
+      requiredQualifiedPages: gate.requiredQualifiedPages ?? 0,
+      verifiedSeconds: trusted?.verifiedActiveSeconds ?? 0,
+      verifiedQualifiedPages: trusted?.qualifiedPages ?? 0,
+    };
+  }
+
+  if (!gate.selectedProvider) {
+    return {
+      kind: 'select-provider',
+      requiredSeconds: 0,
+      verifiedSeconds: 0,
+    };
+  }
+
+  if (gate.selectedProvider === 'meditation') {
+    const bound =
+      meditationEvidence &&
+      meditationEvidence.sessionId === (gate.providerSessionId ?? '')
+        ? meditationEvidence
+        : null;
+    return {
+      kind: 'meditation-session',
+      provider: 'meditation',
+      requiredSeconds:
+        gate.requiredMeditationSeconds ?? RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds,
+      verifiedSeconds: bound?.completedQualifiedSeconds ?? 0,
+    };
+  }
+
+  const bound =
+    readerSessionEvidence &&
+    readerSessionEvidence.sessionId === (gate.providerSessionId ?? '')
+      ? readerSessionEvidence
+      : null;
+  return {
+    kind: 'reader-recovery-session',
+    provider: 'reader',
+    requiredSeconds:
+      gate.requiredRestorativeReadingSeconds ??
+      RESTORATIVE_POLICY.restorativeChoiceReadingSeconds,
+    requiredQualifiedPages:
+      gate.requiredRestorativeQualifiedPages ??
+      RESTORATIVE_POLICY.restorativeChoiceQualifiedPages,
+    verifiedSeconds: bound?.activeSeconds ?? 0,
+    verifiedQualifiedPages: bound?.qualifiedPages ?? 0,
+  };
 }
 
 /**
@@ -601,6 +689,16 @@ export function deriveRestorativeStatus(input: {
   });
   const evaluated = evaluation.gate ?? gate;
   const gateSatisfied = evaluated.status === 'satisfied';
+  const obligation = deriveRestorativeObligationView({
+    gate: evaluated,
+    readerDailyEvidence: input.readerDailyEvidence,
+    readerSessionEvidence: input.readerSessionEvidence,
+    meditationEvidence: input.meditationEvidence,
+    acceptedEvidenceDateKeys: input.acceptedEvidenceDateKeys,
+  });
+  const carriedObligation =
+    evaluated.status !== 'satisfied' &&
+    evaluated.attentionDayId !== input.attentionDayId;
 
   let phase: RestorativeGatePhase;
   if (gateSatisfied && cooldownActive) {
@@ -624,5 +722,7 @@ export function deriveRestorativeStatus(input: {
     phase,
     requirementKind: gate.requirementKind,
     gateSatisfied,
+    obligation,
+    carriedObligation,
   };
 }

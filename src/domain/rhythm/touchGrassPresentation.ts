@@ -1,5 +1,6 @@
 import type { AttentionGateStatus } from './attentionExchange';
-import type { RestorativeGatePhase } from './restorativeGate';
+import type { RestorativeGatePhase, RestorativeStatusView } from './restorativeGate';
+import { deriveRestorativeCardCopy } from './restorativePresentation';
 import type { MorningMeditationRuntimeState } from './types';
 
 export type TouchGrassPresentationMode =
@@ -22,6 +23,12 @@ export interface TouchGrassPresentation {
   showRestorativeHold: boolean;
   showCooldownFacts: boolean;
   emergencyLinkText: string;
+  /** Rich read-only copy for the CD4+ selected obligation/status. */
+  restorativeStatusLabel?: string;
+  restorativeObligationLabel?: string;
+  restorativeProgressLabel?: string;
+  restorativeNextAction?: string;
+  restorativeCarriedLabel?: string;
 }
 
 export function deriveTouchGrassPresentation(input: {
@@ -32,6 +39,8 @@ export function deriveTouchGrassPresentation(input: {
   restorativeGroupName?: string;
   restorativeProvider?: 'reader' | 'meditation';
   restorativePhase?: RestorativeGatePhase;
+  /** Existing store projection; no provider query is made from presentation. */
+  restorativeStatus?: RestorativeStatusView;
   groupName?: string;
   allowanceMinutes?: number;
   cooldownMinutes?: number;
@@ -65,8 +74,20 @@ export function deriveTouchGrassPresentation(input: {
       : input.restorativeProvider === 'meditation'
       ? 'bound Meditation session'
       : 'Reader or Meditation session';
+  const restorativeCopy = input.restorativeStatus
+    ? deriveRestorativeCardCopy(input.restorativeStatus)
+    : undefined;
   const restorativeText = !restorativeHold
     ? ''
+    : restorativeCopy
+    ? [
+        restorativeCopy.carriedLabel,
+        `Restorative obligation${input.restorativeGroupName ? ` for ${input.restorativeGroupName}` : ''}: ${restorativeCopy.obligationTitle.toLowerCase()}.`,
+        restorativeCopy.progressLabel,
+        restorativeCopy.nextAction,
+      ]
+        .filter(Boolean)
+        .join(' ')
     : `${restorativeUnavailable
         ? 'The selected restorative verification is currently unavailable'
         : 'A bound restorative requirement is still pending'}${
@@ -74,6 +95,17 @@ export function deriveTouchGrassPresentation(input: {
       }. Complete the ${restorativeProviderLabel} shown below; the obligation remains open until verified.`;
   const withRestorative = (text: string) =>
     restorativeHold ? `${text}\n${restorativeText}` : text;
+  const restorativeFields = restorativeCopy
+    ? {
+        restorativeStatusLabel: restorativeCopy.statusLabel,
+        restorativeObligationLabel: restorativeCopy.obligationTitle,
+        restorativeProgressLabel: restorativeCopy.progressLabel,
+        restorativeNextAction: restorativeCopy.nextAction,
+        ...(restorativeCopy.carriedLabel
+          ? { restorativeCarriedLabel: restorativeCopy.carriedLabel }
+          : {}),
+      }
+    : {};
   const emergencyLinkText = morningPending
     ? 'Emergency access cannot bypass morning focus'
     : 'Need emergency access?';
@@ -90,6 +122,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -105,6 +138,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: restorativeHold,
       showCooldownFacts: true,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -120,6 +154,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -143,6 +178,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: restorativeHold,
       showCooldownFacts: false,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -158,6 +194,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: restorativeHold,
       showCooldownFacts: true,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -173,6 +210,7 @@ export function deriveTouchGrassPresentation(input: {
       showRestorativeHold: true,
       showCooldownFacts: false,
       emergencyLinkText,
+      ...restorativeFields,
     };
   }
 
@@ -187,5 +225,6 @@ export function deriveTouchGrassPresentation(input: {
     showRestorativeHold: false,
     showCooldownFacts: false,
     emergencyLinkText,
+    ...restorativeFields,
   };
 }

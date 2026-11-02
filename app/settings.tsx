@@ -29,6 +29,7 @@ import { getPlatformServices } from '../src/platform/PlatformServices';
 import RhythmDeviceModule, { getRhythmNativeModuleDiagnostics } from '../modules/rhythm-device';
 import { AndroidAccessibilityDisclosure } from '../src/components/AndroidAccessibilityDisclosure';
 import { ExpoGoDevBanner } from '../src/components/ExpoGoDevBanner';
+import { deriveNativePolicyReadiness } from '../src/domain/rhythm/nativePolicyReadiness';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -92,6 +93,45 @@ export default function SettingsScreen() {
   const nativeRiskPackageCount = typeof diagnostics?.riskPackageCount === 'number' ? diagnostics.riskPackageCount : null;
   const nativePolicyHealthy =
     nativeRiskPackageCount === null ? null : jsRiskAppCount === 0 || nativeRiskPackageCount > 0;
+  const policyReadiness = deriveNativePolicyReadiness({
+    moduleAvailable:
+      typeof moduleDiagnostics?.available === 'boolean' ? moduleDiagnostics.available : null,
+    serviceRunning:
+      typeof diagnostics?.serviceRunning === 'boolean' ? diagnostics.serviceRunning : null,
+    restrictionAuthorization: permissionState.restrictionAuthorization,
+    restrictionCapability: permissionState.restrictionCapability,
+    sync: syncDiagnostics ?? null,
+    projectionMismatch:
+      nativePolicyHealthy === false ? true : nativePolicyHealthy === true ? false : null,
+  });
+  const readinessColor =
+    policyReadiness.status === 'ready'
+      ? colors.forest
+      : policyReadiness.status === 'check-status'
+        ? colors.textMuted
+        : colors.amberDark;
+  const serviceColor =
+    policyReadiness.serviceDisplay === 'Service available'
+      ? colors.forest
+      : policyReadiness.serviceDisplay === 'Unavailable'
+        ? colors.coralDark
+        : colors.textMuted;
+  const capabilityColor =
+    policyReadiness.capabilityDisplay === 'Available'
+      ? colors.forest
+      : policyReadiness.capabilityDisplay === 'Unavailable'
+        ? colors.coralDark
+        : colors.textMuted;
+  const authorizationColor =
+    policyReadiness.authorizationDisplay === 'Authorized'
+      ? colors.forest
+      : policyReadiness.authorizationDisplay === 'Denied'
+        ? colors.coralDark
+        : colors.textMuted;
+  const syncAcknowledged =
+    syncDiagnostics?.success === true &&
+    typeof syncDiagnostics?.updatedAt === 'number' &&
+    syncDiagnostics.updatedAt > 0;
 
   const requestRestriction = async () => {
     const { permissions } = getPlatformServices();
@@ -215,19 +255,27 @@ export default function SettingsScreen() {
           </View>
 
           <View style={styles.checkItem}>
-            <Lock size={18} color={permissionState.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted} />
+            <Lock size={18} color={authorizationColor} />
             <View style={{ flex: 1 }}>
               <Text style={styles.checkTitle}>Screen Time & Shielding Authorization</Text>
-              <Text style={styles.checkText}>Status: {permissionState.restrictionAuthorization.toUpperCase()}</Text>
+              <Text style={[styles.checkText, { color: authorizationColor }]}>
+                Native authorization: {policyReadiness.authorizationDisplay}
+              </Text>
             </View>
           </View>
 
           <View style={styles.checkItem}>
-            <Info size={18} color={permissionState.restrictionCapability === 'enforced' ? colors.forest : colors.amberDark} />
+            <Info size={18} color={capabilityColor} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.checkTitle}>Restriction Capability</Text>
-              <Text style={styles.checkText}>
-                Status: {permissionState.restrictionCapability.toUpperCase().replace('-', ' ')}
+              <Text style={styles.checkTitle}>Restriction Capability (native service)</Text>
+              <Text style={[styles.checkText, { color: serviceColor }]}>
+                Native service: {policyReadiness.serviceDisplay}
+              </Text>
+              <Text style={[styles.checkText, { color: capabilityColor }]}>
+                Native capability: {policyReadiness.capabilityDisplay}
+              </Text>
+              <Text style={[styles.checkText, { color: readinessColor, fontWeight: '600' }]}>
+                Policy readiness: {policyReadiness.label}
               </Text>
             </View>
           </View>
@@ -366,17 +414,30 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <View style={styles.diagRow}>
-                <Text style={styles.diagLabel}>Accessibility Service</Text>
-                <Text style={[styles.diagValue, { color: permissionState?.restrictionAuthorization === 'granted' ? colors.forest : colors.textMuted }]}>
-                  {permissionState?.restrictionAuthorization === 'granted' ? 'BOUND / RECOGNISED' : 'NOT RECOGNISED'}
+                <Text style={styles.diagLabel}>Native Authorization</Text>
+                <Text style={[styles.diagValue, { color: authorizationColor }]}>
+                  {policyReadiness.authorizationDisplay}
                 </Text>
               </View>
               <View style={styles.diagRow}>
-                <Text style={styles.diagLabel}>Restriction Capability</Text>
-                <Text style={[styles.diagValue, { color: permissionState?.restrictionCapability === 'enforced' ? colors.forest : colors.coralDark }]}>
-                  {(permissionState?.restrictionCapability ?? 'unknown').toUpperCase()}
+                <Text style={styles.diagLabel}>Native Service</Text>
+                <Text style={[styles.diagValue, { color: serviceColor }]}>
+                  {policyReadiness.serviceDisplay}
                 </Text>
               </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Native Capability</Text>
+                <Text style={[styles.diagValue, { color: capabilityColor }]}>
+                  {policyReadiness.capabilityDisplay}
+                </Text>
+              </View>
+              <View style={styles.diagRow}>
+                <Text style={styles.diagLabel}>Enforcement Readiness</Text>
+                <Text style={[styles.diagValue, { color: readinessColor }]}>
+                  {policyReadiness.label.toUpperCase()}
+                </Text>
+              </View>
+              <Text style={styles.diagNote}>{policyReadiness.detail}</Text>
               <View style={styles.diagRow}>
                 <Text style={styles.diagLabel}>Native Risk Policies</Text>
                 <Text style={styles.diagValue}>{diagnostics?.riskPolicyCount ?? '—'}</Text>
@@ -396,10 +457,12 @@ export default function SettingsScreen() {
               {syncDiagnostics && (
                 <View style={styles.diagRow}>
                   <Text style={styles.diagLabel}>Native Policy Sync</Text>
-                  <Text style={[styles.diagValue, { color: syncDiagnostics.success ? colors.forest : colors.coralDark }]}>
-                    {syncDiagnostics.success
-                      ? 'OK'
-                      : `FAILED${syncDiagnostics.failedStage ? ' @ ' + syncDiagnostics.failedStage : ''}${syncDiagnostics.error ? ' — ' + syncDiagnostics.error : ''}`}
+                  <Text style={[styles.diagValue, { color: syncAcknowledged ? colors.forest : colors.coralDark }]}>
+                    {syncAcknowledged
+                      ? 'ACKNOWLEDGED'
+                      : syncDiagnostics.success
+                        ? 'NOT CONFIRMED'
+                        : `FAILED${syncDiagnostics.failedStage ? ' @ ' + syncDiagnostics.failedStage : ''}${syncDiagnostics.error ? ' — ' + syncDiagnostics.error : ''}`}
                   </Text>
                 </View>
               )}
@@ -743,5 +806,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.forestDark,
     maxWidth: 160,
+  },
+  diagNote: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 17,
+    marginBottom: 2,
   },
 });

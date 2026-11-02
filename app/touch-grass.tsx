@@ -32,6 +32,9 @@ export default function TouchGrassScreen() {
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const restorativeStatus = usePrototypeStore((s) => s.restorativeStatus);
+  const restorativeProviderDiagnostics = usePrototypeStore(
+    (s) => s.restorativeProviderDiagnostics
+  );
   const activeRestorativeGates = usePrototypeStore((s) => s.activeRestorativeGates);
   const selectRestorativeProvider = usePrototypeStore((s) => s.selectRestorativeProvider);
   const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
@@ -64,6 +67,11 @@ export default function TouchGrassScreen() {
   const restorativePhase =
     restorativeStatus?.groupId === restorativeGroupId
       ? restorativeStatus?.phase
+      : undefined;
+  const currentMeditationDiagnostic =
+    restorativeProviderDiagnostics?.meditation &&
+    restorativeProviderDiagnostics.meditation.gateId === restorativeStatus?.gateId
+      ? restorativeProviderDiagnostics.meditation
       : undefined;
   const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
   const recovery = group?.cooldownMinutes;
@@ -106,6 +114,7 @@ export default function TouchGrassScreen() {
     restorativeGroupName,
     restorativeProvider,
     restorativePhase,
+    restorativeStatus,
     groupName: group?.name,
     allowanceMinutes: threshold,
     cooldownMinutes: recovery,
@@ -212,16 +221,22 @@ export default function TouchGrassScreen() {
                   {presentation.showMorningFocus
                     ? 'Morning obligation in progress'
                     : presentation.showRestorativeHold
-                    ? 'Restorative obligation in progress'
+                    ? presentation.restorativeObligationLabel ?? 'Restorative obligation in progress'
                     : 'No active hold'}
                 </Text>
                 <Text style={styles.attentionRequirementSecondary}>
                   {presentation.showMorningFocus
                     ? 'Use the morning meditation card below; the bound session is verified by Routine.'
                     : presentation.showRestorativeHold
-                    ? 'Complete the restorative task below; other routine policy may still apply.'
+                    ? presentation.restorativeProgressLabel ??
+                      'Complete the restorative task below; other routine policy may still apply.'
                     : 'No cooldown, morning task or restorative task is currently blocking access.'}
                 </Text>
+                {presentation.showRestorativeHold && presentation.restorativeNextAction ? (
+                  <Text style={styles.attentionRequirementSecondary}>
+                    {presentation.restorativeNextAction}
+                  </Text>
+                ) : null}
               </View>
             )}
           </View>
@@ -242,16 +257,15 @@ export default function TouchGrassScreen() {
               }}
               onBeginProvider={async (provider) => {
                 if (provider === 'meditation') {
-                  const started = await launchMeditationForGate(restorativeStatus.groupId);
-                  if (started) await refreshMeditationEvidence(restorativeStatus.groupId);
+                  await launchMeditationForGate(restorativeStatus.groupId);
+                  await refreshMeditationEvidence(restorativeStatus.groupId);
                 } else {
                   await launchReaderForGate(restorativeStatus.groupId);
                 }
               }}
-              meditationUnavailableReason={
-                restorativeStatus.phase === 'meditation-unavailable' ||
-                restorativeStatus.phase === 'meditation-incompatible'
-                  ? 'unavailable'
+              providerDiagnostics={
+                currentMeditationDiagnostic
+                  ? { meditation: currentMeditationDiagnostic }
                   : undefined
               }
             />

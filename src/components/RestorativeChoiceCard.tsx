@@ -3,19 +3,18 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { BookOpen, Sprout, Timer, Moon } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import type { RestorativeStatusView, RestorativeProvider } from '../domain/rhythm/restorativeGate';
+import {
+  deriveRestorativeCardCopy,
+  type MeditationProviderDiagnostic,
+} from '../domain/rhythm/restorativePresentation';
 
 /**
  * Restorative Choice (Pass 3) — the discrete CD4+ requirement.
  *
- * Presents ONE restorative path choice:
- *   Meditation — 30 min quiet session
- *   Reading    — 30 min + 11 pages
- *
- * Cooldown time is shown SEPARATELY and is never shortened by either path.
- * Meditation paths remaining (2/Attention Day cap) is shown separately too.
- *
- * Language rules (deliberate): never "Meditate to remove 60 min", "Earn
- * access", or "Unlock 30 minutes" — meditation never buys screen time.
+ * Shows the separation cooldown separately from the selected obligation,
+ * remaining evidence and the next action. The cooldown is never shortened by
+ * either provider. Provider failures are reported as unknown/check connection
+ * unless a typed provider result positively identifies the cause.
  */
 
 export interface RestorativeChoiceCardProps {
@@ -24,73 +23,64 @@ export interface RestorativeChoiceCardProps {
   onSelectProvider: (provider: RestorativeProvider) => void | Promise<void>;
   /** Begin/resume the selected provider flow. */
   onBeginProvider: (provider: RestorativeProvider) => void | Promise<void>;
-  /** Optional provider availability, e.g. 'not-installed' | 'untrusted-signature'. */
+  /** Typed read-only provider diagnostics from the store. */
+  providerDiagnostics?: {
+    meditation?: MeditationProviderDiagnostic;
+  };
+  /** @deprecated Use providerDiagnostics. Kept for older callers. */
   meditationUnavailableReason?: string;
   readerUnavailable?: boolean;
-}
-
-function formatCooldown(remainingSeconds: number): string {
-  const total = Math.max(0, Math.floor(remainingSeconds));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0) return `${hours} hr ${minutes.toString().padStart(2, '0')} min`;
-  return `${minutes} min`;
-}
-
-function statusLabel(view: RestorativeStatusView): string {
-  switch (view.phase) {
-    case 'separation-only':
-      return 'Separation only';
-    case 'baseline-reading-required':
-      return 'Daily Reader baseline required';
-    case 'pending-selection':
-      return 'Choose a restorative path';
-    case 'meditation-in-progress':
-      return 'Meditation in progress';
-    case 'reader-in-progress':
-      return 'Reading in progress';
-    case 'restorative-complete-cooldown-active':
-      return 'Restorative requirement complete · Cooldown remains active';
-    case 'cooldown-complete-restorative-remains':
-      return 'Cooldown complete · Restorative requirement remains';
-    case 'complete':
-      return 'Cooldown + Restorative requirement complete · Eligible';
-    case 'meditation-unavailable':
-      return 'Meditation unavailable — reading remains available';
-    case 'reader-unavailable':
-      return 'Reading unavailable — please retry';
-    case 'reader-incompatible':
-      return 'Reading provider incompatible';
-    case 'meditation-incompatible':
-      return 'Meditation provider incompatible';
-    default:
-      return '';
-  }
 }
 
 export function RestorativeChoiceCard({
   view,
   onSelectProvider,
   onBeginProvider,
-  meditationUnavailableReason,
+  providerDiagnostics,
   readerUnavailable,
 }: RestorativeChoiceCardProps) {
-  const gateOpen = !view.gateSatisfied;
-  const meditationSelectable =
-    gateOpen && view.meditationPathsRemaining > 0 && !meditationUnavailableReason;
-  const readerSelectable = gateOpen && !readerUnavailable;
+  const copy = deriveRestorativeCardCopy(view, providerDiagnostics?.meditation);
+  const meditationPath = copy.meditationPath;
+  const readerPath = readerUnavailable
+    ? {
+        ...copy.readerPath,
+        label: 'Check connection — status unknown',
+        detail: 'Reader availability was not positively confirmed.',
+        selectable: false,
+      }
+    : copy.readerPath;
+
+  const startPath = async (provider: RestorativeProvider) => {
+    if (view.selectedProvider !== provider) {
+      await onSelectProvider(provider);
+    }
+    await onBeginProvider(provider);
+  };
+
+  const obligationProvider = view.obligation?.provider;
+  const selectedProvider =
+    copy.selectedProvider ??
+    (obligationProvider === 'reader' || obligationProvider === 'meditation'
+      ? obligationProvider
+      : undefined);
+  const selectedStatus =
+    selectedProvider === 'meditation' ? meditationPath : readerPath;
 
   return (
     <View style={styles.card}>
       <View style={styles.statusRow}>
-        <Text style={styles.statusLabel}>{statusLabel(view)}</Text>
+        <Text style={styles.statusLabel}>{copy.statusLabel}</Text>
       </View>
 
-      {view.requirementKind === 'restorative-choice' && gateOpen ? (
+      {copy.carriedLabel ? (
+        <Text style={styles.carriedLabel}>{copy.carriedLabel}</Text>
+      ) : null}
+
+      {copy.showChoice ? (
         <>
           <Text style={styles.title}>Choose a restorative path</Text>
           <Text style={styles.subtitle}>
-            One quiet practice completes this restorative requirement.
+            One quiet practice completes this restorative requirement. Progress cannot be combined.
           </Text>
 
           <View style={styles.pathsRow}>
@@ -100,21 +90,23 @@ export function RestorativeChoiceCard({
               </View>
               <Text style={styles.pathTitle}>Meditation</Text>
               <Text style={styles.pathDetail}>30 min quiet session</Text>
-              {meditationUnavailableReason ? (
-                <Text style={styles.pathUnavailable}>
-                  Unavailable ({meditationUnavailableReason})
-                </Text>
-              ) : null}
+              <Text
+                style={[
+                  styles.pathStatus,
+                  meditationPath.selectable ? styles.pathStatusNeutral : styles.pathStatusWarning,
+                ]}
+              >
+                {meditationPath.label}
+              </Text>
               <TouchableOpacity
                 style={[
                   styles.pathButton,
                   styles.pathButtonPrimary,
-                  !meditationSelectable && styles.pathButtonDisabled,
+                  !meditationPath.selectable && styles.pathButtonDisabled,
                 ]}
-                disabled={!meditationSelectable}
-                onPress={async () => {
-                  await onSelectProvider('meditation');
-                  await onBeginProvider('meditation');
+                disabled={!meditationPath.selectable}
+                onPress={() => {
+                  void startPath('meditation');
                 }}
               >
                 <Text style={styles.pathButtonPrimaryLabel}>Begin Meditation</Text>
@@ -127,19 +119,23 @@ export function RestorativeChoiceCard({
               </View>
               <Text style={styles.pathTitle}>Reading</Text>
               <Text style={styles.pathDetail}>30 min + 11 pages</Text>
-              {readerUnavailable ? (
-                <Text style={styles.pathUnavailable}>Unavailable</Text>
-              ) : null}
+              <Text
+                style={[
+                  styles.pathStatus,
+                  readerPath.selectable ? styles.pathStatusNeutral : styles.pathStatusWarning,
+                ]}
+              >
+                {readerPath.label}
+              </Text>
               <TouchableOpacity
                 style={[
                   styles.pathButton,
                   styles.pathButtonSecondary,
-                  !readerSelectable && styles.pathButtonDisabled,
+                  !readerPath.selectable && styles.pathButtonDisabled,
                 ]}
-                disabled={!readerSelectable}
-                onPress={async () => {
-                  await onSelectProvider('reader');
-                  await onBeginProvider('reader');
+                disabled={!readerPath.selectable}
+                onPress={() => {
+                  void startPath('reader');
                 }}
               >
                 <Text style={styles.pathButtonSecondaryLabel}>Open Reader</Text>
@@ -158,14 +154,55 @@ export function RestorativeChoiceCard({
         </>
       ) : null}
 
+      {copy.showSelectedObligation && selectedProvider ? (
+        <View style={styles.selectedPanel}>
+          <Text style={styles.sectionLabel}>Selected obligation</Text>
+          <Text style={styles.selectedTitle}>{copy.obligationTitle}</Text>
+          <Text style={styles.progressText}>{copy.progressLabel}</Text>
+          <View style={styles.providerRow}>
+            <Text
+              style={[
+                styles.providerStatus,
+                selectedStatus.selectable ? styles.pathStatusNeutral : styles.pathStatusWarning,
+              ]}
+            >
+              {selectedStatus.label}
+            </Text>
+            <Text style={styles.providerDetail}>{selectedStatus.detail}</Text>
+          </View>
+          <Text style={styles.nextAction}>{copy.nextAction}</Text>
+          <TouchableOpacity
+            style={[
+              styles.pathButton,
+              styles.pathButtonPrimary,
+              !selectedStatus.selectable && styles.pathButtonDisabled,
+            ]}
+            disabled={!selectedStatus.selectable}
+            onPress={() => {
+              void onBeginProvider(selectedProvider);
+            }}
+          >
+            <Text style={styles.pathButtonPrimaryLabel}>
+              {selectedProvider === 'meditation' ? 'Begin Meditation' : 'Open Reader'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {view.gateSatisfied ? (
+        <View style={styles.completePanel}>
+          <Text style={styles.completeTitle}>{copy.obligationTitle}</Text>
+          <Text style={styles.progressText}>{copy.progressLabel}</Text>
+          <Text style={styles.nextAction}>{copy.nextAction}</Text>
+        </View>
+      ) : null}
+
       <View style={styles.cooldownRow}>
         <Timer size={16} color={colors.textSecondary} />
-        <Text style={styles.cooldownText}>
-          Cooldown {formatCooldown(view.cooldownRemainingSeconds)} remaining
-        </Text>
+        <Text style={styles.cooldownText}>{copy.cooldownLabel}</Text>
       </View>
       <Text style={styles.cooldownNote}>
-        Neither meditation nor reading shortens the cooldown.
+        The cooldown timer runs independently. Neither meditation nor reading shortens it.
       </Text>
     </View>
   );
@@ -185,6 +222,16 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     letterSpacing: 0.4,
     textTransform: 'uppercase',
+  },
+  carriedLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.forestDark,
+    backgroundColor: colors.backgroundMuted,
+    borderRadius: radii.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 12,
   },
   title: {
     fontSize: 22,
@@ -223,11 +270,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textSecondary,
   },
-  pathUnavailable: {
-    marginTop: 6,
+  pathStatus: {
+    marginTop: 8,
     fontSize: 12,
-    color: colors.badgeRedText,
+    fontWeight: '600',
+    lineHeight: 16,
   },
+  pathStatusNeutral: { color: colors.textSecondary },
+  pathStatusWarning: { color: colors.badgeRedText },
   pathButton: {
     marginTop: 12,
     borderRadius: radii.full,
@@ -254,6 +304,68 @@ const styles = StyleSheet.create({
   metaRow: { marginTop: 12 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   metaText: { fontSize: 13, color: colors.textSecondary },
+  selectedPanel: {
+    marginTop: 14,
+    borderRadius: radii.md,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundMuted,
+  },
+  completePanel: {
+    marginTop: 14,
+    borderRadius: radii.md,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundMuted,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  selectedTitle: {
+    marginTop: 4,
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
+    fontFamily: 'serif',
+  },
+  completeTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
+    fontFamily: 'serif',
+  },
+  progressText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  providerRow: {
+    marginTop: 10,
+    gap: 2,
+  },
+  providerStatus: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  providerDetail: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 17,
+  },
+  nextAction: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.forestDark,
+    lineHeight: 19,
+  },
   cooldownRow: {
     marginTop: 14,
     flexDirection: 'row',
