@@ -1,0 +1,49 @@
+// SW-2026-005 A4 TEST-ONLY overlay.
+// Builds the existing Routine QA androidTest variant with the real Routine QA
+// application as targetPackage. It does not edit product Gradle files,
+// manifests, versions, dependencies or the existing signed AUT APK.
+//
+// Gradle also evaluates init scripts in included React/Expo plugin builds where
+// -Psw005ProbeSrc is intentionally absent. Those builds must be left untouched;
+// only the intended Routine root that supplies the property is configured.
+
+def probeSrc = gradle.startParameter.projectProperties['sw005ProbeSrc']
+
+if (probeSrc) {
+    def probeDir = new File(probeSrc)
+    if (!probeDir.isDirectory()) {
+        throw new GradleException("sw005ProbeSrc is not a directory: ${probeSrc}")
+    }
+    def normalizedProbe = probeDir.canonicalPath.replace('\\', '/')
+    if (!normalizedProbe.endsWith('/signer-probe/app/src/androidTest/kotlin')) {
+        throw new GradleException("sw005ProbeSrc does not point at the test-only signer-probe androidTest source: ${probeSrc}")
+    }
+
+    gradle.beforeProject { project ->
+        project.plugins.withId('com.android.application') {
+            if (project.path != ':app') {
+                return
+            }
+            def android = project.extensions.getByName('android')
+            android.testBuildType = 'qaStandalone'
+            android.defaultConfig.testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
+
+            def androidTest = android.sourceSets.androidTest
+            def added = false
+            try {
+                androidTest.kotlin.srcDir(probeSrc)
+                added = true
+            } catch (MissingPropertyException ignored) {
+                // AGP variant without a Kotlin source-set property falls back to java srcDir.
+            }
+            if (!added) {
+                androidTest.java.srcDir(probeSrc)
+            }
+
+            project.dependencies.add('androidTestImplementation', 'androidx.test:runner:1.6.2')
+            project.dependencies.add('androidTestImplementation', 'androidx.test:rules:1.6.1')
+            project.dependencies.add('androidTestImplementation', 'androidx.test.ext:junit:1.2.1')
+            project.dependencies.add('androidTestImplementation', 'junit:junit:4.13.2')
+        }
+    }
+}
