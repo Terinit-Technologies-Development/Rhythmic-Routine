@@ -218,7 +218,25 @@ export function buildInstrumentationArgv({
 
 export function parseProviderAuthorities(dumpsysText) {
   const authorities = new Set();
+  let inContentProviderAuthorities = false;
+
   for (const line of String(dumpsysText).split(/\r?\n/)) {
+    if (/^\s*ContentProvider Authorities:\s*$/i.test(line)) {
+      inContentProviderAuthorities = true;
+      continue;
+    }
+
+    if (inContentProviderAuthorities) {
+      // Stop at the next peer (non-indented, colon-terminated) section.
+      if (/^\S[^\n]*:\s*$/.test(line)) {
+        inContentProviderAuthorities = false;
+      } else {
+        const bracketed = /^\s*\[([^\]]+)\]:\s*$/.exec(line);
+        if (bracketed && bracketed[1].trim()) authorities.add(bracketed[1].trim());
+        continue;
+      }
+    }
+
     const match = /^\s*(?:Authorities|authorities)\s*[:=]\s*(.+)$/i.exec(line);
     if (match) {
       for (const authority of match[1].split(/[;,]\s*/)) {

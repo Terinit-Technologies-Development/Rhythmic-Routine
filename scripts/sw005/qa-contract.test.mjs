@@ -12,6 +12,7 @@ import {
   hydrateManifest,
   isPathInside,
   parseArgv,
+  parseProviderAuthorities,
   profileFor,
   redactSerial,
   resolveDeviceRequest,
@@ -82,6 +83,35 @@ describe('SW-2026-005 QA contract', () => {
     assert.equal(quoted.keystore, 'C:\\Keys "QA"\\qa shared.p12');
     assert.throws(() => parseArgv(['--unknown', 'x'], ['known']), /Unknown option/);
     assert.throws(() => parseArgv(['--strict', '--strict'], ['strict']), /Duplicate option/);
+  });
+
+  it('parses Android 16 ContentProvider Authorities brackets only inside that section', () => {
+    const actual = [
+      'Registered ContentProviders:',
+      '  com.terinit.rhythmicroutine.qa/expo.modules.rhythmdevice.AttentionInsightProvider:',
+      '    Provider{71caea9 com.terinit.rhythmicroutine.qa/expo.modules.rhythmdevice.AttentionInsightProvider}',
+      '',
+      'ContentProvider Authorities:',
+      '  [com.terinit.rhythmicroutine.qa.attention-preview]:',
+      '    Provider{760373 com.terinit.rhythmicroutine.qa/RoutineAttentionPreviewProvider}',
+      '  [com.terinit.rhythmicroutine.qa.attention-insight]:',
+      '    Provider{71caea9 com.terinit.rhythmicroutine.qa/AttentionInsightProvider}',
+      '      applicationInfo=ApplicationInfo{43fb7fc com.terinit.rhythmicroutine.qa}',
+      '',
+      'Package [com.terinit.rhythmicroutine.qa] (unrelated bracket):',
+      '  [must.not.count]:',
+    ].join('\n');
+    const parsed = parseProviderAuthorities(actual);
+    assert.deepEqual(parsed, [
+      'com.terinit.rhythmicroutine.qa.attention-preview',
+      'com.terinit.rhythmicroutine.qa.attention-insight',
+    ]);
+
+    assert.deepEqual(parseProviderAuthorities('  Authorities: com.old.one; com.old.two'), [
+      'com.old.one',
+      'com.old.two',
+    ]);
+    assert.deepEqual(parseProviderAuthorities('authorities=com.old.three'), ['com.old.three']);
   });
 
   it('keeps the shared keystore outside every repository and rejects literal passwords', () => {
