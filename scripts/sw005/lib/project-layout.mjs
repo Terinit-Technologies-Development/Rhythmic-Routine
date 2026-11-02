@@ -118,8 +118,8 @@ export function planAppBuild(app, { root, layoutOverrides = {}, routineVersionCo
     requiredAbi: undefined,
     requireDexModule: false,
     requireDexClasses: [],
-    requireDexStrings: [],
     testTargetAppId: layout.applicationId,
+    expectedTestRunner: 'androidx.test.runner.AndroidJUnitRunner',
     apkPath: testApk,
   };
 

@@ -226,6 +226,43 @@ export function parseAaptBadging(text) {
 }
 
 /**
+ * Parse `aapt dump xmltree <apk> AndroidManifest.xml` output for the actual
+ * instrumentation element. Current SDK badging does not emit an
+ * `instrumentation:` line, so the binary manifest is authoritative.
+ *
+ * @param {string} text
+ * @returns {{name: string, targetPackage: string} | null}
+ */
+export function parseAaptXmltreeInstrumentation(text) {
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new Error('aapt xmltree output is empty');
+  }
+
+  let inInstrumentation = false;
+  let baseIndent = -1;
+  let name = null;
+  let targetPackage = null;
+  for (const line of text.split(/\r?\n/)) {
+    const indent = /^\s*/.exec(line)[0].length;
+    if (!inInstrumentation) {
+      if (/^\s*E:\s+instrumentation\b/.test(line)) {
+        inInstrumentation = true;
+        baseIndent = indent;
+      }
+      continue;
+    }
+    if (/^\s*E:\s+/.test(line) && indent <= baseIndent) break;
+    const attribute = /^\s*A:\s+android:(name|targetPackage)(?:\([^)]*\))?="([^"]*)"/.exec(line);
+    if (attribute) {
+      if (attribute[1] === 'name') name = attribute[2];
+      if (attribute[1] === 'targetPackage') targetPackage = attribute[2];
+    }
+  }
+
+  return name && targetPackage ? { name, targetPackage } : null;
+}
+
+/**
  * Parse certificate digests and scheme verification lines from
  * `apksigner verify --print-certs -v`.
  *
@@ -377,12 +414,22 @@ export function evaluateArtifact(spec, facts) {
     }
 
     if (spec.role === 'test') {
-      const targetOk = badging.instrumentation?.targetPackage === spec.testTargetAppId;
+      const instrumentation = facts.manifestInstrumentationChecked
+        ? facts.manifestInstrumentation
+        : badging.instrumentation;
+      const targetOk = instrumentation?.targetPackage === spec.testTargetAppId;
       add(
         'test-target',
         targetOk ? 'PASS' : 'FAIL',
-        `instrumentation target=${badging.instrumentation?.targetPackage ?? '(none)'}; expected=${spec.testTargetAppId}`
+        `instrumentation target=${instrumentation?.targetPackage ?? '(none)'}; expected=${spec.testTargetAppId}`
       );
+      if (spec.expectedTestRunner) {
+        add(
+          'test-runner',
+          instrumentation?.name === spec.expectedTestRunner ? 'PASS' : 'FAIL',
+          `instrumentation runner=${instrumentation?.name ?? '(none)'}; expected=${spec.expectedTestRunner}`
+        );
+      }
     }
   }
 

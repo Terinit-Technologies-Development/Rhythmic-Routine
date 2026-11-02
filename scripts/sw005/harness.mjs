@@ -43,6 +43,7 @@ import {
 import {
   evaluateArtifact,
   parseAaptBadging,
+  parseAaptXmltreeInstrumentation,
   parseApksignerOutput,
   readZipEntries,
   summarizeApkEntries,
@@ -404,6 +405,19 @@ async function collectFacts(artifactPath, spec, tools) {
       facts.badging = parseAaptBadging(result.stdout);
     } catch (error) {
       facts.badgingError = error.message;
+    }
+
+    if (spec.role === 'test') {
+      // Current SDK badging omits instrumentation element data. The binary
+      // manifest is authoritative when it is available.
+      facts.manifestInstrumentationChecked = true;
+      try {
+        const result = await run(tools.aapt, ['dump', 'xmltree', artifactPath, 'AndroidManifest.xml']);
+        facts.manifestInstrumentation = parseAaptXmltreeInstrumentation(result.stdout);
+      } catch (error) {
+        facts.manifestInstrumentation = null;
+        facts.manifestInstrumentationError = error.message;
+      }
     }
   }
 
