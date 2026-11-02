@@ -35,6 +35,7 @@ export interface RestorativeCardCopy {
   cooldownLabel: string;
   showChoice: boolean;
   showSelectedObligation: boolean;
+  providerSwitchAllowed: boolean;
   selectedProvider?: RestorativeProvider;
   meditationPath: ProviderStatusCopy;
   readerPath: ProviderStatusCopy;
@@ -348,7 +349,12 @@ export function deriveRestorativeCardCopy(
       ? obligationProvider
       : undefined);
   const gateOpen = !view.gateSatisfied;
-  const showChoice = gateOpen && !selectedProvider && view.obligation?.kind !== 'reader-daily-baseline';
+  const providerSwitchAllowed =
+    gateOpen && Boolean(selectedProvider) && view.providerSwitchAllowed === true;
+  const showChoice =
+    gateOpen &&
+    view.obligation?.kind !== 'reader-daily-baseline' &&
+    (!selectedProvider || providerSwitchAllowed);
   const showSelectedObligation =
     gateOpen && Boolean(selectedProvider || view.obligation?.kind === 'reader-daily-baseline');
   const meditationPath = describeMeditationPath(view, meditationDiagnostic);
@@ -359,14 +365,21 @@ export function deriveRestorativeCardCopy(
     nextAction = cooldownActive
       ? 'Wait for the separate cooldown timer; no restorative action remains.'
       : 'No restorative action remains.';
-  } else if (showChoice) {
+  } else if (showChoice && !providerSwitchAllowed) {
     nextAction = cooldownActive
       ? 'Choose Reader or Meditation below. The cooldown timer continues independently.'
       : 'Choose Reader or Meditation below to reopen access.';
   } else {
     const selectedStatus =
       selectedProvider === 'meditation' ? meditationPath : readerPath;
-    if (!selectedStatus.selectable) {
+    if (providerSwitchAllowed && selectedStatus.selectable) {
+      nextAction = cooldownActive
+        ? 'Continue the selected session, or switch to the other path before verified progress. The cooldown timer continues independently.'
+        : 'Continue the selected session, or switch to the other path before verified progress.';
+    } else if (providerSwitchAllowed) {
+      nextAction =
+        'Switch to the other path, or resolve the selected provider issue, before verified progress.';
+    } else if (!selectedStatus.selectable) {
       nextAction = selectedStatus.action;
     } else {
       nextAction = cooldownActive
@@ -391,6 +404,7 @@ export function deriveRestorativeCardCopy(
           : 'Cooldown elapsed · obligation pending',
     showChoice,
     showSelectedObligation,
+    providerSwitchAllowed,
     ...(selectedProvider ? { selectedProvider } : {}),
     meditationPath,
     readerPath,

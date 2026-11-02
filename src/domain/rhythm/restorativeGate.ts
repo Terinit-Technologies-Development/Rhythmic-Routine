@@ -549,6 +549,8 @@ export interface RestorativeStatusView {
   obligation?: RestorativeObligationView;
   /** An unfinished gate carried from an earlier Attention Day. */
   carriedObligation?: boolean;
+  /** FR-11/T16: provider may still switch before verified progress. */
+  providerSwitchAllowed?: boolean;
 }
 
 function deriveRestorativeObligationView(input: {
@@ -699,6 +701,11 @@ export function deriveRestorativeStatus(input: {
   const carriedObligation =
     evaluated.status !== 'satisfied' &&
     evaluated.attentionDayId !== input.attentionDayId;
+  const providerSwitchAllowed =
+    evaluated.status !== 'satisfied' &&
+    evaluated.requirementKind === 'restorative-choice' &&
+    Boolean(evaluated.selectedProvider) &&
+    evaluated.providerLocked !== true;
 
   let phase: RestorativeGatePhase;
   if (gateSatisfied && cooldownActive) {
@@ -724,5 +731,6 @@ export function deriveRestorativeStatus(input: {
     gateSatisfied,
     obligation,
     carriedObligation,
+    providerSwitchAllowed,
   };
 }

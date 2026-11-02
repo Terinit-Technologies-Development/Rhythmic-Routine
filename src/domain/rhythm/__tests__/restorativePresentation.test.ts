@@ -130,10 +130,51 @@ describe('FR14/FR15 — restorative UI copy stays separate and honest', () => {
     const copy = deriveRestorativeCardCopy(status);
 
     assert.equal(status.carriedObligation, true);
+    assert.equal(status.providerSwitchAllowed, false);
+    assert.equal(copy.showChoice, false);
     assert.match(copy.carriedLabel ?? '', /^Carried obligation/);
     assert.match(copy.carriedLabel ?? '', /not new debt today/);
     assert.doesNotMatch(copy.carriedLabel ?? '', /gate-internal-only|opaque-session-id|ad-20261031/);
     assert.match(copy.statusLabel, /cooldown active/);
+  });
+
+  test('a selected provider stays switchable before verified progress', () => {
+    const now = 1_700_000_000_000;
+    const gate: ActiveRestorativeGate = {
+      gateId: 'gate-switchable',
+      groupId: 'social',
+      attentionDayId: 'ad-20261101-0830',
+      dailyCooldownOrdinal: 4,
+      createdAt: now - 60_000,
+      cooldownEndsAt: now + 600_000,
+      requirementKind: 'restorative-choice',
+      selectedProvider: 'meditation',
+      providerSessionId: 'opaque-switchable-session',
+      status: 'in-progress',
+      providerLocked: false,
+      requiredMeditationSeconds: 1_800,
+      requiredRestorativeReadingSeconds: 1_800,
+      requiredRestorativeQualifiedPages: 11,
+    };
+    const status = deriveRestorativeStatus({
+      groupId: 'social',
+      gate,
+      cooldownEndsAt: gate.cooldownEndsAt,
+      now,
+      attentionDayId: gate.attentionDayId,
+      currentDateKey: '2026-11-01',
+      acceptedEvidenceDateKeys: ['2026-11-01'],
+      meditationSubstitutionsUsed: 0,
+      meditationEvidence: null,
+    });
+    const copy = deriveRestorativeCardCopy(status);
+
+    assert.equal(status.providerSwitchAllowed, true);
+    assert.equal(copy.providerSwitchAllowed, true);
+    assert.equal(copy.showChoice, true);
+    assert.equal(copy.meditationPath.selectable, true);
+    assert.equal(copy.readerPath.selectable, true);
+    assert.match(copy.nextAction, /switch to the other path/);
   });
 
   test('provider errors are not mislabelled disconnected or complete', () => {

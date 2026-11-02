@@ -78,9 +78,13 @@ export function RestorativeChoiceCard({
 
       {copy.showChoice ? (
         <>
-          <Text style={styles.title}>Choose a restorative path</Text>
+          <Text style={styles.title}>
+            {copy.providerSwitchAllowed ? 'Change restorative path' : 'Choose a restorative path'}
+          </Text>
           <Text style={styles.subtitle}>
-            One quiet practice completes this restorative requirement. Progress cannot be combined.
+            {copy.providerSwitchAllowed
+              ? 'You can switch paths before verified progress. Progress cannot be combined.'
+              : 'One quiet practice completes this restorative requirement. Progress cannot be combined.'}
           </Text>
 
           <View style={styles.pathsRow}>
