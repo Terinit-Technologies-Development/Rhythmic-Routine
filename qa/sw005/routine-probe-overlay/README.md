@@ -36,8 +36,9 @@ Expected identities:
 - class filter: `com.terinit.rhythmicroutine.sw005probe.SharedSignerProbeTest`
 
 The overlay sets `testBuildType=qaStandalone`, the runner, standard
-`androidx.test`/JUnit test dependencies, and the existing probe Kotlin source
-directory during `:app` project evaluation, before AGP reads the runner. It does
+`androidx.test`/JUnit test dependencies during `:app` evaluation, and adds the
+existing probe Kotlin source in the external `org.jetbrains.kotlin.android`
+plugin callback so the AndroidTest Kotlin compile task actually sees it. It does
 not add production dependencies or permissions.
 
 The property is scoped to the intended Routine root. Included React/Expo plugin
