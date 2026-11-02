@@ -107,9 +107,7 @@ export class RhythmEngine {
         dailyAttentionExchange: restoredAttentionExchange,
         activeReadingGates: Object.fromEntries(
           Object.entries(normalized.activeReadingGates ?? {})
-            .filter(([groupId, gate]) =>
-              gate.attentionDateKey === todayKey && !staleCurrentDayGroups.has(groupId)
-            )
+            .filter(([groupId]) => !staleCurrentDayGroups.has(groupId))
             .map(([groupId, gate]) => [groupId, { ...gate }])
         ),
         activeRestorativeGates: Object.fromEntries(

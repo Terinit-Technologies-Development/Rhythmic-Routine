@@ -111,17 +111,27 @@ export function processRhythmEvent(
     nowMs
   );
   const nextReadingGates: Record<string, ActiveReadingGate> = Object.fromEntries(
-    Object.entries(currentRuntime.activeReadingGates ?? {})
-      .filter(([, gate]) => gate.attentionDateKey === currentDateKey)
-      .map(([groupId, gate]) => [groupId, { ...gate }])
+    Object.entries(currentRuntime.activeReadingGates ?? {}).map(([groupId, gate]) => [
+      groupId,
+      { ...gate },
+    ])
   );
   const nextRestorativeGates: Record<string, ActiveRestorativeGate> = Object.fromEntries(
     Object.entries(currentRuntime.activeRestorativeGates ?? {})
       .map(([groupId, gate]) => [groupId, { ...gate }])
   );
-  let nextReadingEvidence = currentRuntime.readingEvidence?.dateKey === currentDateKey
-    ? { ...currentRuntime.readingEvidence }
-    : undefined;
+  const cachedReadingEvidence = currentRuntime.readingEvidence;
+  const cachedEvidenceDateKey = cachedReadingEvidence?.dateKey;
+  const evidenceMatchesCarriedGate =
+    cachedEvidenceDateKey !== undefined &&
+    Object.values(currentRuntime.activeReadingGates ?? {}).some(
+      (gate) => gate.attentionDateKey === cachedEvidenceDateKey
+    );
+  let nextReadingEvidence =
+    cachedReadingEvidence &&
+    (cachedEvidenceDateKey === currentDateKey || evidenceMatchesCarriedGate)
+      ? { ...cachedReadingEvidence }
+      : undefined;
   let nextMeditationEvidence = currentRuntime.meditationEvidence
     ? { ...currentRuntime.meditationEvidence }
     : undefined;
@@ -533,7 +543,7 @@ export function processRhythmEvent(
       }
       replaceRecord(nextReadingGates, Object.fromEntries(
         Object.entries(event.activeReadingGates)
-          .filter(([groupId, gate]) => groupId === gate.groupId && gate.attentionDateKey === currentDateKey)
+          .filter(([groupId, gate]) => groupId === gate.groupId)
           .map(([groupId, gate]) => [groupId, { ...gate }])
       ));
       replaceRecord(nextCooldowns, Object.fromEntries(

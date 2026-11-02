@@ -625,7 +625,7 @@ object NativeAttentionExchangeLogic {
     fun gateForCooldown(cooldown: NativeCooldownPolicy, today: String): NativeReadingGate? {
         val dateKey = cooldown.attentionDateKey ?: return null
         val ordinal = cooldown.dailyCooldownOrdinal ?: return null
-        if (dateKey != today || ordinal <= 0) return null
+        if (ordinal <= 0) return null
         if (cooldown.requiredReadingSeconds <= 0L && cooldown.requiredQualifiedPages <= 0) return null
         return NativeReadingGate(
             groupId = cooldown.groupId,
@@ -645,8 +645,12 @@ object NativeAttentionExchangeLogic {
         today: String,
     ): NativeAttentionGateEvaluation {
         val available = evidence?.providerAvailable == true
+        // Reader V2 remains calendar-day scoped. A carried gate accepts trusted
+        // evidence for the current local date OR its own creation date; the two
+        // aggregates are never summed or pooled.
         val compatible = evidence?.let {
-            it.protocolCompatible && it.protocolVersion == 2 && it.dateKey == today &&
+            it.protocolCompatible && it.protocolVersion == 2 &&
+                (it.dateKey == today || it.dateKey == gate.attentionDateKey) &&
                 it.verifiedActiveSeconds >= 0L && it.qualifiedPages >= 0
         } == true
         val seconds = if (compatible) evidence!!.verifiedActiveSeconds else 0L
@@ -655,7 +659,6 @@ object NativeAttentionExchangeLogic {
         val remainingPages = (gate.requiredQualifiedPages - pages).coerceAtLeast(0)
 
         val phase = when {
-            gate.attentionDateKey != today -> NativeAttentionGatePhase.NONE
             gate.cooldownEndsAt > now -> NativeAttentionGatePhase.COOLDOWN_ACTIVE
             !available -> NativeAttentionGatePhase.READER_UNAVAILABLE
             !compatible -> NativeAttentionGatePhase.READER_INCOMPATIBLE
@@ -684,12 +687,9 @@ object NativeAttentionExchangeLogic {
             return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.KEEP_ACTIVE_TIMER, NativeAttentionGatePhase.COOLDOWN_ACTIVE, gate)
         }
 
-        // A prior day's obligation expires at local midnight; the timer itself remains authoritative.
-        if (cooldown.attentionDateKey != today) {
-            return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE, NativeAttentionGatePhase.NONE, null)
-        }
-
-        val effectiveGate = gate?.takeIf { it.attentionDateKey == today } ?: gateForCooldown(cooldown, today)
+        // An unfinished prior-day reading gate is carried; only verified
+        // completion removes it. The timer itself remains authoritative.
+        val effectiveGate = gate ?: gateForCooldown(cooldown, today)
         if (effectiveGate == null) {
             return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE, NativeAttentionGatePhase.NONE, null)
         }
@@ -702,7 +702,7 @@ object NativeAttentionExchangeLogic {
         }
     }
 
-    /** Existing native state wins on the same date. JS can initialize an empty native store once. */
+    /** Existing native state wins on the same date. Native unfinished gates carry. */
     fun reconcileIncomingState(
         nativeState: NativeDailyAttentionExchangeState?,
         nativeGates: Map<String, NativeReadingGate>,
@@ -716,21 +716,40 @@ object NativeAttentionExchangeLogic {
             val seeded = incomingState?.takeIf { it.dateKey == today }?.let {
                 it.copy(attentionDayId = attentionDayId)
             } ?: newDailyState(today, now, attentionDayId)
-            val persistedGates = nativeGates.filterValues { it.attentionDateKey == today }
-            val gates = if (persistedGates.isNotEmpty()) persistedGates else incomingGates.filterValues { it.attentionDateKey == today }
-            return withGateRequirements(seeded, gates) to gates
+            // A fresh native store may adopt current-day JS gates, while genuine
+            // native gates (including carried ones) remain authoritative.
+            val adopted = LinkedHashMap<String, NativeReadingGate>()
+            for ((groupId, gate) in nativeGates) adopted[groupId] = gate
+            for ((groupId, gate) in incomingGates) {
+                if (gate.attentionDateKey == today) adopted.putIfAbsent(groupId, gate)
+            }
+            return withGateRequirements(seeded, adopted) to adopted
         }
         val sameAttentionDay = nativeState.attentionDayId == attentionDayId ||
             (nativeState.attentionDayId == null && nativeState.dateKey == today)
-        if (!sameAttentionDay) return newDailyState(today, now, attentionDayId) to emptyMap()
-        val gates = nativeGates.filterValues { it.attentionDateKey == today }
-        return withGateRequirements(nativeState.copy(dateKey = today, attentionDayId = attentionDayId), gates) to gates
+        if (!sameAttentionDay) {
+            // The accepted native snapshot is authoritative. Carry its unfinished
+            // gates into the new day; an incoming JS snapshot cannot resurrect a
+            // stale gate or ordinal from before the boundary.
+            return withGateRequirements(
+                newDailyState(today, now, attentionDayId),
+                nativeGates,
+            ) to nativeGates
+        }
+        // Same accepted native day: native state wins. Incoming stale snapshots
+        // must not append phantom gates or rewind counters.
+        return withGateRequirements(
+            nativeState.copy(dateKey = today, attentionDayId = attentionDayId),
+            nativeGates,
+        ) to nativeGates
     }
 
     /**
      * Local midnight starts a new calendar date, but does not end the active
-     * Attention Day. Keep its cooldown ordinal until the saved morning
-     * boundary while expiring calendar-date-scoped reading gates.
+     * Attention Day or discard unfinished CD3 reading gates. The gate keeps its
+     * original calendar creation key and timer; only verified completion clears
+     * it (PD-2). Reader V2 evidence for the creation date or current date is
+     * accepted independently, never pooled.
      */
     fun reconcileMidnightRollover(
         nativeState: NativeDailyAttentionExchangeState?,
@@ -860,11 +879,16 @@ object NativeAttentionExchangeLogic {
     private fun withGateRequirements(
         state: NativeDailyAttentionExchangeState,
         gates: Map<String, NativeReadingGate>,
-    ): NativeDailyAttentionExchangeState = state.copy(
-        cooldownsTriggered = maxOf(state.cooldownsTriggered.coerceAtLeast(0), gates.values.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0),
-        highestRequiredActiveSeconds = maxOf(state.highestRequiredActiveSeconds.coerceAtLeast(0L), gates.values.maxOfOrNull { it.requiredReadingSeconds } ?: 0L),
-        highestRequiredQualifiedPages = maxOf(state.highestRequiredQualifiedPages.coerceAtLeast(0), gates.values.maxOfOrNull { it.requiredQualifiedPages } ?: 0),
-    )
+    ): NativeDailyAttentionExchangeState {
+        // A carried gate keeps its own creation day and ordinal; it must never
+        // inflate the new day's counters.
+        val currentDayGates = gates.values.filter { it.attentionDateKey == state.dateKey }
+        return state.copy(
+            cooldownsTriggered = maxOf(state.cooldownsTriggered.coerceAtLeast(0), currentDayGates.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0),
+            highestRequiredActiveSeconds = maxOf(state.highestRequiredActiveSeconds.coerceAtLeast(0L), currentDayGates.maxOfOrNull { it.requiredReadingSeconds } ?: 0L),
+            highestRequiredQualifiedPages = maxOf(state.highestRequiredQualifiedPages.coerceAtLeast(0), currentDayGates.maxOfOrNull { it.requiredQualifiedPages } ?: 0),
+        )
+    }
 
     private fun saturatedMultiply(left: Long, right: Long): Long = try {
         Math.multiplyExact(left, right)

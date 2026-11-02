@@ -6,6 +6,10 @@ import type {
   MeditationProviderAvailability,
   MeditationQueryStatus,
 } from './meditationEvidence';
+import type {
+  RecoveryProviderAvailability,
+  RecoveryQueryStatus,
+} from './recovery';
 
 /**
  * Plain presentation for the CD4+ restorative choice. This module never
@@ -16,6 +20,12 @@ import type {
 export interface MeditationProviderDiagnostic {
   availability?: MeditationProviderAvailability;
   queryStatus?: MeditationQueryStatus;
+  sessionMissing?: boolean;
+}
+
+export interface ReaderProviderDiagnostic {
+  availability?: RecoveryProviderAvailability;
+  queryStatus?: RecoveryQueryStatus;
   sessionMissing?: boolean;
 }
 
@@ -290,7 +300,10 @@ export function describeMeditationPath(
   };
 }
 
-export function describeReaderPath(view: RestorativeStatusView): ProviderStatusCopy {
+export function describeReaderPath(
+  view: RestorativeStatusView,
+  diagnostic?: ReaderProviderDiagnostic
+): ProviderStatusCopy {
   if (view.gateSatisfied && view.selectedProvider === 'reader') {
     return {
       label: 'Complete',
@@ -299,6 +312,72 @@ export function describeReaderPath(view: RestorativeStatusView): ProviderStatusC
       selectable: false,
     };
   }
+
+  const availability = diagnostic?.availability;
+  if (availability === 'not-installed') {
+    return {
+      label: 'Not installed',
+      detail: 'Reader is not installed or is not visible to Routine.',
+      action: 'Install the official Reader app, then retry this path.',
+      selectable: false,
+    };
+  }
+  if (availability === 'untrusted-signature') {
+    return {
+      label: 'Signature not trusted',
+      detail: 'The installed Reader app is not signed by the expected publisher.',
+      action: 'Use the official same-signed build, then retry this path.',
+      selectable: false,
+    };
+  }
+  if (availability === 'permission-denied') {
+    return {
+      label: 'Permission denied',
+      detail: 'Reader did not grant Routine access to its recovery status provider.',
+      action: 'Open Reader and allow the required recovery access, then retry.',
+      selectable: false,
+    };
+  }
+  if (availability === 'protocol-incompatible') {
+    return {
+      label: 'Incompatible app version',
+      detail: 'Reader answered with a recovery protocol Routine cannot verify.',
+      action: 'Update Reader to a compatible version, then retry.',
+      selectable: false,
+    };
+  }
+
+  const queryStatus = diagnostic?.queryStatus;
+  if (diagnostic?.sessionMissing || queryStatus === 'session-missing') {
+    return {
+      label: 'Session not found',
+      detail: 'The bound Reader recovery session was not found by the provider.',
+      action: 'Start this path again to create a new bound session.',
+      selectable: true,
+    };
+  }
+  if (queryStatus === 'corrupt') {
+    return {
+      label: 'Status unreadable',
+      detail: 'Reader returned a recovery record that could not be verified.',
+      action: 'Check the connection and retry; no completion is credited.',
+      selectable: true,
+    };
+  }
+  if (
+    queryStatus === 'query-failed' ||
+    queryStatus === 'unavailable' ||
+    queryStatus === 'legacy-ambiguous-null' ||
+    availability === 'unavailable'
+  ) {
+    return {
+      label: 'Check connection — status unknown',
+      detail: 'Routine could not positively confirm the Reader recovery status.',
+      action: 'Check the connection and retry; no completion is credited until verified.',
+      selectable: true,
+    };
+  }
+
   if (view.phase === 'reader-incompatible') {
     return {
       label: 'Incompatible app version',
@@ -309,6 +388,14 @@ export function describeReaderPath(view: RestorativeStatusView): ProviderStatusC
   }
 
   const selected = view.selectedProvider === 'reader';
+  if (availability === 'available' && !selected && !view.gateSatisfied) {
+    return {
+      label: 'Available — no session yet',
+      detail: 'Reader answered, but no bound recovery session has started.',
+      action: 'Choose Reading to begin the bound 30-minute session.',
+      selectable: true,
+    };
+  }
   const verified =
     (view.obligation?.verifiedSeconds ?? 0) > 0 ||
     (view.obligation?.verifiedQualifiedPages ?? 0) > 0;
@@ -339,7 +426,8 @@ export function describeReaderPath(view: RestorativeStatusView): ProviderStatusC
 
 export function deriveRestorativeCardCopy(
   view: RestorativeStatusView,
-  meditationDiagnostic?: MeditationProviderDiagnostic
+  meditationDiagnostic?: MeditationProviderDiagnostic,
+  readerDiagnostic?: ReaderProviderDiagnostic
 ): RestorativeCardCopy {
   const cooldownActive = view.cooldownRemainingSeconds > 0;
   const obligationProvider = view.obligation?.provider;
@@ -358,7 +446,7 @@ export function deriveRestorativeCardCopy(
   const showSelectedObligation =
     gateOpen && Boolean(selectedProvider || view.obligation?.kind === 'reader-daily-baseline');
   const meditationPath = describeMeditationPath(view, meditationDiagnostic);
-  const readerPath = describeReaderPath(view);
+  const readerPath = describeReaderPath(view, readerDiagnostic);
 
   let nextAction: string;
   if (view.gateSatisfied) {

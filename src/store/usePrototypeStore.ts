@@ -37,7 +37,11 @@ import {
   type RestorativeProvider,
   type RestorativeStatusView,
 } from '../domain/rhythm/restorativeGate';
-import { NativeRecoveryProviderClient } from '../domain/rhythm/recovery';
+import {
+  NativeRecoveryProviderClient,
+  type RecoveryProviderAvailability,
+  type RecoveryQueryStatus,
+} from '../domain/rhythm/recovery';
 import {
   buildCooldownMeditationRequest,
   nativeMeditationBridge,
@@ -280,6 +284,13 @@ export interface RestorativeProviderDiagnostics {
     sessionMissing?: boolean;
     updatedAt: number;
   };
+  reader?: {
+    gateId?: string;
+    availability: RecoveryProviderAvailability;
+    queryStatus: RecoveryQueryStatus;
+    sessionMissing?: boolean;
+    updatedAt: number;
+  };
 }
 
 interface PrototypeState {
@@ -341,6 +352,8 @@ interface PrototypeState {
   launchReaderForGate: (groupId: string) => Promise<boolean>;
   /** Pass 3: refresh Meditation evidence for the bound session (fail-closed). */
   refreshMeditationEvidence: (groupId: string) => Promise<void>;
+  /** FR14: refresh Reader recovery status for the bound session (fail-closed). */
+  refreshReaderEvidence: (groupId: string) => Promise<void>;
   refreshInsights: () => Promise<void>;
   checkPermissions: () => Promise<void>;
   requestUsagePermission: () => Promise<void>;
@@ -1533,6 +1546,22 @@ export const usePrototypeStore = create<PrototypeState>((set, get) => ({
         timestamp: Date.now(),
       });
     }
+  },
+
+  refreshReaderEvidence: async (groupId) => {
+    const coordinator = RhythmCoordinator.getInstance();
+    const runtime = coordinator.getRuntimeSnapshot();
+    const gate = runtime?.activeRestorativeGates?.[groupId];
+    if (!gate?.providerSessionId || gate.selectedProvider !== 'reader') return;
+    await coordinator.refreshRestorativeProviderEvidence();
+    const diagnostics = coordinator.getRestorativeProviderDiagnostics();
+    const current = get().restorativeProviderDiagnostics;
+    set({
+      restorativeProviderDiagnostics: {
+        ...current,
+        ...diagnostics,
+      },
+    });
   },
 
   refreshInsights: async () => {

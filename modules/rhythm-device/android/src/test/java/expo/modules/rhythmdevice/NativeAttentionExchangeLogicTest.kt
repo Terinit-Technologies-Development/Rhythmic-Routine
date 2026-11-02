@@ -501,7 +501,7 @@ class NativeAttentionExchangeLogicTest {
         val nativeGate = gate(groupId = "social", ordinal = 4, seconds = 5400, pages = 47)
         val nativeState = NativeDailyAttentionExchangeState(today, 4, 5400, 47, now)
         val staleJsState = NativeDailyAttentionExchangeState(today, 1, 0, 0, now - 10_000)
-        val staleJsGate = gate(groupId = "video", ordinal = 1, seconds = 0, pages = 0)
+        val staleJsGate = gate(groupId = "video", ordinal = 1, seconds = 3600, pages = 36)
 
         val (reconciledState, reconciledGates) = NativeAttentionExchangeLogic.reconcileIncomingState(
             nativeState,
@@ -537,7 +537,7 @@ class NativeAttentionExchangeLogicTest {
     }
 
     @Test
-    fun `midnight clears previous day gates and prior day timers retain only their timer`() {
+    fun `midnight keeps an unfinished previous day gate and prior day timer`() {
         val priorGate = gate(dateKey = today, endsAt = now + 60_000)
         val priorState = NativeDailyAttentionExchangeState(today, 3, 3600, 36, now)
         val (newState, newGates) = NativeAttentionExchangeLogic.reconcileIncomingState(
@@ -550,7 +550,9 @@ class NativeAttentionExchangeLogicTest {
         )
         assertEquals(tomorrow, newState.dateKey)
         assertEquals(0, newState.cooldownsTriggered)
-        assertTrue(newGates.isEmpty())
+        // PD-2: the unfinished gate is carried; the new day does not inherit its ordinal.
+        assertTrue(newGates.containsKey("social"))
+        assertEquals(today, newGates.getValue("social").attentionDateKey)
 
         val crossMidnight = NativeCooldownPolicy(
             "social", setOf("social.app"), now + 86_400_000, now,
@@ -563,8 +565,9 @@ class NativeAttentionExchangeLogicTest {
             NativeCooldownExpiryAction.KEEP_ACTIVE_TIMER,
             NativeAttentionExchangeLogic.decideCooldownExpiry(crossMidnight, null, null, now + 1, tomorrow).action,
         )
+        // The timer is gone but the gate remains until verified completion.
         assertEquals(
-            NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE,
+            NativeCooldownExpiryAction.REMOVE_TIMER_KEEP_GATE,
             NativeAttentionExchangeLogic.decideCooldownExpiry(crossMidnight, null, null, now + 86_400_001, tomorrow).action,
         )
     }
@@ -577,7 +580,7 @@ class NativeAttentionExchangeLogicTest {
             today, 4, 3600L, 36, now, attentionDayId,
         )
 
-        val (afterMidnight, dateScopedGates) = NativeAttentionExchangeLogic.reconcileMidnightRollover(
+        val (afterMidnight, carriedGates) = NativeAttentionExchangeLogic.reconcileMidnightRollover(
             nativeState = state,
             nativeGates = mapOf("social" to oldGate),
             today = tomorrow,
@@ -587,8 +590,10 @@ class NativeAttentionExchangeLogicTest {
         assertEquals(4, afterMidnight.cooldownsTriggered)
         assertEquals(tomorrow, afterMidnight.dateKey)
         assertEquals(attentionDayId, afterMidnight.attentionDayId)
-        // The CD3 Daily Reader baseline remains calendar-date scoped.
-        assertTrue(dateScopedGates.isEmpty())
+        // CD3 evidence remains calendar-date scoped, but the unfinished gate is
+        // carried with its original creation key.
+        assertTrue(carriedGates.containsKey("social"))
+        assertEquals(today, carriedGates.getValue("social").attentionDateKey)
 
         val (nextAttentionDay, _) = NativeAttentionExchangeLogic.reconcileIncomingState(
             nativeState = afterMidnight,

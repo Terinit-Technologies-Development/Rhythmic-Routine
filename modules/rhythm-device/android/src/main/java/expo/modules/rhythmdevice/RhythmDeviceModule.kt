@@ -604,6 +604,14 @@ class RhythmDeviceModule : Module() {
       }
     }
 
+    AsyncFunction("queryRecoveryStatusDetailed") { sessionId: String ->
+      val context = appContext.reactContext
+        ?: return@AsyncFunction ReaderRecoveryDetailedResultWire.unavailable()
+      return@AsyncFunction ReaderRecoveryDetailedResultWire.toWireMap(
+        ReaderRecoveryStatusProviderClient.query(context, sessionId)
+      )
+    }
+
     AsyncFunction("isMeditationAvailable") {
       val context = appContext.reactContext ?: return@AsyncFunction "unavailable"
       return@AsyncFunction MeditationStatusProviderClient.availabilityString(
@@ -706,7 +714,6 @@ class RhythmDeviceModule : Module() {
         }
       }
     val gates = RhythmEnforcementService.loadCurrentAttentionReadingGates(context, now).values
-      .filter { it.attentionDateKey == dateKey }
       .map { gate ->
         mapOf(
           "groupId" to gate.groupId,

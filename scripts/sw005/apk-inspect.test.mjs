@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   evaluateArtifact,
   parseAaptBadging,
+  parseAaptXmltreeInstrumentation,
   parseApksignerOutput,
   parseInstrumentationOutput,
   readZipEntries,
@@ -11,6 +12,26 @@ import {
 } from './lib/apk-inspect.mjs';
 
 const CERT = 'a'.repeat(64);
+
+// Representative SDK 36 output from the actual Meditation instrumentation APK.
+// Badging intentionally has no instrumentation line; xmltree is authoritative.
+const ACTUAL_TEST_BADGING = [
+  "package: name='com.terinit.rhythmicmeditation.test' versionCode='' versionName='' platformBuildVersionName='17' platformBuildVersionCode='37' compileSdkVersion='37' compileSdkVersionCodename='17'",
+  "sdkVersion:'26'",
+  "targetSdkVersion:'36'",
+  "uses-permission: name='com.terinit.rhythmicmeditation.permission.STATUS_ACCESS'",
+].join('\n');
+
+const ACTUAL_TEST_MANIFEST = [
+  'N: android=http://schemas.android.com/apk/res/android',
+  '  E: manifest (line=2)',
+  '    A: package="com.terinit.rhythmicmeditation.test" (Raw: "com.terinit.rhythmicmeditation.test")',
+  '    E: instrumentation (line=15)',
+  '      A: android:label(0x01010001)="Tests for com.terinit.rhythmicmeditation" (Raw: "Tests for com.terinit.rhythmicmeditation")',
+  '      A: android:name(0x01010003)="androidx.test.runner.AndroidJUnitRunner" (Raw: "androidx.test.runner.AndroidJUnitRunner")',
+  '      A: android:targetPackage(0x01010021)="com.terinit.rhythmicmeditation" (Raw: "com.terinit.rhythmicmeditation")',
+  '    E: application (line=30)',
+].join('\n');
 
 /** Build a minimal ZIP containing only a central directory and EOCD. */
 function makeZipBuffer(names) {
@@ -116,6 +137,96 @@ describe('SW-2026-005 APK inspection', () => {
     assert.equal(badging.versionName, '1.3.0-qa');
     assert.deepEqual(badging.nativeCodes, ['arm64-v8a', 'armeabi-v7a']);
     assert.equal(badging.instrumentation.targetPackage, 'com.terinit.rhythmicroutine.qa');
+  });
+
+  it('parses actual SDK 36 xmltree instrumentation and rejects target/runner mismatches', () => {
+    assert.deepEqual(parseAaptXmltreeInstrumentation(ACTUAL_TEST_MANIFEST), {
+      name: 'androidx.test.runner.AndroidJUnitRunner',
+      targetPackage: 'com.terinit.rhythmicmeditation',
+    });
+    assert.equal(parseAaptBadging(ACTUAL_TEST_BADGING).instrumentation, null);
+
+    const spec = {
+      id: 'meditation-test',
+      role: 'test',
+      expectedPackage: 'com.terinit.rhythmicmeditation.test',
+      versionNameSuffix: null,
+      expectedVersionCode: undefined,
+      expectedSignerSha256: CERT,
+      requireExpectedSigner: true,
+      minSizeBytes: 1,
+      requireBundle: false,
+      requireNativeLibs: false,
+      testTargetAppId: 'com.terinit.rhythmicmeditation',
+      expectedTestRunner: 'androidx.test.runner.AndroidJUnitRunner',
+    };
+    const baseFacts = () => {
+      const facts = happyFacts();
+      facts.badging = {
+        packageName: 'com.terinit.rhythmicmeditation.test',
+        versionName: '',
+        versionCode: null,
+        instrumentation: null,
+      };
+      facts.manifestInstrumentationChecked = true;
+      facts.manifestInstrumentation = parseAaptXmltreeInstrumentation(ACTUAL_TEST_MANIFEST);
+      return facts;
+    };
+
+    const accepted = evaluateArtifact(spec, baseFacts());
+    assert.equal(accepted.ok, true, JSON.stringify(accepted.rows));
+    assert.ok(accepted.rows.some((row) => row.id === 'test-target' && row.status === 'PASS'));
+    assert.ok(accepted.rows.some((row) => row.id === 'test-runner' && row.status === 'PASS'));
+
+    const wrongTargetFacts = baseFacts();
+    wrongTargetFacts.manifestInstrumentation = {
+      ...wrongTargetFacts.manifestInstrumentation,
+      targetPackage: 'com.terinit.rhythmicroutine.qa',
+    };
+    const wrongTarget = evaluateArtifact(spec, wrongTargetFacts);
+    assert.equal(wrongTarget.ok, false);
+    assert.ok(wrongTarget.rows.some((row) => row.id === 'test-target' && row.status === 'FAIL'));
+
+    const missingFacts = baseFacts();
+    missingFacts.manifestInstrumentation = null;
+    const missing = evaluateArtifact(spec, missingFacts);
+    assert.equal(missing.ok, false);
+    assert.ok(missing.rows.some((row) => row.id === 'test-target' && row.status === 'FAIL'));
+
+    const wrongRunnerFacts = baseFacts();
+    wrongRunnerFacts.manifestInstrumentation = {
+      ...wrongRunnerFacts.manifestInstrumentation,
+      name: 'com.example.OtherRunner',
+    };
+    const wrongRunner = evaluateArtifact(spec, wrongRunnerFacts);
+    assert.equal(wrongRunner.ok, false);
+    assert.ok(wrongRunner.rows.some((row) => row.id === 'test-runner' && row.status === 'FAIL'));
+  });
+
+  it('retains the badging instrumentation fallback for legacy fixtures', () => {
+    const facts = happyFacts();
+    facts.badging = {
+      packageName: 'com.terinit.rhythmicreader.test',
+      versionName: '',
+      versionCode: null,
+      instrumentation: { name: 'androidx.test.runner.AndroidJUnitRunner', targetPackage: 'com.terinit.rhythmicreader' },
+    };
+    facts.manifestInstrumentationChecked = false;
+    const result = evaluateArtifact(
+      {
+        id: 'reader-test',
+        role: 'test',
+        expectedPackage: 'com.terinit.rhythmicreader.test',
+        versionNameSuffix: null,
+        expectedSignerSha256: CERT,
+        minSizeBytes: 1,
+        requireBundle: false,
+        requireNativeLibs: false,
+        testTargetAppId: 'com.terinit.rhythmicreader',
+      },
+      facts
+    );
+    assert.equal(result.ok, true, JSON.stringify(result.rows));
   });
 
   it('parses apksigner certificates and schemes, and detects verification failure', () => {

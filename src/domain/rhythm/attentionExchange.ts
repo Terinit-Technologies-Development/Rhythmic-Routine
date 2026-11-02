@@ -525,6 +525,31 @@ export function isTrustedEvidenceForDate(
   );
 }
 
+/**
+ * Reader V2 evidence is calendar-day scoped. A carried CD3 gate may be
+ * satisfied by trusted evidence for the current local date OR its own creation
+ * date — never by pooling the two aggregates and never by an Attention-Day
+ * sum (FR-08/POL-03, PD-2 SC-7/SC-8).
+ */
+function trustedReadingEvidenceForGate(
+  evidence: ReadingEvidenceAvailability | undefined,
+  currentDateKey: string,
+  gateDateKey: string
+): ReadingEvidenceAvailability | undefined {
+  if (!evidence) return undefined;
+  if (evidence.dateKey === currentDateKey && isTrustedEvidenceForDate(evidence, currentDateKey)) {
+    return evidence;
+  }
+  if (
+    gateDateKey !== currentDateKey &&
+    evidence.dateKey === gateDateKey &&
+    isTrustedEvidenceForDate(evidence, gateDateKey)
+  ) {
+    return evidence;
+  }
+  return undefined;
+}
+
 export function reconcileReadingGate(input: {
   gate: ActiveReadingGate;
   evidence?: ReadingEvidenceAvailability;
@@ -532,15 +557,22 @@ export function reconcileReadingGate(input: {
   currentDateKey: string;
 }): ActiveReadingGate | undefined {
   const { gate, evidence, now, currentDateKey } = input;
-  if (gate.attentionDateKey !== currentDateKey) return undefined;
+  // PD-2: an unfinished gate is carried across calendar/Attention-Day
+  // boundaries. Only verified completion removes it; a missing, failed or
+  // stale projection never does.
   if (gate.cooldownEndsAt > now) return { ...gate };
-  if (!isTrustedEvidenceForDate(evidence, currentDateKey)) return { ...gate };
+  const trusted = trustedReadingEvidenceForGate(
+    evidence,
+    currentDateKey,
+    gate.attentionDateKey
+  );
+  if (!trusted) return { ...gate };
 
   const requirement: ReadingRequirement = {
     activeSeconds: gate.requiredReadingSeconds,
     qualifiedPages: gate.requiredQualifiedPages,
   };
-  return isReadingRequirementSatisfied(evidence, requirement) ? undefined : { ...gate };
+  return isReadingRequirementSatisfied(trusted, requirement) ? undefined : { ...gate };
 }
 
 export function deriveAttentionGateStatus(input: {
@@ -566,7 +598,7 @@ export function deriveAttentionGateStatus(input: {
       }
     : undefined);
   const groupId = gate?.groupId ?? cooldown?.groupId ?? input.groupId ?? '';
-  if (!gate || gate.attentionDateKey !== input.currentDateKey) {
+  if (!gate) {
     if (cooldown && cooldown.endsAt > input.now) {
       const currentDateCooldown = cooldown.attentionDateKey === input.currentDateKey;
       const requiredReadingSeconds = currentDateCooldown ? cooldown.requiredReadingSeconds ?? 0 : 0;
@@ -600,9 +632,14 @@ export function deriveAttentionGateStatus(input: {
     return emptyAttentionGateStatus(groupId);
   }
 
-  const trustedEvidence = isTrustedEvidenceForDate(input.evidence, input.currentDateKey)
-    ? input.evidence
-    : undefined;
+  // PD-2: a gate created on an earlier calendar day remains the same
+  // obligation. Current-day OR creation-day V2 evidence may satisfy it; the
+  // two daily aggregates are never merged.
+  const trustedEvidence = trustedReadingEvidenceForGate(
+    input.evidence,
+    input.currentDateKey,
+    gate.attentionDateKey
+  );
   const values = {
     verifiedActiveSeconds: trustedEvidence?.verifiedActiveSeconds ?? 0,
     qualifiedPages: trustedEvidence?.qualifiedPages ?? 0,

@@ -184,6 +184,12 @@ describe('FR14/FR15 — restorative UI copy stays separate and honest', () => {
     const untrusted = describeMeditationPath(pending, { availability: 'untrusted-signature' });
     const availableNoSession = describeMeditationPath(pending, { availability: 'available' });
     const reader = describeReaderPath(pending);
+    const readerDenied = describeReaderPath(pending, { availability: 'permission-denied' });
+    const readerMissing = describeReaderPath(pending, { queryStatus: 'session-missing' });
+    const readerUnknown = describeReaderPath(pending, { queryStatus: 'query-failed' });
+    const readerCard = deriveRestorativeCardCopy(pending, undefined, {
+      availability: 'untrusted-signature',
+    });
 
     assert.equal(notInstalled.selectable, false);
     assert.match(notInstalled.label, /Not installed/);
@@ -195,5 +201,12 @@ describe('FR14/FR15 — restorative UI copy stays separate and honest', () => {
     assert.doesNotMatch(unknown.label, /Reader.*available/i);
     assert.match(reader.label, /Not yet started/);
     assert.doesNotMatch(reader.label, /unavailable|disconnected/i);
+    assert.match(readerDenied.label, /Permission denied/);
+    assert.equal(readerDenied.selectable, false);
+    assert.match(readerMissing.label, /Session not found/);
+    assert.equal(readerMissing.selectable, true);
+    assert.match(readerUnknown.label, /Check connection/);
+    assert.match(readerCard.readerPath.label, /Signature not trusted/);
+    assert.doesNotMatch(readerDenied.label, /disconnected|complete/i);
   });
 });

@@ -2,7 +2,7 @@ import { AccessLease, DeviceApp, GroupAllowanceUsage, RiskGroup, RoutineWindow }
 import { ActiveCooldown, AppRestriction, getActiveAccessLeases, getActiveCooldowns, RestrictionReason } from './types';
 import type { ActiveReadingGate } from './attentionExchange';
 import type { ActiveRestorativeGate } from './restorativeGate';
-import { getLocalDateKey, isGroupAllowanceExhausted } from './allowance';
+import { isGroupAllowanceExhausted } from './allowance';
 
 /**
  * Narrow internal allowlist of first-party companion packages that must stay
@@ -119,11 +119,12 @@ export function computeEffectiveRestrictions(
     }
   }
 
-  // An expired timer is no longer a cooldown. A current-day native reading gate
-  // remains a separate restriction reason until native reconciliation clears it.
-  const currentDateKey = options?.currentDateKey ?? getLocalDateKey(now);
+  // An expired timer is no longer a cooldown. An unfinished native reading gate
+  // remains a separate restriction reason until verified completion, even when
+  // it was opened on an earlier calendar day (PD-2). Reader V2 evidence remains
+  // calendar-scoped; carrying the gate does not pool daily aggregates.
   for (const [groupId, gate] of Object.entries(options?.activeReadingGates ?? {})) {
-    if (gate.attentionDateKey !== currentDateKey || gate.cooldownEndsAt > now) continue;
+    if (gate.cooldownEndsAt > now) continue;
     const group = riskGroups.find((item) => item.id === groupId);
     if (!group) continue;
     for (const appId of group.appIds) {

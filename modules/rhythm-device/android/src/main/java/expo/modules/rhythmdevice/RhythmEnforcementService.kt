@@ -628,15 +628,17 @@ class RhythmEnforcementService : AccessibilityService() {
     @Synchronized private fun reconcileReadingGate(groupId: String, now: Long): NativeAttentionGateEvaluation? {
         val today = getLocalDateKey(now)
         val gate = loadReadingGates(applicationContext)[groupId] ?: return null
-        if (gate.attentionDateKey != today) {
-            val gates = loadReadingGates(applicationContext).toMutableMap().apply { remove(groupId) }
-            val state = loadAttentionExchangeState(applicationContext, now)
-            persistAttentionMutation(applicationContext, loadGroupUsageLedger(applicationContext), loadCooldownPolicies(applicationContext), state, gates)
-            NativePolicyPersistence.persistPrefs(applicationContext, emptyMap(), setOf(RhythmNativePolicyKeys.DAILY_READING_EVIDENCE_JSON))
-            return null
+        // A carried gate keeps its creation-date evidence scope. Current-day and
+        // creation-day aggregates are evaluated independently; never pooled.
+        val currentEvidence = queryAndStoreDailyEvidence(today)
+        var evaluation = NativeAttentionExchangeLogic.evaluateGate(gate, currentEvidence, now, today)
+        if (evaluation.phase != NativeAttentionGatePhase.SATISFIED && gate.attentionDateKey != today) {
+            val creationEvidence = queryDailyReadingEvidence(applicationContext, gate.attentionDateKey)
+            val creationEvaluation = NativeAttentionExchangeLogic.evaluateGate(gate, creationEvidence, now, today)
+            if (creationEvaluation.phase == NativeAttentionGatePhase.SATISFIED) {
+                evaluation = creationEvaluation
+            }
         }
-        val evidence = queryAndStoreDailyEvidence(today)
-        val evaluation = NativeAttentionExchangeLogic.evaluateGate(gate, evidence, now, today)
         if (evaluation.phase == NativeAttentionGatePhase.SATISFIED && gate.cooldownEndsAt <= now) {
             completeRestrictedCycle(groupId, now)
             return evaluation
@@ -645,9 +647,7 @@ class RhythmEnforcementService : AccessibilityService() {
     }
 
     @Synchronized private fun reconcileAllReadingGates(now: Long) {
-        val today = getLocalDateKey(now)
         loadReadingGates(applicationContext).values
-            .filter { it.attentionDateKey == today }
             .forEach { reconcileReadingGate(it.groupId, now) }
     }
 
@@ -734,7 +734,6 @@ class RhythmEnforcementService : AccessibilityService() {
     private fun buildOverlayAttentionInfo(policy: NativeRiskGroupPolicy, now: Long): NativeOverlayAttentionInfo {
         val today = getLocalDateKey(now)
         val gate = loadReadingGates(applicationContext)[policy.groupId]
-            ?.takeIf { it.attentionDateKey == today }
         val cooldown = loadCooldownPolicies(applicationContext).firstOrNull { it.groupId == policy.groupId }
         val evidence = loadDailyReadingEvidence(applicationContext)
         val evaluation = gate?.let { NativeAttentionExchangeLogic.evaluateGate(it, evidence, now, today) }
@@ -1217,19 +1216,9 @@ class RhythmEnforcementService : AccessibilityService() {
             context: Context,
             now: Long = System.currentTimeMillis(),
         ): Map<String, NativeReadingGate> {
-            val today = getLocalDateKey(now)
-            val attentionDay = loadAttentionDayState(context, now)
-            val schedule = loadRoutineSchedule(context)
-            val restorativeGates = RestorativeEnforcement.load(context).restorativeGates
-            return loadReadingGates(context).filter { (groupId, gate) ->
-                if (gate.attentionDateKey != today) return@filter false
-                NativeAttentionExchangeLogic.isCurrentAttentionReadingGate(
-                    gate,
-                    attentionDay.id,
-                    schedule,
-                    restorativeGates[groupId],
-                )
-            }
+            // PD-2: remain present across calendar/Attention-Day boundaries until
+            // verified completion. The gate's creation date is its evidence scope.
+            return loadReadingGates(context)
         }
 
         fun loadCurrentAttentionRestorativeGates(
@@ -1269,15 +1258,7 @@ class RhythmEnforcementService : AccessibilityService() {
             attentionDayId: String,
             schedule: NativeRoutineSchedule,
             restorativeGates: Map<String, NativeRestorativeGateState>,
-        ): Map<String, NativeReadingGate> = gates.filter { (groupId, gate) ->
-            if (gate.attentionDateKey != today) return@filter false
-            NativeAttentionExchangeLogic.isCurrentAttentionReadingGate(
-                gate,
-                attentionDayId,
-                schedule,
-                restorativeGates[groupId],
-            )
-        }
+        ): Map<String, NativeReadingGate> = gates
 
         fun saveReadingGates(context: Context, gates: Map<String, NativeReadingGate>) {
             val root = JSONObject()
@@ -1327,19 +1308,39 @@ class RhythmEnforcementService : AccessibilityService() {
             // Provider/Binder observation happens before the persistence transaction lock.
             reconcileMorningRequirement(context, now)
             val today = getLocalDateKey(now)
+            val gatesForObservation = NativePolicyPersistence.withReadSnapshot {
+                loadCurrentAttentionReadingGates(context, now)
+            }
+            val cooldownsForObservation = NativePolicyPersistence.withReadSnapshot {
+                loadCooldownPolicies(context)
+            }
             val needsReaderObservation = NativePolicyPersistence.withReadSnapshot {
                 needsReaderObservationForReconcile(
-                    gates = loadCurrentAttentionReadingGates(context, now),
-                    cooldowns = loadCooldownPolicies(context),
+                    gates = gatesForObservation,
+                    cooldowns = cooldownsForObservation,
                     today = today,
                     now = now,
                 )
             }
-            val observedEvidence = if (needsReaderObservation) {
-                DailyReadingEvidenceProviderClient.query(context, today)
-            } else null
+            val observedEvidenceByDate = if (needsReaderObservation) {
+                val dateKeys = LinkedHashSet<String>()
+                dateKeys.add(today)
+                gatesForObservation.values.forEach { dateKeys.add(it.attentionDateKey) }
+                cooldownsForObservation
+                    .filter {
+                        it.endsAt <= now &&
+                            it.attentionDateKey != null &&
+                            (it.requiredReadingSeconds > 0L || it.requiredQualifiedPages > 0)
+                    }
+                    .mapNotNullTo(dateKeys) { it.attentionDateKey }
+                dateKeys.associateWith { dateKey ->
+                    DailyReadingEvidenceProviderClient.query(context, dateKey)
+                }
+            } else {
+                emptyMap()
+            }
             return NativePolicyPersistence.withReadSnapshot {
-                reconcileAttentionExchangeInContextLocked(context, now, observedEvidence)
+                reconcileAttentionExchangeInContextLocked(context, now, observedEvidenceByDate)
             }
         }
 
@@ -1350,12 +1351,20 @@ class RhythmEnforcementService : AccessibilityService() {
             now: Long,
         ): Boolean =
             gates.isNotEmpty() ||
-                cooldowns.any { it.endsAt <= now && it.attentionDateKey == today }
+                cooldowns.any {
+                    it.endsAt <= now &&
+                        (
+                            it.attentionDateKey == today ||
+                                (it.dailyCooldownOrdinal ?: 0) > 0 ||
+                                it.requiredReadingSeconds > 0L ||
+                                it.requiredQualifiedPages > 0
+                            )
+                }
 
         private fun reconcileAttentionExchangeInContextLocked(
             context: Context,
             now: Long,
-            observedEvidence: NativeDailyReadingEvidenceResult?,
+            observedEvidenceByDate: Map<String, NativeDailyReadingEvidenceResult>,
         ): Boolean {
             val today = getLocalDateKey(now)
             val prefs = context.getSharedPreferences(RhythmNativePolicyKeys.PREFS, Context.MODE_PRIVATE)
@@ -1421,16 +1430,26 @@ class RhythmEnforcementService : AccessibilityService() {
                 }
             }
 
-            val hasCurrentDayGates = gates.isNotEmpty()
-            val evidence = if (hasCurrentDayGates) {
-                observedEvidence?.also { saveDailyReadingEvidence(context, it) }
-            } else null
+            observedEvidenceByDate[today]?.let { saveDailyReadingEvidence(context, it) }
+            fun evaluateForGate(gate: NativeReadingGate): NativeAttentionGateEvaluation {
+                // Evaluate each accepted calendar aggregate on its own. Never
+                // combine current-day and creation-day totals.
+                var fallback: NativeAttentionGateEvaluation? = null
+                for (dateKey in linkedSetOf(gate.attentionDateKey, today)) {
+                    val evidence = observedEvidenceByDate[dateKey] ?: continue
+                    val evaluation = NativeAttentionExchangeLogic.evaluateGate(gate, evidence, now, today)
+                    if (evaluation.phase == NativeAttentionGatePhase.SATISFIED) return evaluation
+                    if (fallback == null) fallback = evaluation
+                }
+                return fallback
+                    ?: NativeAttentionExchangeLogic.evaluateGate(gate, null, now, today)
+            }
 
             val completed = mutableSetOf<String>()
             for ((groupId, gate) in gates.toMap()) {
                 val cooldown = cooldowns[groupId]
                 if (cooldown != null && cooldown.endsAt > now) continue
-                val evaluation = NativeAttentionExchangeLogic.evaluateGate(gate, evidence, now, today)
+                val evaluation = evaluateForGate(gate)
                 if (evaluation.phase == NativeAttentionGatePhase.SATISFIED) {
                     gates.remove(groupId)
                     cooldowns.remove(groupId)
@@ -1463,10 +1482,17 @@ class RhythmEnforcementService : AccessibilityService() {
                     NativeAttentionExchangeLogic.gateForCooldown(cooldown, today)
                 } else null
                 if (gate != null && gates[cooldown.groupId] == null) gates[cooldown.groupId] = gate
-                val decisionEvidence = if (gate != null && expiryCooldown.attentionDateKey == today) {
-                    evidence ?: observedEvidence
-                } else null
-                val decision = NativeAttentionExchangeLogic.decideCooldownExpiry(expiryCooldown, gate, decisionEvidence, now, today)
+                if (gate != null && evaluateForGate(gate).phase == NativeAttentionGatePhase.SATISFIED) {
+                    cooldowns.remove(cooldown.groupId)
+                    gates.remove(cooldown.groupId)
+                    if (completed.add(cooldown.groupId)) {
+                        ledger[cooldown.groupId] = NativeAttentionExchangeLogic.completeGroupCycle(cooldown.groupId, today, now, ledger[cooldown.groupId])
+                    }
+                    continue
+                }
+                // The gate remains unsatisfied after both accepted-date
+                // evaluations; keep it even though the timer is gone.
+                val decision = NativeAttentionExchangeLogic.decideCooldownExpiry(expiryCooldown, gate, null, now, today)
                 when (decision.action) {
                     NativeCooldownExpiryAction.KEEP_ACTIVE_TIMER -> Unit
                     NativeCooldownExpiryAction.REMOVE_TIMER_KEEP_GATE -> {
@@ -1486,7 +1512,7 @@ class RhythmEnforcementService : AccessibilityService() {
             state = state.copy(
                 cooldownsTriggered = maxOf(
                     state.cooldownsTriggered,
-                    gates.values.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0,
+                    gates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0,
                     cooldowns.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt,
@@ -1497,7 +1523,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 ),
                 highestRequiredActiveSeconds = maxOf(
                     state.highestRequiredActiveSeconds,
-                    gates.values.maxOfOrNull { it.requiredReadingSeconds } ?: 0L,
+                    gates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.requiredReadingSeconds } ?: 0L,
                     cooldowns.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt,
@@ -1508,7 +1534,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 ),
                 highestRequiredQualifiedPages = maxOf(
                     state.highestRequiredQualifiedPages,
-                    gates.values.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
+                    gates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
                     cooldowns.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt,
@@ -1620,7 +1646,8 @@ class RhythmEnforcementService : AccessibilityService() {
                 schedule,
                 rawIncomingGates,
             )
-            val hasFreshIncomingAttention = incomingGates.isNotEmpty() || incomingCooldowns.any {
+            val hasFreshIncomingAttention = incomingGates.values.any { it.attentionDateKey == today } ||
+                incomingCooldowns.any {
                 it.attentionDateKey == today && it.startedAt > 0L &&
                     NativeAttentionExchangeLogic.wasCreatedInAttentionDay(it.startedAt, attentionDay.id, schedule)
             }
@@ -1692,7 +1719,7 @@ class RhythmEnforcementService : AccessibilityService() {
             val completedState = nextState.copy(
                 cooldownsTriggered = maxOf(
                     nextState.cooldownsTriggered,
-                    nextGates.values.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0,
+                    nextGates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0,
                     cooldownsByGroup.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt, attentionDay.id, schedule,
@@ -1701,7 +1728,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 ),
                 highestRequiredActiveSeconds = maxOf(
                     nextState.highestRequiredActiveSeconds,
-                    nextGates.values.maxOfOrNull { it.requiredReadingSeconds } ?: 0L,
+                    nextGates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.requiredReadingSeconds } ?: 0L,
                     cooldownsByGroup.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt, attentionDay.id, schedule,
@@ -1710,7 +1737,7 @@ class RhythmEnforcementService : AccessibilityService() {
                 ),
                 highestRequiredQualifiedPages = maxOf(
                     nextState.highestRequiredQualifiedPages,
-                    nextGates.values.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
+                    nextGates.values.filter { it.attentionDateKey == today }.maxOfOrNull { it.requiredQualifiedPages } ?: 0,
                     cooldownsByGroup.values.filter {
                         it.attentionDateKey == today && NativeAttentionExchangeLogic.wasCreatedInAttentionDay(
                             it.startedAt, attentionDay.id, schedule,
@@ -2034,8 +2061,7 @@ class RhythmEnforcementService : AccessibilityService() {
                     return@withReadSnapshot true
                 }
                 gate?.let {
-                    it.holdsGroup &&
-                        (it.requirementKind != "baseline-reading" || currentReadingGate)
+                    it.holdsGroup
                 } == true
             }
 

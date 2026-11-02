@@ -35,7 +35,11 @@ import {
 } from '../platform/NativeMeditationBridge';
 import {
   NativeRecoveryProviderClient,
+  type RecoveryEvidenceResult,
+  type RecoveryProviderAvailability,
   type RecoveryProviderClient,
+  type RecoveryQueryStatus,
+  type RecoverySessionInfo,
 } from '../domain/rhythm/recovery';
 import {
   isMorningEvidenceForRequirement,
@@ -106,7 +110,7 @@ function createNativeAttentionImportEvent(
     (Array.isArray(snapshot.readingGates) ? snapshot.readingGates : [])
       .filter((gate) =>
         gate && typeof gate.groupId === 'string' && gate.groupId.length > 0 &&
-        gate.attentionDateKey === today && Number.isInteger(gate.dailyCooldownOrdinal) && gate.dailyCooldownOrdinal > 0 &&
+        Number.isInteger(gate.dailyCooldownOrdinal) && gate.dailyCooldownOrdinal > 0 &&
         isFiniteNonNegative(gate.createdAt) && isFiniteNonNegative(gate.cooldownEndsAt) &&
         isFiniteNonNegative(gate.requiredReadingSeconds) && Number.isInteger(gate.requiredQualifiedPages) && gate.requiredQualifiedPages >= 0
       )
@@ -327,6 +331,22 @@ export class RhythmCoordinator {
     identityMetadataAvailable: false,
     updatedAt: 0,
   };
+  private restorativeProviderDiagnostics: {
+    reader?: {
+      gateId?: string;
+      availability: RecoveryProviderAvailability;
+      queryStatus: RecoveryQueryStatus;
+      sessionMissing?: boolean;
+      updatedAt: number;
+    };
+    meditation?: {
+      gateId?: string;
+      availability: MeditationProviderAvailability;
+      queryStatus?: MeditationQueryStatus;
+      sessionMissing?: boolean;
+      updatedAt: number;
+    };
+  } = {};
   private readonly dailyReadingEvidenceClient: DailyReadingEvidenceClient;
   private readonly meditationBridge: MeditationEvidenceBridge;
   private readonly recoveryProviderClient: RecoveryProviderClient;
@@ -1163,10 +1183,39 @@ export class RhythmCoordinator {
       }
 
       if (gate.selectedProvider === 'reader') {
-        const evidence = await this.recoveryProviderClient.queryRecoveryStatus(
-          gate.providerSessionId
-        );
-        if (!evidence || evidence.sessionId !== gate.providerSessionId) continue;
+        let evidence: RecoverySessionInfo | undefined;
+        if (this.recoveryProviderClient.queryRecoveryStatusResult) {
+          const result: RecoveryEvidenceResult =
+            await this.recoveryProviderClient.queryRecoveryStatusResult(
+              gate.providerSessionId
+            );
+          this.restorativeProviderDiagnostics.reader = {
+            gateId: gate.gateId,
+            availability: result.availability,
+            queryStatus: result.queryStatus,
+            ...(result.sessionMissing ? { sessionMissing: true } : {}),
+            updatedAt: now,
+          };
+          if (
+            result.availability === 'available' &&
+            result.queryStatus === 'available' &&
+            result.evidence?.sessionId === gate.providerSessionId
+          ) {
+            evidence = result.evidence;
+          }
+        } else {
+          const raw = await this.recoveryProviderClient.queryRecoveryStatus(
+            gate.providerSessionId
+          );
+          this.restorativeProviderDiagnostics.reader = {
+            gateId: gate.gateId,
+            availability: raw ? 'available' : 'unavailable',
+            queryStatus: raw ? 'available' : 'legacy-ambiguous-null',
+            updatedAt: now,
+          };
+          if (raw?.sessionId === gate.providerSessionId) evidence = raw;
+        }
+        if (!evidence) continue;
         const effects = engine.dispatch({
           type: 'SYNC_READER_SESSION_EVIDENCE',
           evidence,
@@ -1182,6 +1231,13 @@ export class RhythmCoordinator {
         const result = await this.meditationBridge.queryMeditationStatusResult(
           gate.providerSessionId
         );
+        this.restorativeProviderDiagnostics.meditation = {
+          gateId: gate.gateId,
+          availability: result.availability,
+          ...(result.queryStatus ? { queryStatus: result.queryStatus } : {}),
+          ...(result.sessionMissing ? { sessionMissing: true } : {}),
+          updatedAt: now,
+        };
         if (
           result.availability === 'available' &&
           result.evidence?.sessionId === gate.providerSessionId
@@ -1192,6 +1248,12 @@ export class RhythmCoordinator {
         const raw = await this.meditationBridge.queryMeditationStatus(
           gate.providerSessionId
         );
+        this.restorativeProviderDiagnostics.meditation = {
+          gateId: gate.gateId,
+          availability: raw ? 'available' : 'unavailable',
+          queryStatus: raw ? 'available' : 'legacy-ambiguous-null',
+          updatedAt: now,
+        };
         if (raw?.sessionId === gate.providerSessionId) evidence = raw;
       }
       if (!evidence) continue;
@@ -1241,6 +1303,32 @@ export class RhythmCoordinator {
     return ok
       ? { ok: true, sessionId: requirement.sessionId }
       : { ok: false, sessionId: requirement.sessionId, reason: 'launch-failed' };
+  }
+
+  public getRestorativeProviderDiagnostics(): {
+    reader?: {
+      gateId?: string;
+      availability: RecoveryProviderAvailability;
+      queryStatus: RecoveryQueryStatus;
+      sessionMissing?: boolean;
+      updatedAt: number;
+    };
+    meditation?: {
+      gateId?: string;
+      availability: MeditationProviderAvailability;
+      queryStatus?: MeditationQueryStatus;
+      sessionMissing?: boolean;
+      updatedAt: number;
+    };
+  } {
+    return {
+      ...(this.restorativeProviderDiagnostics.reader
+        ? { reader: { ...this.restorativeProviderDiagnostics.reader } }
+        : {}),
+      ...(this.restorativeProviderDiagnostics.meditation
+        ? { meditation: { ...this.restorativeProviderDiagnostics.meditation } }
+        : {}),
+    };
   }
 
   public getMorningMeditationDiagnostics(): MorningMeditationDiagnostics {

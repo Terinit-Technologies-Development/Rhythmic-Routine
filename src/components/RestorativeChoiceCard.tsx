@@ -6,6 +6,7 @@ import type { RestorativeStatusView, RestorativeProvider } from '../domain/rhyth
 import {
   deriveRestorativeCardCopy,
   type MeditationProviderDiagnostic,
+  type ReaderProviderDiagnostic,
 } from '../domain/rhythm/restorativePresentation';
 
 /**
@@ -26,6 +27,7 @@ export interface RestorativeChoiceCardProps {
   /** Typed read-only provider diagnostics from the store. */
   providerDiagnostics?: {
     meditation?: MeditationProviderDiagnostic;
+    reader?: ReaderProviderDiagnostic;
   };
   /** @deprecated Use providerDiagnostics. Kept for older callers. */
   meditationUnavailableReason?: string;
@@ -39,7 +41,11 @@ export function RestorativeChoiceCard({
   providerDiagnostics,
   readerUnavailable,
 }: RestorativeChoiceCardProps) {
-  const copy = deriveRestorativeCardCopy(view, providerDiagnostics?.meditation);
+  const copy = deriveRestorativeCardCopy(
+    view,
+    providerDiagnostics?.meditation,
+    providerDiagnostics?.reader
+  );
   const meditationPath = copy.meditationPath;
   const readerPath = readerUnavailable
     ? {

@@ -40,6 +40,7 @@ export default function TouchGrassScreen() {
   const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
   const launchReaderForGate = usePrototypeStore((s) => s.launchReaderForGate);
   const refreshMeditationEvidence = usePrototypeStore((s) => s.refreshMeditationEvidence);
+  const refreshReaderEvidence = usePrototypeStore((s) => s.refreshReaderEvidence);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const group = activeRiskGroupId
@@ -73,19 +74,34 @@ export default function TouchGrassScreen() {
     restorativeProviderDiagnostics.meditation.gateId === restorativeStatus?.gateId
       ? restorativeProviderDiagnostics.meditation
       : undefined;
+  const currentReaderDiagnostic =
+    restorativeProviderDiagnostics?.reader &&
+    restorativeProviderDiagnostics.reader.gateId === restorativeStatus?.gateId
+      ? restorativeProviderDiagnostics.reader
+      : undefined;
   const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
   const recovery = group?.cooldownMinutes;
 
-  // A bound Meditation session can finish while Routine is backgrounded. Its
+  // A bound provider session can finish while Routine is backgrounded. Its
   // completion is authoritative only after querying that exact session again;
   // refresh when this screen returns to the foreground rather than relaunching
   // the recovery request (which could alter an already-completed record).
   useEffect(() => {
     const groupId = restorativeStatus?.groupId;
-    if (!groupId || restorativeStatus.selectedProvider !== 'meditation') return;
+    const selectedProvider = restorativeStatus?.selectedProvider;
+    if (
+      !groupId ||
+      (selectedProvider !== 'meditation' && selectedProvider !== 'reader')
+    ) {
+      return;
+    }
 
     const refresh = () => {
-      void refreshMeditationEvidence(groupId).catch(() => undefined);
+      const pending =
+        selectedProvider === 'meditation'
+          ? refreshMeditationEvidence(groupId)
+          : refreshReaderEvidence(groupId);
+      void pending.catch(() => undefined);
     };
     refresh();
 
@@ -96,7 +112,12 @@ export default function TouchGrassScreen() {
       if (resumed) refresh();
     });
     return () => subscription?.remove();
-  }, [restorativeStatus?.groupId, restorativeStatus?.selectedProvider, refreshMeditationEvidence]);
+  }, [
+    restorativeStatus?.groupId,
+    restorativeStatus?.selectedProvider,
+    refreshMeditationEvidence,
+    refreshReaderEvidence,
+  ]);
 
   const configuredActivity = group?.recoveryActivityId
     ? offlineActivities.find((a) => a.id === group.recoveryActivityId)
@@ -264,8 +285,15 @@ export default function TouchGrassScreen() {
                 }
               }}
               providerDiagnostics={
-                currentMeditationDiagnostic
-                  ? { meditation: currentMeditationDiagnostic }
+                currentMeditationDiagnostic || currentReaderDiagnostic
+                  ? {
+                      ...(currentMeditationDiagnostic
+                        ? { meditation: currentMeditationDiagnostic }
+                        : {}),
+                      ...(currentReaderDiagnostic
+                        ? { reader: currentReaderDiagnostic }
+                        : {}),
+                    }
                   : undefined
               }
             />

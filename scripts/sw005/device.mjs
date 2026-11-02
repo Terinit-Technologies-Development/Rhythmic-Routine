@@ -29,6 +29,7 @@ import {
 } from './lib/qa-contract.mjs';
 import {
   parseAaptBadging,
+  parseAaptXmltreeInstrumentation,
   parseApksignerOutput,
   parseInstrumentationOutput,
   statusRow,
@@ -116,9 +117,27 @@ async function preflightTestApk(settings, probe) {
   if (badging.packageName !== probe.testPackage) {
     throw new Error(`Test APK package ${badging.packageName} does not match --test-package ${probe.testPackage}`);
   }
-  if (badging.instrumentation?.targetPackage !== probe.autPackage) {
+
+  let manifestInstrumentation;
+  try {
+    manifestInstrumentation = parseAaptXmltreeInstrumentation(
+      (await run(tools.aapt, ['dump', 'xmltree', testApk, 'AndroidManifest.xml'])).stdout
+    );
+  } catch (error) {
+    throw new Error(`Test APK manifest instrumentation could not be read: ${error.message}`);
+  }
+  if (!manifestInstrumentation) {
+    throw new Error('Test APK manifest does not declare an instrumentation element');
+  }
+  if (manifestInstrumentation.targetPackage !== probe.autPackage) {
     throw new Error(
-      `Test APK targets ${badging.instrumentation?.targetPackage ?? '(none)'}; expected AUT ${probe.autPackage}`
+      `Test APK targets ${manifestInstrumentation.targetPackage}; expected AUT ${probe.autPackage}`
+    );
+  }
+  const runnerClass = probe.runner.includes('/') ? probe.runner.split('/')[1] : probe.runner;
+  if (manifestInstrumentation.name !== runnerClass) {
+    throw new Error(
+      `Test APK runner ${manifestInstrumentation.name} does not match requested runner ${runnerClass}`
     );
   }
 
@@ -137,7 +156,7 @@ async function preflightTestApk(settings, probe) {
   if (probe.expectation === 'mismatch' && signer.certSha256[0] === probe.expectedSignerSha256) {
     throw new Error('Mismatched-signer probe must NOT be signed with the shared provider key');
   }
-  return { badging, signerCertSha256: signer.certSha256[0] };
+  return { badging, manifestInstrumentation, signerCertSha256: signer.certSha256[0] };
 }
 
 async function installedPackages(adb, serial, packageName, redact) {
