@@ -135,6 +135,59 @@ are preserved.
   CD4 card + explicit Cycle-3 separate line; no Reader/Meditation wording for
   any CD3 baseline obligation.
 
+## C3 follow-up — completed gate masking pending obligations (code 11)
+
+### Actual failure (clean 2c5 / code 10, real device)
+
+Two genuine 1800 s Meditation sessions consumed the cap (2 of 2). Group 1 /
+ordinal 5 completed while 50 minutes of its original cooldown remained, and
+group 2 / ordinal 6 plus group 4 / ordinal 7 were still pending. Screenshot
+`c3-code10-complete-gate-masks-pending.png` showed only the completed ordinal-5
+card and no Reader/Meditation action. Native allocated 5/6/7 at the same
+timestamp, so the store's primary projection (sort by `createdAt` descending,
+then group id) kept the completed group 1 as the sole primary obligation. Only
+Touch Grass hosts provider launch actions, so the pending 6/7 obligations were
+unreachable from the UI.
+
+Expected: an unfinished obligation is always the actionable primary; completed
+gates are a fallback only when nothing is outstanding.
+
+### Minimal change (presentation selection only)
+
+- `src/domain/rhythm/restorativePresentation.ts`
+  - Added the pure selector `selectPrimaryRestorativeGate(gates)`: unfinished
+    (`status !== 'satisfied'`) ahead of completed, then the existing recency
+    (`createdAt` descending) and stable `groupId` tie-break inside each class.
+    No mutation of any gate, cooldown, ledger, provider/session identity,
+    timer, cap or query contract.
+- `src/store/usePrototypeStore.ts`
+  - `projectPrimaryRestorativeStatus` now calls that same tested selector
+    instead of its local `createdAt`-only sort. This is the only production
+    caller changed; presentation/handlers keep using the resulting
+    `restorativeStatus`.
+- `src/domain/rhythm/__tests__/restorativePresentation.test.ts`
+  - Reproduction with completed ordinal 5 and pending 6/7 at the same
+    `createdAt`: pending wins; after the first pending completes the remaining
+    pending becomes primary; recency and group-ID tie-break stay deterministic
+    in both input orders; completed fallback applies only when no unfinished
+    gate remains.
+- `app.config.ts`: `versionCode` 10 → 11, `version` stays `1.4.0`
+  (`package.json` already `1.4.0`).
+
+Protocols, permissions, schemas, native Kotlin, timers, substitution cap and
+installed state are unchanged. The earlier 2c5 header/card truth fix and its
+explicit other-obligation copy are preserved.
+
+### Checks
+
+- NOT RUN here (Root): full JS suite (`npm test` incl. the new cases),
+  `npm run typecheck`, `npm run lint`, Android build/signing/install,
+  screenshot validation on code 11.
+- Root-owned expected: with 5 complete and 6/7 pending, Touch Grass presents
+  the ordinal-6 obligation with its provider actions, then ordinal 7 after 6
+  completes; completed 5 is shown only when no pending gate remains.
+
+
 
 ## Source-review boundary and actual Root checks
 
@@ -170,3 +223,6 @@ during checks. This documentation-only result was appended afterward.
 No Kotlin/native policy source changed from the code9 candidate whose176
 native tests passed. Independent review and actual code10 screenshot checks
 remain pending; source checks do not accept full C3 physical behavior.
+
+Root actual verification (3 November, 18:35 SAST): full596 JavaScript tests pass, typecheck and lint exit0; all product hashes remained stable throughout checks. Evidence c3-pending-card-r1-js-checks.json and matching three logs. Native Kotlin source is unchanged; prior176 native checks remain applicable. Independent same-reviewer source acceptance and physical code11 retest are pending.
+

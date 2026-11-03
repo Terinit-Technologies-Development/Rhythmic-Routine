@@ -4,8 +4,23 @@ import {
   deriveRestorativeCardCopy,
   describeMeditationPath,
   describeReaderPath,
+  selectPrimaryRestorativeGate,
 } from '../restorativePresentation';
 import { deriveRestorativeStatus, type ActiveRestorativeGate, type RestorativeStatusView } from '../restorativeGate';
+
+function gate(
+  overrides: Partial<ActiveRestorativeGate> & Pick<ActiveRestorativeGate, 'groupId' | 'createdAt'>
+): ActiveRestorativeGate {
+  return {
+    gateId: `gate-${overrides.groupId}`,
+    attentionDayId: 'ad-20261103-0800',
+    dailyCooldownOrdinal: 5,
+    cooldownEndsAt: overrides.createdAt + 5_400_000,
+    requirementKind: 'restorative-choice',
+    status: 'pending-selection',
+    ...overrides,
+  };
+}
 
 function view(overrides: Partial<RestorativeStatusView> = {}): RestorativeStatusView {
   return {
@@ -208,5 +223,93 @@ describe('FR14/FR15 — restorative UI copy stays separate and honest', () => {
     assert.match(readerUnknown.label, /Check connection/);
     assert.match(readerCard.readerPath.label, /Signature not trusted/);
     assert.doesNotMatch(readerDenied.label, /disconnected|complete/i);
+  });
+});
+
+describe('C3 — multi-group restorative presentation selection', () => {
+  // Native allocated ordinals 5/6/7 for different groups at the same instant.
+  const sameAllocationAt = 1_760_000_000_000;
+
+  test('a completed gate never masks same-timestamp pending obligations', () => {
+    const primary = selectPrimaryRestorativeGate([
+      gate({
+        groupId: 'sw005-qa-cycle-1',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 5,
+        status: 'satisfied',
+        selectedProvider: 'meditation',
+        satisfiedAt: sameAllocationAt + 1_800_000,
+      }),
+      gate({
+        groupId: 'sw005-qa-cycle-2',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 6,
+      }),
+      gate({
+        groupId: 'sw005-qa-cycle-4',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 7,
+      }),
+    ]);
+
+    assert.equal(primary?.groupId, 'sw005-qa-cycle-2');
+    assert.equal(primary?.status, 'pending-selection');
+  });
+
+  test('the next pending obligation becomes primary after the first completes', () => {
+    const primary = selectPrimaryRestorativeGate([
+      gate({
+        groupId: 'sw005-qa-cycle-1',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 5,
+        status: 'satisfied',
+        selectedProvider: 'meditation',
+      }),
+      gate({
+        groupId: 'sw005-qa-cycle-2',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 6,
+        status: 'satisfied',
+        selectedProvider: 'meditation',
+      }),
+      gate({
+        groupId: 'sw005-qa-cycle-4',
+        createdAt: sameAllocationAt,
+        dailyCooldownOrdinal: 7,
+      }),
+    ]);
+
+    assert.equal(primary?.groupId, 'sw005-qa-cycle-4');
+  });
+
+  test('recency is preserved inside a class and ties stay deterministic', () => {
+    const olderPending = gate({ groupId: 'sw005-qa-cycle-2', createdAt: sameAllocationAt });
+    const newerPending = gate({ groupId: 'sw005-qa-cycle-4', createdAt: sameAllocationAt + 1 });
+
+    assert.equal(selectPrimaryRestorativeGate([olderPending, newerPending])?.groupId, 'sw005-qa-cycle-4');
+    assert.equal(selectPrimaryRestorativeGate([newerPending, olderPending])?.groupId, 'sw005-qa-cycle-4');
+
+    const tiedB = gate({ groupId: 'b-group', createdAt: sameAllocationAt });
+    const tiedA = gate({ groupId: 'a-group', createdAt: sameAllocationAt });
+    assert.equal(selectPrimaryRestorativeGate([tiedB, tiedA])?.groupId, 'a-group');
+    assert.equal(selectPrimaryRestorativeGate([tiedA, tiedB])?.groupId, 'a-group');
+  });
+
+  test('completed gates are only a fallback when no unfinished gate remains', () => {
+    const olderComplete = gate({
+      groupId: 'sw005-qa-cycle-1',
+      createdAt: sameAllocationAt,
+      status: 'satisfied',
+      selectedProvider: 'meditation',
+    });
+    const newerComplete = gate({
+      groupId: 'sw005-qa-cycle-2',
+      createdAt: sameAllocationAt + 1,
+      status: 'satisfied',
+      selectedProvider: 'reader',
+    });
+
+    assert.equal(selectPrimaryRestorativeGate([olderComplete, newerComplete])?.groupId, 'sw005-qa-cycle-2');
+    assert.equal(selectPrimaryRestorativeGate([]), undefined);
   });
 });

@@ -37,6 +37,7 @@ import {
   type RestorativeProvider,
   type RestorativeStatusView,
 } from '../domain/rhythm/restorativeGate';
+import { selectPrimaryRestorativeGate } from '../domain/rhythm/restorativePresentation';
 import {
   NativeRecoveryProviderClient,
   type RecoveryProviderAvailability,
@@ -246,9 +247,9 @@ function projectPrimaryRestorativeStatus(
   now: number
 ): RestorativeStatusView | undefined {
   const gates = runtime.activeRestorativeGates ?? {};
-  const gateEntry = Object.values(gates).sort(
-    (a, b) => b.createdAt - a.createdAt || a.groupId.localeCompare(b.groupId)
-  )[0];
+  // Unfinished obligations must stay reachable through the single-card UI;
+  // completed gates are only a fallback when nothing is outstanding.
+  const gateEntry = selectPrimaryRestorativeGate(Object.values(gates));
   if (!gateEntry) return undefined;
   const attentionDayId =
     runtime.dailyAttentionExchange?.attentionDayId ?? gateEntry.attentionDayId;

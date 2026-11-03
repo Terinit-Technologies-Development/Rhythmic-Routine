@@ -1,4 +1,5 @@
 import type {
+  ActiveRestorativeGate,
   RestorativeProvider,
   RestorativeStatusView,
 } from './restorativeGate';
@@ -49,6 +50,25 @@ export interface RestorativeCardCopy {
   selectedProvider?: RestorativeProvider;
   meditationPath: ProviderStatusCopy;
   readerPath: ProviderStatusCopy;
+}
+
+/**
+ * Chooses the ONE obligation the single-card UI may present. Unfinished gates
+ * stay actionable ahead of completed ones; within each class the existing
+ * recency order (newest first) and stable group-ID tie-break are preserved, so
+ * gates allocated at the same timestamp still resolve deterministically.
+ *
+ * Pure selection only: it never mutates, completes or reorders policy state.
+ */
+export function selectPrimaryRestorativeGate(
+  gates: readonly ActiveRestorativeGate[]
+): ActiveRestorativeGate | undefined {
+  return [...gates].sort((a, b) => {
+    const aComplete = a.status === 'satisfied' ? 1 : 0;
+    const bComplete = b.status === 'satisfied' ? 1 : 0;
+    if (aComplete !== bComplete) return aComplete - bComplete;
+    return b.createdAt - a.createdAt || a.groupId.localeCompare(b.groupId);
+  })[0];
 }
 
 export function formatEvidenceDuration(remainingSeconds: number): string {
