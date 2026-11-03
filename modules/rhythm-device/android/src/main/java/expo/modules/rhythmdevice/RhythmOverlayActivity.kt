@@ -104,12 +104,8 @@ class RhythmOverlayActivity : Activity() {
                         "$groupName is in a recovery cooldown.\n\nReturn home while the timer runs.$nextStep"
                     }
                 }
-                else -> if (activityTitle != null) {
-                val duration = activityDuration?.let { " · $it" } ?: ""
-                "$groupName has reached its shared allowance.\n\nTry this while your group resets:\n$activityEmoji $activityTitle\n${activitySubtitle ?: "Take a mindful offline break."}$duration"
-                } else {
-                    "This app is paused by your current Rhythm window.\n\nReturn home for now, or open Rhythm to review your routine."
-                }
+                else ->
+                    "$groupName is paused by a current Rhythm restriction.\n\nOpen Rhythm Routine to see the bound requirement and continue from there."
             }
             textSize = 15f
             setTextColor(Color.parseColor("#5A6B5C"))

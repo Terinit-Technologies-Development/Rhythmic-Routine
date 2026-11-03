@@ -29,6 +29,7 @@ export const RhythmStateHeroCard: React.FC = () => {
   const groupUsageSnapshots = usePrototypeStore((s) => s.groupUsageSnapshots);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const attentionStatus = usePrototypeStore((s) => s.activeAttentionGateStatus);
+  const morningMeditation = usePrototypeStore((s) => s.morningMeditation);
   const setDemoSwitcherVisible = usePrototypeStore((s) => s.setDemoSwitcherVisible);
 
   const remainingSeconds = useRemainingSeconds(activeTimerEndsAt);
@@ -40,6 +41,15 @@ export const RhythmStateHeroCard: React.FC = () => {
   const allowanceMinutes = resolveGroupAllowanceMinutes(activeGroup);
   const snap = activeGroup ? groupUsageSnapshots?.[activeGroup.id] : undefined;
   const currentUsage = snap ? Math.floor(snap.usedSeconds / 60) : (activeGroup?.currentSessionMinutes ?? 0);
+
+  // Same active predicate as MorningMeditationCard: an unfinished immutable
+  // requirement keeps mandatory morning focus in force even when the engine
+  // reports Open Day.
+  const morningRequirement = morningMeditation?.requirement;
+  const morningFocusRequired =
+    morningRequirement !== undefined &&
+    (morningMeditation?.state === 'morning-meditation-required' ||
+      morningRequirement.satisfiedAt === undefined);
 
   const getCardContent = () => {
     switch (rhythmState) {
@@ -147,6 +157,30 @@ export const RhythmStateHeroCard: React.FC = () => {
     }
   };
 
+  // Truthful override for the misleading Open Day presentation while the bound
+  // morning requirement is unresolved. The static value is the REQUIRED session
+  // length, never provider progress or a countdown.
+  const getMorningFocusConfig = () => {
+    const requiredMinutes = Math.max(
+      1,
+      Math.round((morningRequirement?.requiredQualifiedSeconds ?? 0) / 60)
+    );
+    return {
+      title: 'Morning meditation required',
+      subtitle:
+        'Managed apps stay paused until the bound morning session is completed. Essential apps, Routine and Meditation stay available.',
+      badgeText: 'Required',
+      badgeIcon: Sprout,
+      badgeBg: colors.sageLight,
+      badgeTextCol: colors.forest,
+      footerText: 'Required session length',
+      timerDisplay: `${requiredMinutes} min`,
+      icon: Sprout,
+      ArtworkComponent: MorningSunriseLandscape,
+      onPress: () => router.push('/touch-grass'),
+    };
+  };
+
   const isPostCooldownAttention = Boolean(
     attentionStatus &&
     attentionStatus.phase !== 'none' &&
@@ -178,7 +212,9 @@ export const RhythmStateHeroCard: React.FC = () => {
         ArtworkComponent: TouchGrassMeadowLandscape,
         onPress: () => router.push('/touch-grass'),
       }
-    : getCardContent();
+    : morningFocusRequired && rhythmState === 'available'
+      ? getMorningFocusConfig()
+      : getCardContent();
   const IconComp = config.icon;
   const BadgeIcon = config.badgeIcon;
   const Artwork = config.ArtworkComponent;
