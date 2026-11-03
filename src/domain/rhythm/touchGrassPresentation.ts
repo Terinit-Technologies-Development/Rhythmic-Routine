@@ -41,6 +41,11 @@ export function deriveTouchGrassPresentation(input: {
   restorativePhase?: RestorativeGatePhase;
   /** Existing store projection; no provider query is made from presentation. */
   restorativeStatus?: RestorativeStatusView;
+  /**
+   * A DIFFERENT unfinished obligation that must remain visible as separate
+   * information; it is never described as this card's obligation.
+   */
+  otherPendingRestorativeGroupName?: string;
   groupName?: string;
   allowanceMinutes?: number;
   cooldownMinutes?: number;
@@ -93,8 +98,17 @@ export function deriveTouchGrassPresentation(input: {
         : 'A bound restorative requirement is still pending'}${
         input.restorativeGroupName ? ` for ${input.restorativeGroupName}` : ''
       }. Complete the ${restorativeProviderLabel} shown below; the obligation remains open until verified.`;
+  const otherPendingText = input.otherPendingRestorativeGroupName
+    ? `Separate obligation also outstanding for ${input.otherPendingRestorativeGroupName}; it is enforced independently.`
+    : '';
+  const restorativeSectionText = [
+    restorativeHold ? restorativeText : '',
+    otherPendingText,
+  ]
+    .filter(Boolean)
+    .join('\n');
   const withRestorative = (text: string) =>
-    restorativeHold ? `${text}\n${restorativeText}` : text;
+    restorativeSectionText ? `${text}\n${restorativeSectionText}` : text;
   const restorativeFields = restorativeCopy
     ? {
         restorativeStatusLabel: restorativeCopy.statusLabel,
@@ -203,7 +217,7 @@ export function deriveTouchGrassPresentation(input: {
       mode: 'restorative',
       title: 'Restorative obligation pending 🌱',
       badge: 'Restorative hold',
-      subtitle: restorativeText,
+      subtitle: restorativeSectionText,
       showCooldownTimer: false,
       showReadingRequirements: false,
       showMorningFocus: false,

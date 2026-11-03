@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { deriveTouchGrassPresentation } from '../touchGrassPresentation';
 import type { AttentionGateStatus } from '../attentionExchange';
+import type { RestorativeStatusView } from '../restorativeGate';
 import type { MorningMeditationRuntimeState } from '../types';
 
 const morningPending: MorningMeditationRuntimeState = {
@@ -163,5 +164,80 @@ describe('F7 — Touch Grass presentation precedence', () => {
     assert.equal(completed.mode, 'none');
     assert.equal(completed.showRestorativeHold, false);
     assert.doesNotMatch(completed.badge, /Restorative hold/);
+  });
+
+  test('cooldown header and restorative explanation describe the same obligation', () => {
+    // C3 device repro: CD3 baseline gate still open while the CD4 choice card
+    // is the presented obligation. Header group/provider/phase must follow the
+    // SAME gate as the card; the other gate stays visible as separate news.
+    const cd4Choice: RestorativeStatusView = {
+      groupId: 'sw005-qa-cycle-4',
+      gateId: 'gate-ad-20261103-0800-sw005-qa-cycle-4-o4',
+      phase: 'separation-only',
+      ordinal: 4,
+      requirementKind: 'restorative-choice',
+      cooldownEndsAt: 1_800_000,
+      cooldownRemainingSeconds: 5400,
+      gateSatisfied: false,
+      meditationPathsRemaining: 2,
+      obligation: { kind: 'select-provider', requiredSeconds: 0, verifiedSeconds: 0 },
+      carriedObligation: false,
+      providerSwitchAllowed: false,
+    };
+
+    const view = deriveTouchGrassPresentation({
+      hasActiveCooldown: true,
+      restorativeHold: true,
+      restorativeStatus: cd4Choice,
+      restorativeGroupName: 'SW005-QA-Cycle-4',
+      otherPendingRestorativeGroupName: 'SW005-QA-Cycle-3',
+      groupName: 'SW005-QA-Cycle-4',
+      allowanceMinutes: 0,
+      cooldownMinutes: 90,
+    });
+
+    assert.equal(view.mode, 'cooldown');
+    assert.match(view.title, /SW005-QA-Cycle-4/);
+    assert.match(view.subtitle, /Restorative obligation for SW005-QA-Cycle-4/);
+    assert.doesNotMatch(view.subtitle, /Restorative obligation for SW005-QA-Cycle-3/);
+    assert.match(view.subtitle, /no restorative path selected yet/i);
+    assert.match(
+      view.subtitle,
+      /Separate obligation also outstanding for SW005-QA-Cycle-3; it is enforced independently\./
+    );
+  });
+
+  test('a baseline-reading obligation is never presented as a Reader/Meditation choice', () => {
+    const cd3Baseline: RestorativeStatusView = {
+      groupId: 'sw005-qa-cycle-3',
+      gateId: 'gate-ad-20261103-0800-sw005-qa-cycle-3-o3',
+      phase: 'baseline-reading-required',
+      ordinal: 3,
+      requirementKind: 'baseline-reading',
+      cooldownRemainingSeconds: 0,
+      gateSatisfied: false,
+      meditationPathsRemaining: 2,
+      selectedProvider: 'reader',
+      obligation: {
+        kind: 'reader-daily-baseline',
+        provider: 'reader',
+        requiredSeconds: 3600,
+        requiredQualifiedPages: 36,
+        verifiedSeconds: 600,
+        verifiedQualifiedPages: 4,
+      },
+      carriedObligation: false,
+    };
+
+    const view = deriveTouchGrassPresentation({
+      hasActiveCooldown: false,
+      restorativeHold: true,
+      restorativeStatus: cd3Baseline,
+      restorativeGroupName: 'SW005-QA-Cycle-3',
+    });
+
+    assert.equal(view.mode, 'restorative');
+    assert.match(view.subtitle, /Reader daily baseline/i);
+    assert.doesNotMatch(view.subtitle, /Choose Reader or Meditation/i);
   });
 });

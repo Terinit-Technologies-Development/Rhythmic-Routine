@@ -68,6 +68,74 @@ native path.
 - No evidence yet that hero copy alone changes native blocking; native hold
   remains authoritative.
 
+## C3 follow-up — mixed restorative obligation presentation (code 10)
+
+### Actual reproduction (Root, code 9, phone)
+
+Fixture groups allocated real native 90-minute cooldowns (ordinals 1/2/3) and a
+CD3 `baseline-reading` gate; group 4 then allocated its own cooldown and the
+Touch Grass choice card. With `sw005-qa-cycle-3` still unsatisfied and
+`sw005-qa-cycle-4` active:
+
+- Headline/timer: `SW005-QA-Cycle-4 Cooldown`, 1h29 — correct for the live
+  cooldown.
+- Explanation: `Restorative obligation for SW005-QA-Cycle-3: no restorative
+  path selected yet. Choose Reader or Meditation…` — group name taken from the
+  first raw pending gate (CD3) while the obligation title/progress came from
+  the store's primary projection (CD4).
+- Card below: CD4 view (30 min + 11 pages / 30 min Meditation, two Meditation
+  paths remaining). Persists after settling, not cold-boot-specific.
+
+Expected: headline, group name, provider, phase, provider diagnostics and the
+displayed card describe the SAME obligation; a different pending obligation
+stays visible as explicitly separate information.
+
+### Cause (source-grounded)
+
+`app/touch-grass.tsx` derived `restorativeGroupId` / `restorativeGroupName` /
+`restorativeProvider` from `Object.values(activeRestorativeGates).find(status
+!== 'satisfied')` and used `restorativePhase` only when that group matched
+`restorativeStatus`, while `RestorativeChoiceCard` and all handlers use
+`restorativeStatus` (the store projection = latest-created gate).
+
+### Minimal change
+
+- `app/touch-grass.tsx`
+  - Header group/name/provider now come from the same `restorativeStatus`
+    projection as the card and handlers; the raw pending-gate scan is a
+    fallback only when no projection exists.
+  - `restorativePhase` is the projected phase without a group cross-check.
+  - A pending gate for a DIFFERENT group is passed as separate information only
+    (`otherPendingRestorativeGroupName`); it is never labeled as this card's
+    obligation. No policy, gate ordering, provider evidence or handler change.
+- `src/domain/rhythm/touchGrassPresentation.ts`
+  - New optional input renders the separate-obligation sentence next to, and
+    clearly apart from, the presented obligation (all modes, plus the
+    restorative-only mode). No mode precedence change.
+- `src/domain/rhythm/__tests__/touchGrassPresentation.test.ts`
+  - Regression: cooldown header names Cycle-4, explanation names Cycle-4, no
+    line claims "Restorative obligation for Cycle-3", and Cycle-3 appears only
+    as a separate outstanding obligation.
+  - Guard: a `baseline-reading` obligation renders Reader daily-baseline copy
+    and never the Reader/Meditation choice.
+- `app.config.ts`: `versionCode` 9 → 10, `version` stays `1.4.0`
+  (`package.json` already `1.4.0`).
+
+Unchanged: CD3 gate remains enforced natively and is still named; no gate is
+reordered, resolved or hidden; cooldown timer facts stay tied to the cooldown
+group. The previously corrected Morning hero/card and native ROUTINE fallback
+are preserved.
+
+### Checks
+
+- NOT RUN here: `npm test` (new regression cases), `npm run typecheck`,
+  `npm run lint`, Android build/signing, device screenshots
+  (`c3-cd4-choice-settled`, `c3-cd4-actual-choice-card` equivalents on code 10).
+- Root-owned expected screenshots: Cycle-4 headline + Cycle-4 explanation +
+  CD4 card + explicit Cycle-3 separate line; no Reader/Meditation wording for
+  any CD3 baseline obligation.
+
+
 ## Source-review boundary and actual Root checks
 
 This is a bounded source correction plus the read-only snapshot probe, not
@@ -92,3 +160,13 @@ exception approved31 October; mandatory morning focus remains enforced.
 That policy and the previously approved carry/boundary/switching decisions are
 unchanged by this presentation patch. Do not reopen unrelated policy or add
 production-hardening work to this correction.
+
+### Root validation of the multi-group correction — 3 November 2026
+
+Root ran592 JavaScript tests, typecheck and lint against the exact product
+patch; all PASS. Evidence is c3-ui-multigroup-r1-js-checks.json and its three
+command logs in the programme evidence directory. Source hashes stayed fixed
+during checks. This documentation-only result was appended afterward.
+No Kotlin/native policy source changed from the code9 candidate whose176
+native tests passed. Independent review and actual code10 screenshot checks
+remain pending; source checks do not accept full C3 physical behavior.

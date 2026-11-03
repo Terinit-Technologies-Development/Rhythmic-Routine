@@ -46,9 +46,6 @@ export default function TouchGrassScreen() {
   const group = activeRiskGroupId
     ? riskGroups.find((g) => g.id === activeRiskGroupId)
     : undefined;
-  const restorativeGroup = restorativeStatus?.groupId
-    ? riskGroups.find((g) => g.id === restorativeStatus.groupId)
-    : group;
   const pendingRestorativeGate = Object.values(activeRestorativeGates ?? {}).find(
     (gate) => gate.status !== 'satisfied'
   );
@@ -58,17 +55,30 @@ export default function TouchGrassScreen() {
         restorativeStatus.requirementKind !== 'none' &&
         !restorativeStatus.gateSatisfied)
   );
-  const restorativeGroupId =
-    pendingRestorativeGate?.groupId ?? restorativeStatus?.groupId;
+  // The choice card, its handlers and provider diagnostics all bind to the
+  // store's primary restorative projection. Header group/provider/phase must
+  // describe that same obligation; the raw pending-gate scan is only a fallback
+  // when no projection exists.
+  const fallbackRestorativeGate = restorativeStatus ? undefined : pendingRestorativeGate;
+  const restorativeGroupId = restorativeStatus?.groupId ?? fallbackRestorativeGate?.groupId;
   const restorativeGroupName = restorativeGroupId
     ? riskGroups.find((g) => g.id === restorativeGroupId)?.name
-    : restorativeGroup?.name;
-  const restorativeProvider =
-    pendingRestorativeGate?.selectedProvider ?? restorativeStatus?.selectedProvider;
-  const restorativePhase =
-    restorativeStatus?.groupId === restorativeGroupId
-      ? restorativeStatus?.phase
-      : undefined;
+    : group?.name;
+  const restorativeProvider = restorativeStatus
+    ? restorativeStatus.selectedProvider
+    : fallbackRestorativeGate?.selectedProvider;
+  const restorativePhase = restorativeStatus?.phase;
+  // A different pending obligation stays visible, but never as this card.
+  const otherPendingRestorativeGate = restorativeStatus
+    ? Object.values(activeRestorativeGates ?? {}).find(
+        (gate) =>
+          gate.status !== 'satisfied' && gate.groupId !== restorativeStatus.groupId
+      )
+    : undefined;
+  const otherPendingRestorativeGroupName = otherPendingRestorativeGate
+    ? riskGroups.find((g) => g.id === otherPendingRestorativeGate.groupId)?.name ??
+      otherPendingRestorativeGate.groupId
+    : undefined;
   const currentMeditationDiagnostic =
     restorativeProviderDiagnostics?.meditation &&
     restorativeProviderDiagnostics.meditation.gateId === restorativeStatus?.gateId
@@ -136,6 +146,7 @@ export default function TouchGrassScreen() {
     restorativeProvider,
     restorativePhase,
     restorativeStatus,
+    otherPendingRestorativeGroupName,
     groupName: group?.name,
     allowanceMinutes: threshold,
     cooldownMinutes: recovery,
