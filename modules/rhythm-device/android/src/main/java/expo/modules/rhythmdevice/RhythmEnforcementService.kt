@@ -816,11 +816,21 @@ class RhythmEnforcementService : AccessibilityService() {
             policies.forEach { policy ->
                 val usage = reconciledLedger[policy.groupId]
                 val exhausted = usage?.dateKey == getLocalDateKey(toTime) && (usage.exhaustedAt != null || usage.usedMillis >= policy.allowanceMinutes * 60_000L || policy.allowanceMinutes == 0)
-                if (exhausted && usage?.exhaustedAt == null &&
+                // Attribute a reconciled exhaustion to this exact policy. The
+                // current foreground is used only when it is one of this group's
+                // members; otherwise a deterministic member is selected. An
+                // unrelated foreground package must never be passed to
+                // exhaustion allocation: it would abort the attempt and could
+                // present the overlay for the wrong app.
+                val allocationPackage = NativeGroupUsageAccounting.allocationPackage(
+                    foregroundPackage = lastForegroundPackage,
+                    policyPackageNames = policy.packageNames,
+                )
+                if (exhausted && usage?.exhaustedAt == null && allocationPackage != null &&
                     loadCooldownPolicies(applicationContext).none { it.groupId == policy.groupId } &&
                     loadReadingGates(applicationContext)[policy.groupId]?.attentionDateKey != getLocalDateKey(toTime)
                 ) {
-                    exhaustGroup(policy, lastForegroundPackage ?: policy.packageNames.firstOrNull().orEmpty(), toTime)
+                    exhaustGroup(policy, allocationPackage, toTime)
                 }
             }
             prefs.edit().putLong(RhythmNativePolicyKeys.LAST_USAGE_RECONCILED_AT, toTime).apply(); lastUsageReconciledAt = toTime
