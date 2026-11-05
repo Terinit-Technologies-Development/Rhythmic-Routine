@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0 — SW-2026-005, unreleased
+
+Repair Attention Day boundaries, morning and restorative enforcement, exact companion evidence and persistent gate actions. Reconciled allowance exhaustion allocates cooldowns to the affected group after leaving its app. Includes approved Accountability Emergency Access policy. Verified 596 JS and 177 native tests, typecheck/lint, independent review and the Sunday physical cooldown transition. T19 deferred by owner; code 11 is an internal diagnostic build.
+
+
 All notable changes to Rhythmic-Routine are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
