@@ -4,6 +4,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 data class NativeReadingAttentionPolicy(
     val freeCooldownCount: Int = 2,
@@ -136,6 +137,25 @@ data class NativeCooldownExpiryDecision(
 )
 
 object NativeAttentionExchangeLogic {
+    /** Select the actual accepted allocation state without rewinding a newer day. */
+    fun stateAfterAcceptedAllocation(
+        current: NativeDailyAttentionExchangeState,
+        allocated: NativeDailyAttentionExchangeState,
+    ): NativeDailyAttentionExchangeState {
+        val sameDay = current.attentionDayId != null &&
+            current.attentionDayId == allocated.attentionDayId ||
+            current.attentionDayId == null && allocated.attentionDayId == null &&
+                current.dateKey == allocated.dateKey
+        if (!sameDay) return current
+        return allocated.copy(
+            dateKey = current.dateKey,
+            cooldownsTriggered = maxOf(current.cooldownsTriggered, allocated.cooldownsTriggered),
+            highestRequiredActiveSeconds = maxOf(current.highestRequiredActiveSeconds, allocated.highestRequiredActiveSeconds),
+            highestRequiredQualifiedPages = maxOf(current.highestRequiredQualifiedPages, allocated.highestRequiredQualifiedPages),
+            updatedAt = maxOf(current.updatedAt, allocated.updatedAt),
+        )
+    }
+
     val DEFAULT_POLICY = NativeReadingAttentionPolicy()
 
     fun nextReadingTargetPreview(
@@ -259,46 +279,179 @@ object NativeAttentionExchangeLogic {
         return "ad-${format.format(Date(boundaryEpochMs))}"
     }
 
+    private data class NativeAttentionClockResolution(
+        val minutesIntoDay: Int?,
+        val issue: String?,
+    )
+
+    private data class NativeCivilDate(val year: Int, val month: Int, val day: Int)
+
+    private data class NativeAttentionDayResolution(
+        val id: String,
+        val startedAt: Long,
+        val nextBoundaryAt: Long,
+    )
+
     /**
-     * Resolves the current Attention Day id exactly like JS `resolveAttentionDay`:
-     * the Morning Buffer END time opens the day (walking back to the most
-     * recent active boundary); no usable window falls back to the local
-     * calendar day. Deterministic — native allocation and JS reconciliation
-     * must derive the SAME gate identity from it.
+     * The configured Morning Buffer END clock. The first usable clock wins on
+     * EVERY civil day, even when that window is disabled or today's weekday is
+     * not in `activeDays`; only the restriction window is inactive.
      */
-    fun resolveAttentionDayId(now: Long, schedule: NativeRoutineSchedule): String {
-        val morning = schedule.windows.firstOrNull {
-            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
-        }
-        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
-        if (morning != null && minutes != null) {
-            for (back in 0..7) {
-                val candidate = boundaryAt(now, minutes, back)
-                if (candidate <= now && isActiveOnDay(morning, candidate)) {
-                    return attentionDayIdForBoundary(candidate)
+    private fun resolveAttentionDayClock(schedule: NativeRoutineSchedule): NativeAttentionClockResolution {
+        var issue: String? = null
+        var sawMorningBuffer = false
+        for (window in schedule.windows) {
+            if (window.type != "morning-buffer") continue
+            sawMorningBuffer = true
+            val raw = window.endTime
+            if (raw.isBlank()) {
+                if (issue == null) {
+                    issue = "Morning Buffer \"${window.id}\" has no endTime; expected HH:MM in 24-hour local time."
                 }
+                continue
             }
+            val minutes = parseTimeToMinutes(raw)
+            if (minutes == null) {
+                if (issue == null) {
+                    issue = "Morning Buffer \"${window.id}\" has malformed endTime \"$raw\"; expected HH:MM in 24-hour local time."
+                }
+                continue
+            }
+            return NativeAttentionClockResolution(minutes, issue)
         }
-        return "ad-${localDateKey(now)}"
+        if (sawMorningBuffer && issue == null) {
+            issue = "No Morning Buffer endTime is configured; expected HH:MM in 24-hour local time."
+        }
+        return NativeAttentionClockResolution(null, issue)
     }
 
-    /** Resolves the current identity and the next scheduled boundary. */
-    fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState {
-        val id = resolveAttentionDayId(now, schedule)
-        val morning = schedule.windows.firstOrNull {
-            it.type == "morning-buffer" && it.enabled && it.endTime.isNotBlank()
+    /** Minutes past local midnight for the accounting clock, or null for midnight fallback. */
+    fun configuredAttentionDayClockMinutes(schedule: NativeRoutineSchedule): Int? =
+        resolveAttentionDayClock(schedule).minutesIntoDay
+
+    /** Actionable malformed-clock warning; null when the configuration is usable. */
+    fun attentionDayClockIssue(schedule: NativeRoutineSchedule): String? =
+        resolveAttentionDayClock(schedule).issue
+
+    /**
+     * Resolves the current Attention Day exactly like JS `resolveAttentionDay`:
+     * the configured Morning Buffer END clock opens the day on every civil day;
+     * no usable clock falls back to the local civil calendar day. Deterministic —
+     * native allocation and JS reconciliation derive the SAME gate identity.
+     */
+    private fun resolveAttentionDay(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayResolution {
+        val minutes = resolveAttentionDayClock(schedule).minutesIntoDay
+        if (minutes != null) {
+            val todayBoundary = boundaryAt(now, minutes, 0)
+            val startedAt = if (todayBoundary <= now) todayBoundary else boundaryAt(now, minutes, -1)
+            return NativeAttentionDayResolution(
+                id = attentionDayIdForBoundary(startedAt),
+                startedAt = startedAt,
+                nextBoundaryAt = boundaryAt(startedAt, minutes, 1),
+            )
         }
-        val minutes = morning?.let { parseTimeToMinutes(it.endTime) }
-        if (morning != null && minutes != null && Regex("^ad-\\d{8}-\\d{4}$").matches(id)) {
-            for (daysAhead in 0..7) {
-                val candidate = boundaryAt(now, minutes, -daysAhead)
-                if (candidate > now && isActiveOnDay(morning, candidate)) {
-                    return NativeAttentionDayState(id, candidate)
-                }
-            }
-        }
-        return NativeAttentionDayState(id, boundaryAt(now, 0, -1))
+
+        var startedAt = boundaryAt(now, 0, 0)
+        if (startedAt > now) startedAt = boundaryAt(now, 0, -1)
+        return NativeAttentionDayResolution(
+            id = "ad-${localDateKey(startedAt)}",
+            startedAt = startedAt,
+            nextBoundaryAt = boundaryAt(startedAt, 0, 1),
+        )
     }
+
+    /** Resolves the current Attention Day id exactly like JS `resolveAttentionDay`. */
+    fun resolveAttentionDayId(now: Long, schedule: NativeRoutineSchedule): String =
+        resolveAttentionDay(now, schedule).id
+
+    /** Resolves the current identity and the next scheduled boundary. */
+    fun resolveAttentionDayState(now: Long, schedule: NativeRoutineSchedule): NativeAttentionDayState =
+        resolveAttentionDay(now, schedule).let {
+            NativeAttentionDayState(it.id, it.nextBoundaryAt, it.startedAt)
+        }
+
+    /** Civil calendar date `dayOffset` days from `now` (not a fixed 24h offset). */
+    private fun civilDateAfter(now: Long, dayOffset: Int): NativeCivilDate {
+        val calendar = Calendar.getInstance().apply {
+            timeInMillis = now
+            add(Calendar.DAY_OF_YEAR, dayOffset)
+        }
+        return NativeCivilDate(
+            year = calendar.get(Calendar.YEAR),
+            month = calendar.get(Calendar.MONTH),
+            day = calendar.get(Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    /**
+     * Local civil timestamp at `minutesIntoDay` on the civil date `dayOffset`
+     * days from `now`.
+     *
+     * Mirrors ECMAScript `new Date(y, m, d, h, min)`: spring-forward gaps
+     * normalize forward by the pre-transition offset; fall-back overlaps choose
+     * the earlier instant. Android minSdk 24 uses java.util.Calendar/TimeZone
+     * (no java.time desugaring dependency).
+     */
+    private fun boundaryAt(now: Long, minutesIntoDay: Int, dayOffset: Int): Long {
+        val date = civilDateAfter(now, dayOffset)
+        return resolveLocalCivilTime(
+            date.year,
+            date.month,
+            date.day,
+            minutesIntoDay / 60,
+            minutesIntoDay % 60,
+        )
+    }
+
+    private fun resolveLocalCivilTime(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long {
+        val zone = TimeZone.getDefault()
+        val wallAsUtc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(year, month, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val offsets = LinkedHashSet<Int>()
+        for (deltaHours in intArrayOf(-48, -24, -6, -1, 0, 1, 6, 24, 48)) {
+            offsets.add(zone.getOffset(wallAsUtc + deltaHours * 3_600_000L))
+        }
+        val matching = offsets.asSequence()
+            .map { offset -> wallAsUtc - offset }
+            .filter { localFieldsMatch(it, zone, year, month, day, hour, minute) }
+            .sorted()
+            .toList()
+        if (matching.isNotEmpty()) return matching.first()
+        // Gap: apply the offset in effect before the requested wall time,
+        // which yields the same forward-normalized instant as JavaScript.
+        val beforeOffset = zone.getOffset(wallAsUtc - 24L * 3_600_000L)
+        return wallAsUtc - beforeOffset
+    }
+
+    private fun localFieldsMatch(
+        epochMs: Long,
+        zone: TimeZone,
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int,
+    ): Boolean {
+        val calendar = Calendar.getInstance(zone).apply { timeInMillis = epochMs }
+        return calendar.get(Calendar.YEAR) == year &&
+            calendar.get(Calendar.MONTH) == month &&
+            calendar.get(Calendar.DAY_OF_MONTH) == day &&
+            calendar.get(Calendar.HOUR_OF_DAY) == hour &&
+            calendar.get(Calendar.MINUTE) == minute
+    }
+
+    private fun parseTimeToMinutes(value: String): Int? {
+        val trimmed = value.trim()
+        if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(trimmed)) return null
+        val parts = trimmed.split(":")
+        return parts[0].toInt() * 60 + parts[1].toInt()
+    }
+
+    private fun localDateKey(now: Long): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
 
     /** A new-pass gate cannot belong to an Attention Day that began after it was created. */
     fun wasCreatedInAttentionDay(
@@ -351,41 +504,6 @@ object NativeAttentionExchangeLogic {
         }
         .mapTo(linkedSetOf()) { it.groupId }
 
-    /** Local midnight of (now - daysBack) plus minutesIntoDay. */
-    private fun boundaryAt(now: Long, minutesIntoDay: Int, daysBack: Int): Long {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = now
-            add(Calendar.DAY_OF_YEAR, -daysBack)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return calendar.timeInMillis + minutesIntoDay * 60_000L
-    }
-
-    private fun localMidnight(now: Long): Long = boundaryAt(now, 0, 0)
-
-    /** ISO weekday (Monday=1 .. Sunday=7) — matches JS `getIsoWeekday`. */
-    private fun isActiveOnDay(window: NativeRoutineWindow, epochMs: Long): Boolean {
-        if (window.activeDays.isEmpty()) return true
-        val calendar = Calendar.getInstance().apply { timeInMillis = epochMs }
-        val iso = when (calendar.get(Calendar.DAY_OF_WEEK)) {
-            Calendar.SUNDAY -> 7
-            else -> calendar.get(Calendar.DAY_OF_WEEK) - 1
-        }
-        return iso in window.activeDays
-    }
-
-    private fun parseTimeToMinutes(value: String): Int? {
-        if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(value)) return null
-        val parts = value.split(":")
-        return parts[0].toInt() * 60 + parts[1].toInt()
-    }
-
-    private fun localDateKey(now: Long): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
-
     /** One global ordinal per accepted exhaustion; existing timer/gate/ledger state makes retries idempotent. */
     fun allocateCooldown(
         state: NativeDailyAttentionExchangeState,
@@ -406,7 +524,7 @@ object NativeAttentionExchangeLogic {
             existingCooldowns.containsKey(groupId) ||
             existingGates[groupId]?.attentionDateKey == dateKey ||
             existingRestorativeGates[groupId]?.let {
-                it.attentionDayId == attentionDayId && it.holdsGroup
+                it.holdsGroup
             } == true
         ) {
             return NativeCooldownAllocation(state, existingCooldowns, existingGates, allocated = false)
@@ -429,6 +547,7 @@ object NativeAttentionExchangeLogic {
             endsAt = endsAt,
             attentionDateKey = dateKey,
             dailyCooldownOrdinal = ordinal,
+            attentionDayId = attentionDayId,
             requirementKind = requirement.kind.wireLabel,
             requiredReadingSeconds = requirement.baselineReadingSeconds,
             requiredQualifiedPages = requirement.baselineReadingPages,
@@ -506,7 +625,7 @@ object NativeAttentionExchangeLogic {
     fun gateForCooldown(cooldown: NativeCooldownPolicy, today: String): NativeReadingGate? {
         val dateKey = cooldown.attentionDateKey ?: return null
         val ordinal = cooldown.dailyCooldownOrdinal ?: return null
-        if (dateKey != today || ordinal <= 0) return null
+        if (ordinal <= 0) return null
         if (cooldown.requiredReadingSeconds <= 0L && cooldown.requiredQualifiedPages <= 0) return null
         return NativeReadingGate(
             groupId = cooldown.groupId,
@@ -526,8 +645,12 @@ object NativeAttentionExchangeLogic {
         today: String,
     ): NativeAttentionGateEvaluation {
         val available = evidence?.providerAvailable == true
+        // Reader V2 remains calendar-day scoped. A carried gate accepts trusted
+        // evidence for the current local date OR its own creation date; the two
+        // aggregates are never summed or pooled.
         val compatible = evidence?.let {
-            it.protocolCompatible && it.protocolVersion == 2 && it.dateKey == today &&
+            it.protocolCompatible && it.protocolVersion == 2 &&
+                (it.dateKey == today || it.dateKey == gate.attentionDateKey) &&
                 it.verifiedActiveSeconds >= 0L && it.qualifiedPages >= 0
         } == true
         val seconds = if (compatible) evidence!!.verifiedActiveSeconds else 0L
@@ -536,7 +659,6 @@ object NativeAttentionExchangeLogic {
         val remainingPages = (gate.requiredQualifiedPages - pages).coerceAtLeast(0)
 
         val phase = when {
-            gate.attentionDateKey != today -> NativeAttentionGatePhase.NONE
             gate.cooldownEndsAt > now -> NativeAttentionGatePhase.COOLDOWN_ACTIVE
             !available -> NativeAttentionGatePhase.READER_UNAVAILABLE
             !compatible -> NativeAttentionGatePhase.READER_INCOMPATIBLE
@@ -565,12 +687,9 @@ object NativeAttentionExchangeLogic {
             return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.KEEP_ACTIVE_TIMER, NativeAttentionGatePhase.COOLDOWN_ACTIVE, gate)
         }
 
-        // A prior day's obligation expires at local midnight; the timer itself remains authoritative.
-        if (cooldown.attentionDateKey != today) {
-            return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE, NativeAttentionGatePhase.NONE, null)
-        }
-
-        val effectiveGate = gate?.takeIf { it.attentionDateKey == today } ?: gateForCooldown(cooldown, today)
+        // An unfinished prior-day reading gate is carried; only verified
+        // completion removes it. The timer itself remains authoritative.
+        val effectiveGate = gate ?: gateForCooldown(cooldown, today)
         if (effectiveGate == null) {
             return NativeCooldownExpiryDecision(NativeCooldownExpiryAction.COMPLETE_RESTRICTED_CYCLE, NativeAttentionGatePhase.NONE, null)
         }
@@ -583,7 +702,7 @@ object NativeAttentionExchangeLogic {
         }
     }
 
-    /** Existing native state wins on the same date. JS can initialize an empty native store once. */
+    /** Existing native state wins on the same date. Native unfinished gates carry. */
     fun reconcileIncomingState(
         nativeState: NativeDailyAttentionExchangeState?,
         nativeGates: Map<String, NativeReadingGate>,
@@ -597,21 +716,40 @@ object NativeAttentionExchangeLogic {
             val seeded = incomingState?.takeIf { it.dateKey == today }?.let {
                 it.copy(attentionDayId = attentionDayId)
             } ?: newDailyState(today, now, attentionDayId)
-            val persistedGates = nativeGates.filterValues { it.attentionDateKey == today }
-            val gates = if (persistedGates.isNotEmpty()) persistedGates else incomingGates.filterValues { it.attentionDateKey == today }
-            return withGateRequirements(seeded, gates) to gates
+            // A fresh native store may adopt current-day JS gates, while genuine
+            // native gates (including carried ones) remain authoritative.
+            val adopted = LinkedHashMap<String, NativeReadingGate>()
+            for ((groupId, gate) in nativeGates) adopted[groupId] = gate
+            for ((groupId, gate) in incomingGates) {
+                if (gate.attentionDateKey == today) adopted.putIfAbsent(groupId, gate)
+            }
+            return withGateRequirements(seeded, adopted) to adopted
         }
         val sameAttentionDay = nativeState.attentionDayId == attentionDayId ||
             (nativeState.attentionDayId == null && nativeState.dateKey == today)
-        if (!sameAttentionDay) return newDailyState(today, now, attentionDayId) to emptyMap()
-        val gates = nativeGates.filterValues { it.attentionDateKey == today }
-        return withGateRequirements(nativeState.copy(dateKey = today, attentionDayId = attentionDayId), gates) to gates
+        if (!sameAttentionDay) {
+            // The accepted native snapshot is authoritative. Carry its unfinished
+            // gates into the new day; an incoming JS snapshot cannot resurrect a
+            // stale gate or ordinal from before the boundary.
+            return withGateRequirements(
+                newDailyState(today, now, attentionDayId),
+                nativeGates,
+            ) to nativeGates
+        }
+        // Same accepted native day: native state wins. Incoming stale snapshots
+        // must not append phantom gates or rewind counters.
+        return withGateRequirements(
+            nativeState.copy(dateKey = today, attentionDayId = attentionDayId),
+            nativeGates,
+        ) to nativeGates
     }
 
     /**
      * Local midnight starts a new calendar date, but does not end the active
-     * Attention Day. Keep its cooldown ordinal until the saved morning
-     * boundary while expiring calendar-date-scoped reading gates.
+     * Attention Day or discard unfinished CD3 reading gates. The gate keeps its
+     * original calendar creation key and timer; only verified completion clears
+     * it (PD-2). Reader V2 evidence for the creation date or current date is
+     * accepted independently, never pooled.
      */
     fun reconcileMidnightRollover(
         nativeState: NativeDailyAttentionExchangeState?,
@@ -630,12 +768,98 @@ object NativeAttentionExchangeLogic {
             attentionDayId = attentionDayId,
         )
 
+    /**
+     * The single effective-restriction predicate used by intervention, access
+     * and usage-reentry paths. Essential is always reachable; an ordinary
+     * access lease can never suppress a compulsory morning hold.
+     */
     fun isEffectivelyRestricted(
         baseOrRoutineRestricted: Boolean,
         cooldownActive: Boolean,
         gatePresent: Boolean,
         accessLeaseActive: Boolean,
-    ): Boolean = (baseOrRoutineRestricted || cooldownActive || gatePresent) && !accessLeaseActive
+        restorativeHold: Boolean = false,
+        morningHold: Boolean = false,
+        essentialPackage: Boolean = false,
+    ): Boolean {
+        if (essentialPackage) return false
+        if (morningHold) return true
+        return (baseOrRoutineRestricted || cooldownActive || gatePresent || restorativeHold) &&
+            !accessLeaseActive
+    }
+
+    /**
+     * A CD4+ cooldown must never be treated as satisfied merely because its
+     * restorative gate is absent. This covers legacy split-commit state until
+     * the deterministic gate is durably recovered.
+     */
+    fun isRestorativeIntentUnresolved(
+        cooldown: NativeCooldownPolicy?,
+        gate: NativeRestorativeGateState?,
+    ): Boolean =
+        cooldown != null &&
+            cooldown.requirementKind == "restorative-choice" &&
+            gate == null
+
+    enum class NativeRestorativeRecoveryAction { NONE, ACCEPT_EXISTING, CREATE, UNRESOLVED }
+
+    data class NativeRestorativeRecoveryDecision(
+        val action: NativeRestorativeRecoveryAction,
+        val attentionDayId: String? = null,
+        val gateId: String? = null,
+    )
+
+    /**
+     * Pure recovery decision. Never reinterprets the persisted binding from the
+     * current schedule; an existing exact gate or immutable cooldown metadata
+     * is the only accepted authority.
+     */
+    fun restorativeRecoveryDecision(
+        cooldown: NativeCooldownPolicy?,
+        existingGate: NativeRestorativeGateState?,
+    ): NativeRestorativeRecoveryDecision {
+        if (cooldown == null || cooldown.requirementKind != "restorative-choice") {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.NONE)
+        }
+        val ordinal = cooldown.dailyCooldownOrdinal ?: 0
+        if (ordinal <= 0) {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        }
+        if (existingGate != null) {
+            val gateDay = existingGate.attentionDayId
+            val cooldownDay = cooldown.attentionDayId?.takeIf { it.isNotBlank() }
+            val sameOwner = cooldownDay == null || gateDay == cooldownDay
+            val exact = gateDay.isNotBlank() &&
+                sameOwner &&
+                existingGate.groupId == cooldown.groupId &&
+                existingGate.requirementKind == "restorative-choice" &&
+                existingGate.status in setOf("pending-selection", "in-progress", "satisfied") &&
+                existingGate.dailyCooldownOrdinal == ordinal &&
+                existingGate.createdAt > 0L &&
+                cooldown.startedAt > 0L &&
+                existingGate.createdAt == cooldown.startedAt &&
+                existingGate.gateId == RestorativeEnforcement.gateIdFor(gateDay, cooldown.groupId, ordinal)
+            return if (exact) {
+                NativeRestorativeRecoveryDecision(
+                    NativeRestorativeRecoveryAction.ACCEPT_EXISTING,
+                    gateDay,
+                    existingGate.gateId,
+                )
+            } else {
+                NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+            }
+        }
+        if (cooldown.startedAt <= 0L) {
+            return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        }
+        val originalDayId = cooldown.attentionDayId?.takeIf { it.isNotBlank() }
+            ?: return NativeRestorativeRecoveryDecision(NativeRestorativeRecoveryAction.UNRESOLVED)
+        return NativeRestorativeRecoveryDecision(
+            NativeRestorativeRecoveryAction.CREATE,
+            originalDayId,
+            RestorativeEnforcement.gateIdFor(originalDayId, cooldown.groupId, ordinal),
+        )
+    }
 
     fun completeGroupCycle(
         groupId: String,
@@ -655,11 +879,16 @@ object NativeAttentionExchangeLogic {
     private fun withGateRequirements(
         state: NativeDailyAttentionExchangeState,
         gates: Map<String, NativeReadingGate>,
-    ): NativeDailyAttentionExchangeState = state.copy(
-        cooldownsTriggered = maxOf(state.cooldownsTriggered.coerceAtLeast(0), gates.values.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0),
-        highestRequiredActiveSeconds = maxOf(state.highestRequiredActiveSeconds.coerceAtLeast(0L), gates.values.maxOfOrNull { it.requiredReadingSeconds } ?: 0L),
-        highestRequiredQualifiedPages = maxOf(state.highestRequiredQualifiedPages.coerceAtLeast(0), gates.values.maxOfOrNull { it.requiredQualifiedPages } ?: 0),
-    )
+    ): NativeDailyAttentionExchangeState {
+        // A carried gate keeps its own creation day and ordinal; it must never
+        // inflate the new day's counters.
+        val currentDayGates = gates.values.filter { it.attentionDateKey == state.dateKey }
+        return state.copy(
+            cooldownsTriggered = maxOf(state.cooldownsTriggered.coerceAtLeast(0), currentDayGates.maxOfOrNull { it.dailyCooldownOrdinal } ?: 0),
+            highestRequiredActiveSeconds = maxOf(state.highestRequiredActiveSeconds.coerceAtLeast(0L), currentDayGates.maxOfOrNull { it.requiredReadingSeconds } ?: 0L),
+            highestRequiredQualifiedPages = maxOf(state.highestRequiredQualifiedPages.coerceAtLeast(0), currentDayGates.maxOfOrNull { it.requiredQualifiedPages } ?: 0),
+        )
+    }
 
     private fun saturatedMultiply(left: Long, right: Long): Long = try {
         Math.multiplyExact(left, right)

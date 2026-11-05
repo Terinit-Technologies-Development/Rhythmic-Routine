@@ -1,7 +1,10 @@
 import {
   MEDITATION_PROTOCOL_VERSION,
+  hasMeditationIdentityMetadata,
   type MeditationEvidenceBridge,
+  type MeditationEvidenceResult,
   type MeditationProviderAvailability,
+  type MeditationQueryStatus,
   type MeditationRecoveryRequestPayload,
   type MeditationSessionEvidence,
 } from '../domain/rhythm/meditationEvidence';
@@ -26,11 +29,21 @@ type NativeMeditationModule = {
   isMeditationAvailable(): Promise<string>;
   startMeditationRecoverySession(request: Record<string, unknown>): Promise<boolean>;
   queryMeditationStatus(sessionId: string): Promise<Record<string, unknown> | null>;
+  queryMeditationStatusDetailed?(sessionId: string): Promise<Record<string, unknown> | null>;
 };
 
 let nativeModule: Partial<NativeMeditationModule> | undefined;
+let nativeModuleOverride: Partial<NativeMeditationModule> | undefined;
+
+/** Test-only native module boundary; production continues through requireNativeModule. */
+export function setNativeMeditationModuleForTests(
+  module: Partial<NativeMeditationModule> | undefined
+): void {
+  nativeModuleOverride = module;
+}
 
 function native(): Partial<NativeMeditationModule> {
+  if (nativeModuleOverride) return nativeModuleOverride;
   if (nativeModule) return nativeModule;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -49,11 +62,30 @@ function normalizeAvailability(value: string | undefined): MeditationProviderAva
     case 'available':
     case 'not-installed':
     case 'untrusted-signature':
+    case 'permission-denied':
     case 'protocol-incompatible':
     case 'unavailable':
       return value;
     default:
       return 'unavailable';
+  }
+}
+
+function normalizeQueryStatus(value: unknown): MeditationQueryStatus | undefined {
+  switch (value) {
+    case 'available':
+    case 'not-installed':
+    case 'untrusted-signature':
+    case 'permission-denied':
+    case 'protocol-incompatible':
+    case 'session-missing':
+    case 'corrupt':
+    case 'query-failed':
+    case 'unavailable':
+    case 'legacy-ambiguous-null':
+      return value;
+    default:
+      return undefined;
   }
 }
 
@@ -133,6 +165,73 @@ export const nativeMeditationBridge: MeditationEvidenceBridge = {
       return parseMeditationSessionEvidence(raw ?? null);
     } catch {
       return null;
+    }
+  },
+
+  async queryMeditationStatusResult(
+    sessionId: string
+  ): Promise<MeditationEvidenceResult> {
+    const availability = await this.isMeditationAvailable();
+    if (availability !== 'available') {
+      return { availability, queryStatus: availability };
+    }
+    try {
+      if (native().queryMeditationStatusDetailed) {
+        const raw = await native().queryMeditationStatusDetailed?.(sessionId);
+        if (!raw) {
+          return { availability: 'unavailable', queryStatus: 'unavailable' };
+        }
+        const evidenceRaw = raw.evidence as Record<string, unknown> | null | undefined;
+        const evidence = evidenceRaw ? parseMeditationSessionEvidence(evidenceRaw) : undefined;
+        const queryStatus = normalizeQueryStatus(raw.queryStatus);
+        const availability = normalizeAvailability(
+          typeof raw.availability === 'string' ? raw.availability : undefined
+        );
+        if (queryStatus !== 'available' || availability !== 'available') {
+          return {
+            availability: availability === 'available' ? 'unavailable' : availability,
+            queryStatus: queryStatus && queryStatus !== 'available' ? queryStatus : 'corrupt',
+            identityMetadataAvailable: false,
+            ...(queryStatus === 'session-missing' ? { sessionMissing: true } : {}),
+          };
+        }
+        if (!evidence || evidence.sessionId !== sessionId) {
+          return {
+            availability: 'unavailable',
+            queryStatus: 'corrupt',
+            identityMetadataAvailable: false,
+          };
+        }
+        return {
+          availability,
+          ...(queryStatus ? { queryStatus } : {}),
+          ...(evidence ? { evidence } : {}),
+          identityMetadataAvailable: raw.identityMetadataAvailable === true,
+        };
+      }
+
+      const raw = await native().queryMeditationStatus?.(sessionId);
+      if (!raw) {
+        // A legacy seven-column bridge cannot positively distinguish an unknown
+        // session from a query failure/denial. Never call this sessionMissing.
+        return {
+          availability: 'unavailable',
+          queryStatus: 'legacy-ambiguous-null',
+          sessionMissing: false,
+        };
+      }
+      const evidence = parseMeditationSessionEvidence(raw);
+      if (!evidence) {
+        return { availability: 'unavailable', queryStatus: 'corrupt' };
+      }
+      return {
+        availability: 'available',
+        queryStatus: 'available',
+        evidence,
+        identityMetadataAvailable: hasMeditationIdentityMetadata(evidence),
+      };
+    } catch {
+      return { availability: 'unavailable', queryStatus: 'query-failed' };
     }
   },
 };

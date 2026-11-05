@@ -156,4 +156,38 @@ class NativeGroupUsageAccountingTest {
             NativeGroupUsageAccounting.nextAccountingWatermark(laterWatermark, exhaustionAt),
         )
     }
+
+    @Test
+    fun `reconciled exhaustion attributes an unrelated foreground to a policy member`() {
+        val members = setOf("com.qa.brave", "com.qa.fmradio")
+
+        // A foreground package that is a member is retained for attribution.
+        assertEquals(
+            "com.qa.fmradio",
+            NativeGroupUsageAccounting.allocationPackage(
+                foregroundPackage = "com.qa.fmradio",
+                policyPackageNames = members,
+            ),
+        )
+
+        // Routine is foreground after the metered app was left. It is not a
+        // member of this policy, so attribution must fall back to a real member
+        // instead of aborting allocation or handing the overlay an unrelated
+        // package.
+        assertEquals(
+            "com.qa.brave",
+            NativeGroupUsageAccounting.allocationPackage(
+                foregroundPackage = "com.terinit.rhythmicroutine",
+                policyPackageNames = members,
+            ),
+        )
+
+        // Empty policies are skipped rather than producing an empty package.
+        assertNull(
+            NativeGroupUsageAccounting.allocationPackage(
+                foregroundPackage = "com.terinit.rhythmicroutine",
+                policyPackageNames = emptySet(),
+            ),
+        )
+    }
 }

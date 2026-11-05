@@ -3,7 +3,7 @@ import { isReadingRequirementSatisfied, isTrustedEvidenceForDate } from './atten
 import type { RecoverySessionInfo } from './recovery';
 import {
   DEFAULT_MEDITATION_REQUIRED_SECONDS,
-  isVerifiedMeditationCompletion,
+  isVerifiedCooldownMeditationCompletion,
   type MeditationSessionEvidence,
 } from './meditationEvidence';
 
@@ -339,10 +339,12 @@ export function evaluateRestorativeGate(input: {
   } = input;
 
   // Staleness: legacy gates keep their v1.2 local-date scoping ("natural
-  // completion/expiry"); new gates are scoped to their Attention Day.
+  // completion/expiry"). New gates retain an UNFINISHED obligation across the
+  // Attention-Day boundary (PD-2/FR-12/T06); only an already-satisfied gate is
+  // dropped when its owning day is no longer current.
   const stale = gate.requirementKind === 'legacy-reading'
     ? gate.attentionDateKey !== currentDateKey
-    : gate.attentionDayId !== attentionDayId;
+    : gate.status === 'satisfied' && gate.attentionDayId !== attentionDayId;
   if (stale) {
     return { gate: undefined, phase: 'none', substitutionConsumed: false };
   }
@@ -428,22 +430,30 @@ export function evaluateRestorativeGate(input: {
             substitutionConsumed: false,
           };
         }
-        const verified = isVerifiedMeditationCompletion({
+        const verified = isVerifiedCooldownMeditationCompletion({
           evidence: meditationEvidence,
           sessionId: gate.providerSessionId ?? '',
           requiredQualifiedSeconds:
             gate.requiredMeditationSeconds ?? RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds,
+          sourceCooldownId: gate.gateId,
         });
         if (!verified) {
-          // Meaningful progress (any credited qualified time) locks the provider.
+          // Meaningful progress (any credited qualified time) locks the provider,
+          // but ONLY for the exact bound session — stale/other-gate evidence
+          // must never lock (or advance) this gate.
+          const boundMeditation =
+            meditationEvidence &&
+            meditationEvidence.sessionId === (gate.providerSessionId ?? '')
+              ? meditationEvidence
+              : null;
           const hasProgress =
-            typeof meditationEvidence?.completedQualifiedSeconds === 'number' &&
-            meditationEvidence.completedQualifiedSeconds > 0;
+            typeof boundMeditation?.completedQualifiedSeconds === 'number' &&
+            boundMeditation.completedQualifiedSeconds > 0;
           return {
             gate: hasProgress ? lockGateProvider(selected) : selected,
             phase: gate.cooldownEndsAt > now
               ? 'separation-only'
-              : meditationEvidence
+              : boundMeditation
                 ? 'meditation-in-progress'
                 : 'meditation-unavailable',
             substitutionConsumed: false,
@@ -511,6 +521,19 @@ export function evaluateRestorativeGate(input: {
   }
 }
 
+export interface RestorativeObligationView {
+  kind:
+    | 'select-provider'
+    | 'reader-daily-baseline'
+    | 'reader-recovery-session'
+    | 'meditation-session';
+  provider?: RestorativeProvider;
+  requiredSeconds: number;
+  requiredQualifiedPages?: number;
+  verifiedSeconds: number;
+  verifiedQualifiedPages?: number;
+}
+
 export interface RestorativeStatusView {
   groupId: string;
   gateId?: string;
@@ -522,6 +545,83 @@ export interface RestorativeStatusView {
   gateSatisfied: boolean;
   selectedProvider?: RestorativeProvider;
   meditationPathsRemaining: number;
+  /** Read-only evidence/requirement projection for the selected obligation. */
+  obligation?: RestorativeObligationView;
+  /** An unfinished gate carried from an earlier Attention Day. */
+  carriedObligation?: boolean;
+  /** FR-11/T16: provider may still switch before verified progress. */
+  providerSwitchAllowed?: boolean;
+}
+
+function deriveRestorativeObligationView(input: {
+  gate: ActiveRestorativeGate;
+  readerDailyEvidence?: ReadingEvidenceAvailability;
+  readerSessionEvidence?: RecoverySessionInfo | null;
+  meditationEvidence?: MeditationSessionEvidence | null;
+  acceptedEvidenceDateKeys: string[];
+}): RestorativeObligationView {
+  const {
+    gate,
+    readerDailyEvidence,
+    readerSessionEvidence,
+    meditationEvidence,
+    acceptedEvidenceDateKeys,
+  } = input;
+
+  if (gate.requirementKind === 'baseline-reading' || gate.requirementKind === 'legacy-reading') {
+    const trusted = isTrustedDailyEvidenceForKeys(readerDailyEvidence, acceptedEvidenceDateKeys)
+      ? readerDailyEvidence
+      : undefined;
+    return {
+      kind: 'reader-daily-baseline',
+      provider: 'reader',
+      requiredSeconds: gate.requiredReadingSeconds ?? 0,
+      requiredQualifiedPages: gate.requiredQualifiedPages ?? 0,
+      verifiedSeconds: trusted?.verifiedActiveSeconds ?? 0,
+      verifiedQualifiedPages: trusted?.qualifiedPages ?? 0,
+    };
+  }
+
+  if (!gate.selectedProvider) {
+    return {
+      kind: 'select-provider',
+      requiredSeconds: 0,
+      verifiedSeconds: 0,
+    };
+  }
+
+  if (gate.selectedProvider === 'meditation') {
+    const bound =
+      meditationEvidence &&
+      meditationEvidence.sessionId === (gate.providerSessionId ?? '')
+        ? meditationEvidence
+        : null;
+    return {
+      kind: 'meditation-session',
+      provider: 'meditation',
+      requiredSeconds:
+        gate.requiredMeditationSeconds ?? RESTORATIVE_POLICY.restorativeChoiceMeditationSeconds,
+      verifiedSeconds: bound?.completedQualifiedSeconds ?? 0,
+    };
+  }
+
+  const bound =
+    readerSessionEvidence &&
+    readerSessionEvidence.sessionId === (gate.providerSessionId ?? '')
+      ? readerSessionEvidence
+      : null;
+  return {
+    kind: 'reader-recovery-session',
+    provider: 'reader',
+    requiredSeconds:
+      gate.requiredRestorativeReadingSeconds ??
+      RESTORATIVE_POLICY.restorativeChoiceReadingSeconds,
+    requiredQualifiedPages:
+      gate.requiredRestorativeQualifiedPages ??
+      RESTORATIVE_POLICY.restorativeChoiceQualifiedPages,
+    verifiedSeconds: bound?.activeSeconds ?? 0,
+    verifiedQualifiedPages: bound?.qualifiedPages ?? 0,
+  };
 }
 
 /**
@@ -565,10 +665,13 @@ export function deriveRestorativeStatus(input: {
     ...(gate?.selectedProvider ? { selectedProvider: gate.selectedProvider } : {}),
   };
 
+  // PD-2: an unfinished gate from an earlier Attention Day is still displayed
+  // and enforced with its original identity/timer. Only a completed gate whose
+  // owning day has passed is stale for display purposes.
   const gateStale = gate
     ? gate.requirementKind === 'legacy-reading'
       ? gate.attentionDateKey !== input.currentDateKey
-      : gate.attentionDayId !== input.attentionDayId
+      : gate.status === 'satisfied' && gate.attentionDayId !== input.attentionDayId
     : true;
   if (!gate || gateStale) {
     return { ...base, phase: cooldownActive ? 'separation-only' : 'complete' };
@@ -588,6 +691,21 @@ export function deriveRestorativeStatus(input: {
   });
   const evaluated = evaluation.gate ?? gate;
   const gateSatisfied = evaluated.status === 'satisfied';
+  const obligation = deriveRestorativeObligationView({
+    gate: evaluated,
+    readerDailyEvidence: input.readerDailyEvidence,
+    readerSessionEvidence: input.readerSessionEvidence,
+    meditationEvidence: input.meditationEvidence,
+    acceptedEvidenceDateKeys: input.acceptedEvidenceDateKeys,
+  });
+  const carriedObligation =
+    evaluated.status !== 'satisfied' &&
+    evaluated.attentionDayId !== input.attentionDayId;
+  const providerSwitchAllowed =
+    evaluated.status !== 'satisfied' &&
+    evaluated.requirementKind === 'restorative-choice' &&
+    Boolean(evaluated.selectedProvider) &&
+    evaluated.providerLocked !== true;
 
   let phase: RestorativeGatePhase;
   if (gateSatisfied && cooldownActive) {
@@ -611,5 +729,8 @@ export function deriveRestorativeStatus(input: {
     phase,
     requirementKind: gate.requirementKind,
     gateSatisfied,
+    obligation,
+    carriedObligation,
+    providerSwitchAllowed,
   };
 }

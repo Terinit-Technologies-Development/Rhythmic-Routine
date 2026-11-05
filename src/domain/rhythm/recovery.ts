@@ -1,4 +1,7 @@
-import RhythmDeviceModule, { NativeRecoveryStatus } from '../../../modules/rhythm-device';
+import RhythmDeviceModule, {
+  FallbackModule,
+  NativeRecoveryStatus,
+} from '../../../modules/rhythm-device';
 
 export interface ReadingRecoveryTarget {
   requiredSeconds: number;
@@ -28,6 +31,29 @@ export interface RecoverySessionInfo {
   completedAtEpochMs: number;
 }
 
+export type RecoveryProviderAvailability =
+  | 'available'
+  | 'not-installed'
+  | 'untrusted-signature'
+  | 'permission-denied'
+  | 'protocol-incompatible'
+  | 'unavailable';
+
+export type RecoveryQueryStatus =
+  | RecoveryProviderAvailability
+  | 'session-missing'
+  | 'corrupt'
+  | 'query-failed'
+  | 'legacy-ambiguous-null';
+
+/** Additive typed Reader V1 result; absence is never treated as completion. */
+export interface RecoveryEvidenceResult {
+  availability: RecoveryProviderAvailability;
+  queryStatus: RecoveryQueryStatus;
+  evidence?: RecoverySessionInfo;
+  sessionMissing?: boolean;
+}
+
 export interface RecoveryProviderClient {
   isReaderAvailable(): Promise<boolean>;
   startRecoverySession(request: {
@@ -38,6 +64,8 @@ export interface RecoveryProviderClient {
     expiresAt: number;
   }): Promise<boolean>;
   queryRecoveryStatus(sessionId: string): Promise<RecoverySessionInfo | null>;
+  /** Additive typed query; legacy clients may omit it. */
+  queryRecoveryStatusResult?(sessionId: string): Promise<RecoveryEvidenceResult>;
 }
 
 export class NativeRecoveryProviderClient implements RecoveryProviderClient {
@@ -85,6 +113,121 @@ export class NativeRecoveryProviderClient implements RecoveryProviderClient {
       return null;
     }
   }
+
+  async queryRecoveryStatusResult(sessionId: string): Promise<RecoveryEvidenceResult> {
+    try {
+      const detailed = (RhythmDeviceModule as {
+        queryRecoveryStatusDetailed?: (id: string) => Promise<Record<string, unknown> | null>;
+      }).queryRecoveryStatusDetailed;
+      const isFallbackDetailed = detailed === FallbackModule.queryRecoveryStatusDetailed;
+      if (typeof detailed === 'function' && !isFallbackDetailed) {
+        const raw = await detailed(sessionId);
+        if (!raw) {
+          return { availability: 'unavailable', queryStatus: 'unavailable' };
+        }
+        const availability = normalizeRecoveryAvailability(raw.availability);
+        const queryStatus = normalizeRecoveryQueryStatus(raw.queryStatus);
+        if (availability !== 'available' || queryStatus !== 'available') {
+          return {
+            availability: availability === 'available' ? 'unavailable' : availability,
+            queryStatus: queryStatus === 'available' ? 'corrupt' : queryStatus ?? 'corrupt',
+            ...(queryStatus === 'session-missing' ? { sessionMissing: true } : {}),
+          };
+        }
+        const evidence = parseRecoveryEvidence(raw.evidence, sessionId);
+        if (!evidence) {
+          return { availability: 'unavailable', queryStatus: 'corrupt' };
+        }
+        return { availability: 'available', queryStatus: 'available', evidence };
+      }
+
+      const raw = await this.queryRecoveryStatus(sessionId);
+      if (!raw) {
+        // A legacy nullable bridge cannot positively distinguish unknown-session
+        // from provider error; never declare it satisfied.
+        return { availability: 'unavailable', queryStatus: 'legacy-ambiguous-null' };
+      }
+      return { availability: 'available', queryStatus: 'available', evidence: raw };
+    } catch {
+      return { availability: 'unavailable', queryStatus: 'query-failed' };
+    }
+  }
+}
+
+function normalizeRecoveryAvailability(value: unknown): RecoveryProviderAvailability {
+  switch (value) {
+    case 'available':
+    case 'not-installed':
+    case 'untrusted-signature':
+    case 'permission-denied':
+    case 'protocol-incompatible':
+    case 'unavailable':
+      return value;
+    default:
+      return 'unavailable';
+  }
+}
+
+function normalizeRecoveryQueryStatus(value: unknown): RecoveryQueryStatus | undefined {
+  switch (value) {
+    case 'available':
+    case 'not-installed':
+    case 'untrusted-signature':
+    case 'permission-denied':
+    case 'protocol-incompatible':
+    case 'session-missing':
+    case 'corrupt':
+    case 'query-failed':
+    case 'unavailable':
+    case 'legacy-ambiguous-null':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseRecoveryEvidence(
+  raw: unknown,
+  sessionId: string
+): RecoverySessionInfo | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const statuses: RecoverySessionStatus[] = [
+    'ACTIVE',
+    'COMPLETE',
+    'ABANDONED',
+    'EXPIRED',
+    'UNAVAILABLE',
+    'UNKNOWN',
+  ];
+  const parsedStatus = typeof value.status === 'string' ? value.status : '';
+  const protocolVersion = Number(value.protocolVersion);
+  const activeSeconds = Number(value.activeSeconds);
+  const qualifiedPages = Number(value.qualifiedPages);
+  const completedAtEpochMs = Number(value.completedAtEpochMs);
+  if (
+    typeof value.sessionId !== 'string' ||
+    value.sessionId !== sessionId ||
+    !Number.isInteger(protocolVersion) ||
+    protocolVersion !== 1 ||
+    !(statuses as string[]).includes(parsedStatus) ||
+    !Number.isFinite(activeSeconds) ||
+    activeSeconds < 0 ||
+    !Number.isInteger(qualifiedPages) ||
+    qualifiedPages < 0 ||
+    !Number.isFinite(completedAtEpochMs) ||
+    completedAtEpochMs < 0
+  ) {
+    return undefined;
+  }
+  return {
+    sessionId: value.sessionId,
+    protocolVersion,
+    status: parsedStatus as RecoverySessionStatus,
+    activeSeconds,
+    qualifiedPages,
+    completedAtEpochMs,
+  };
 }
 
 /**

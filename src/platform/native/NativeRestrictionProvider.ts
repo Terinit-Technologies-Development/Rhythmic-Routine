@@ -1,14 +1,29 @@
-import { Platform } from 'react-native';
 import {
   NativeAccessLeasePolicy,
   RestrictionCapability,
+  RestrictionLeaseResult,
   RestrictionProvider,
   RestrictionResult,
 } from '../RestrictionProvider';
 import RhythmDeviceModule from '../../../modules/rhythm-device';
 
+function getPlatformOS(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Platform } = require('react-native');
+    return Platform?.OS || 'web';
+  } catch {
+    return 'web';
+  }
+}
+
 export class NativeRestrictionProvider implements RestrictionProvider {
   private activeRestrictedApps: Set<string> = new Set();
+
+  constructor(
+    private readonly device: typeof RhythmDeviceModule = RhythmDeviceModule,
+    private readonly platformOS: () => string = getPlatformOS
+  ) {}
 
   async applyRestrictions(appIds: string[]): Promise<RestrictionResult> {
     try {
@@ -55,19 +70,43 @@ export class NativeRestrictionProvider implements RestrictionProvider {
     };
   }
 
-  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<void> {
+  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<RestrictionLeaseResult> {
+    if (typeof this.device.startAccessLease !== 'function') {
+      return { status: 'unsupported', groupId: lease.groupId, reason: 'native-lease-method-unavailable' };
+    }
     try {
-      await RhythmDeviceModule.startAccessLease(lease.groupId, lease.appIds, lease.endsAt);
-    } catch {
-      // Platform restriction boundary
+      const accepted = await this.device.startAccessLease(
+        lease.groupId,
+        lease.appIds,
+        lease.endsAt
+      );
+      return accepted === true
+        ? { status: 'applied', groupId: lease.groupId }
+        : { status: 'failed', groupId: lease.groupId, reason: 'native-lease-start-not-persisted' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        groupId: lease.groupId,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
-  async endAccessLease(groupId: string): Promise<void> {
+  async endAccessLease(groupId: string): Promise<RestrictionLeaseResult> {
+    if (typeof this.device.endAccessLease !== 'function') {
+      return { status: 'unsupported', groupId, reason: 'native-lease-method-unavailable' };
+    }
     try {
-      await RhythmDeviceModule.endAccessLease(groupId);
-    } catch {
-      // Platform restriction boundary
+      const accepted = await this.device.endAccessLease(groupId);
+      return accepted === true
+        ? { status: 'applied', groupId }
+        : { status: 'failed', groupId, reason: 'native-lease-end-not-persisted' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        groupId,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -76,10 +115,11 @@ export class NativeRestrictionProvider implements RestrictionProvider {
   }
 
   async getCapability(): Promise<RestrictionCapability> {
+    const platformOS = this.platformOS();
     try {
-      const perms = await RhythmDeviceModule.checkPermissions();
+      const perms = await this.device.checkPermissions();
 
-      if (Platform.OS === 'ios') {
+      if (platformOS === 'ios') {
         const hasAuth = perms.familyControlsStatus === 'approved';
         const hasSelection = perms.hasSelection === true;
         const isEnforced = hasAuth && hasSelection && perms.hasRestrictionPermission === true;
@@ -102,10 +142,52 @@ export class NativeRestrictionProvider implements RestrictionProvider {
         };
       }
 
-      // Android: enforcement capability requires BOTH the real native module
-      // and the Accessibility enforcement service.
-      const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
-      const isEnforced = moduleDiagnostics.available && perms.hasRestrictionPermission === true;
+      // Android: enforcement capability requires the real native module,
+      // accessibility permission AND a positively running enforcement service.
+      let moduleDiagnostics: { available: boolean } | undefined;
+      try {
+        moduleDiagnostics = await this.device.getNativeModuleDiagnostics();
+      } catch {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android native module diagnostics are unavailable; enforcement readiness is unconfirmed',
+        };
+      }
+      if (!moduleDiagnostics?.available) {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android Rhythm native enforcement module is unavailable',
+        };
+      }
+      let enforcement: { serviceRunning?: boolean } | undefined;
+      try {
+        enforcement = await this.device.getEnforcementDiagnostics();
+      } catch {
+        return {
+          status: 'foundation-only',
+          mode: 'continuous-session',
+          supportsRoutineWindows: true,
+          supportsGroupCooldowns: true,
+          supportsContinuousSessionGap: true,
+          supportsEmergencyOverride: true,
+          reason: 'Android intervention permission is enabled but the enforcement service is not confirmed running',
+        };
+      }
+      const serviceRunning = enforcement?.serviceRunning === true;
+      const isEnforced =
+        moduleDiagnostics.available &&
+        perms.hasRestrictionPermission === true &&
+        serviceRunning;
       return {
         status: isEnforced ? 'enforced' : 'foundation-only',
         mode: 'continuous-session',
@@ -115,15 +197,17 @@ export class NativeRestrictionProvider implements RestrictionProvider {
         supportsEmergencyOverride: true,
         reason: isEnforced
           ? 'Android Rhythm accessibility intervention service active'
-          : 'Android requires enabling Rhythm accessibility intervention in System Settings',
+          : perms.hasRestrictionPermission !== true
+          ? 'Android requires enabling Rhythm accessibility intervention in System Settings'
+          : 'Android intervention permission is enabled but the enforcement service is not confirmed running',
       };
     } catch {
       return {
         status: 'foundation-only',
-        mode: Platform.OS === 'ios' ? 'system-activity-threshold' : 'continuous-session',
+        mode: platformOS === 'ios' ? 'system-activity-threshold' : 'continuous-session',
         supportsRoutineWindows: true,
         supportsGroupCooldowns: true,
-        supportsContinuousSessionGap: Platform.OS === 'android',
+        supportsContinuousSessionGap: platformOS === 'android',
         supportsEmergencyOverride: true,
         reason: 'Native module unavailable or uninitialized',
       };

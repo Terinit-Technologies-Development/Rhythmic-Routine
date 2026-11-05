@@ -56,6 +56,27 @@ object NativeGroupUsageAccounting {
         localMidnight: Long,
     ): Long = maxOf(0L, endedAt - maxOf(startedAt, watermark ?: 0L, localMidnight))
 
+    /**
+     * Selects the package a reconciled allowance exhaustion is attributed to.
+     *
+     * The currently foreground package is preferred only when it belongs to the
+     * exact policy being reconciled. An unrelated foreground package is never
+     * used: allocation would abort because it is not a member, and the overlay
+     * attribution guard must never be handed a package outside this group. When
+     * the policy has no members, the result is null and the caller skips
+     * allocation.
+     */
+    fun allocationPackage(
+        foregroundPackage: String?,
+        policyPackageNames: Set<String>,
+    ): String? {
+        if (policyPackageNames.isEmpty()) return null
+        if (foregroundPackage != null && foregroundPackage in policyPackageNames) {
+            return foregroundPackage
+        }
+        return policyPackageNames.minOrNull()
+    }
+
     fun nextAccountingWatermark(existing: Long?, committedThrough: Long): Long =
         maxOf(existing ?: 0L, committedThrough)
 

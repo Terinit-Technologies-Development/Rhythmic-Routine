@@ -14,6 +14,7 @@ import {
 import {
   migrateDailyAttentionExchange,
   isValidLocalDateKey,
+  normalizeMeditationCompletions,
   type ActiveReadingGate,
   type DailyAttentionExchangeState,
 } from './attentionExchange';
@@ -58,6 +59,8 @@ export interface ActiveCooldown {
   endsAt: number;
   dailyCooldownOrdinal?: number;
   attentionDateKey?: string;
+  /** Immutable owning Attention Day for native cooldown/gate binding. */
+  attentionDayId?: string;
   /**
    * Pass 5A requirement kind wire label ('none' | 'baseline-reading' |
    * 'restorative-choice' | 'legacy-reading').
@@ -133,7 +136,13 @@ export interface RhythmRuntime {
 
 /** Pass 3 Morning Meditation runtime state. */
 export interface MorningMeditationRuntimeState {
+  /**
+   * Oldest unresolved obligation (deterministic oldest-first pending handling).
+   * Kept for compatibility with existing UI/coordinator callers.
+   */
   requirement?: MorningMeditationRequirement;
+  /** All distinct immutable pending/satisfied bindings, oldest first. */
+  requirements?: MorningMeditationRequirement[];
   migration?: MorningMeditationMigrationState;
   /** Last resolved lifecycle state (projection only). */
   state?: MorningMeditationState;
@@ -163,6 +172,8 @@ export interface PersistedRuntime {
   morningMeditation?: MorningMeditationRuntimeState;
   /** Cached Meditation status projection (diagnostics only). */
   meditationEvidence?: MeditationSessionEvidence;
+  /** Cached Reader recovery-session projection for the bound gate session. */
+  readerSessionEvidence?: import('./recovery').RecoverySessionInfo;
   /**
    * Pass 3 migration marker. v1.2 state migrates to RESTORATIVE_MIGRATION_VERSION
    * exactly once; repeated initialization must be idempotent.
@@ -260,9 +271,16 @@ export type RhythmEvent =
       groupAllowanceUsage: Record<string, GroupAllowanceUsage>;
       foregroundGroupId?: string;
       readingEvidence?: ReadingEvidenceSnapshot;
+      /** Native-owned morning requirement projection (add-only; never clears). */
+      morningMeditation?: MorningMeditationRuntimeState;
       timestamp: number;
     }
   | { type: 'NATIVE_ATTENTION_AUTHORITY_ENABLED'; timestamp: number }
+  | {
+      type: 'SYNC_NATIVE_MORNING_PROJECTION';
+      morningMeditation: MorningMeditationRuntimeState;
+      timestamp: number;
+    }
   | { type: 'RECONCILE'; timestamp: number }
   | { type: 'NATIVE_COOLDOWN_RESTORED'; groupId: string; endsAt: number; legacy?: boolean; timestamp: number }
   | { type: 'NATIVE_ACCESS_LEASE_RESTORED'; groupId: string; endsAt: number; timestamp: number }
@@ -384,6 +402,13 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
         meditationSubstitutionsUsed: finiteNonNegativeInteger(
           raw.dailyAttentionExchange.meditationSubstitutionsUsed
         ),
+        ...(raw.dailyAttentionExchange.meditationCompletions !== undefined
+          ? {
+              meditationCompletions: normalizeMeditationCompletions(
+                raw.dailyAttentionExchange.meditationCompletions
+              ),
+            }
+          : {}),
         ...(typeof raw.dailyAttentionExchange.attentionDayId === 'string'
           ? { attentionDayId: raw.dailyAttentionExchange.attentionDayId }
           : {}),
@@ -434,10 +459,14 @@ export function normalizePersistedRuntime(raw: any, now: number = Date.now()): P
   }
 
   if (raw.morningMeditation && typeof raw.morningMeditation === 'object') {
-    res.morningMeditation = { ...raw.morningMeditation };
+    const normalizedMorning = normalizeMorningMeditationRuntime(raw.morningMeditation);
+    if (normalizedMorning) res.morningMeditation = normalizedMorning;
   }
   if (raw.meditationEvidence && typeof raw.meditationEvidence === 'object') {
     res.meditationEvidence = { ...raw.meditationEvidence };
+  }
+  if (raw.readerSessionEvidence && typeof raw.readerSessionEvidence === 'object') {
+    res.readerSessionEvidence = { ...raw.readerSessionEvidence };
   }
 
   if (raw.dailyAppUsage && typeof raw.dailyAppUsage === 'object') {
@@ -515,4 +544,98 @@ function cloneObjectValues<T extends object>(value: Record<string, T>): Record<s
       .filter(([, item]) => item && typeof item === 'object')
       .map(([key, item]) => [key, { ...item }])
   );
+}
+
+function normalizeMorningMeditationRuntime(raw: unknown): MorningMeditationRuntimeState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const result: MorningMeditationRuntimeState = {};
+
+  const requirements: import('./morningMeditation').MorningMeditationRequirement[] = [];
+  const rawList = Array.isArray(value.requirements) ? value.requirements : [];
+  for (const item of rawList) {
+    const normalized = normalizeStoredMorningRequirement(item);
+    if (normalized) requirements.push(normalized);
+  }
+  if (requirements.length === 0) {
+    const normalized = normalizeStoredMorningRequirement(value.requirement);
+    if (normalized) requirements.push(normalized);
+  }
+  if (requirements.length > 0) {
+    const unique = Array.from(
+      new Map(requirements.map((item) => [item.attentionDayId, item])).values()
+    ).sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    result.requirements = unique;
+    result.requirement =
+      unique.find((item) => item.satisfiedAt === undefined) ?? unique[0];
+  }
+
+  const rawMigration = value.migration;
+  if (rawMigration && typeof rawMigration === 'object') {
+    const migration = rawMigration as Record<string, unknown>;
+    if (
+      isFiniteNonNegativeNumber(migration.migratedAt) &&
+      typeof migration.migrationAttentionDayId === 'string' &&
+      migration.migrationAttentionDayId.length > 0
+    ) {
+      result.migration = {
+        migratedAt: migration.migratedAt,
+        migrationAttentionDayId: migration.migrationAttentionDayId,
+        ...(typeof migration.enforceableFromAttentionDayId === 'string'
+          ? { enforceableFromAttentionDayId: migration.enforceableFromAttentionDayId }
+          : {}),
+      };
+    }
+  }
+
+  if (
+    value.state === 'overnight-protected' ||
+    value.state === 'morning-buffer' ||
+    value.state === 'morning-meditation-required' ||
+    value.state === 'available'
+  ) {
+    result.state = value.state;
+  }
+
+  return result.requirement || result.requirements?.length || result.migration || result.state
+    ? result
+    : null;
+}
+
+function normalizeStoredMorningRequirement(
+  raw: unknown
+): import('./morningMeditation').MorningMeditationRequirement | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const requirement = raw as Record<string, unknown>;
+  if (
+    typeof requirement.attentionDayId !== 'string' ||
+    requirement.attentionDayId.length === 0 ||
+    typeof requirement.sessionId !== 'string' ||
+    requirement.sessionId.length === 0 ||
+    !isFiniteNonNegativeNumber(requirement.requiredQualifiedSeconds) ||
+    requirement.requiredQualifiedSeconds <= 0
+  ) {
+    return null;
+  }
+  return {
+    attentionDayId: requirement.attentionDayId,
+    sessionId: requirement.sessionId,
+    requiredQualifiedSeconds: Math.floor(requirement.requiredQualifiedSeconds),
+    ...(isFiniteNonNegativeNumber(requirement.createdAt)
+      ? { createdAt: requirement.createdAt }
+      : {}),
+    ...(typeof requirement.sourceRhythmicDayId === 'string'
+      ? { sourceRhythmicDayId: requirement.sourceRhythmicDayId }
+      : {}),
+    ...(requirement.sessionKind === 'MORNING_REQUIRED'
+      ? { sessionKind: 'MORNING_REQUIRED' as const }
+      : {}),
+    ...(requirement.sourceCooldownId === null ? { sourceCooldownId: null } : {}),
+    ...(isFiniteNonNegativeNumber(requirement.expiresAtEpochMs)
+      ? { expiresAtEpochMs: requirement.expiresAtEpochMs }
+      : {}),
+    ...(isFiniteNonNegativeNumber(requirement.satisfiedAt)
+      ? { satisfiedAt: requirement.satisfiedAt }
+      : {}),
+  };
 }

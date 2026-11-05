@@ -28,6 +28,8 @@ class AttentionInsightProvider : ContentProvider() {
     companion object {
         const val PROTOCOL_VERSION = 1
         const val PATH = "attention-day"
+        /** Explicit additive selector; never a guessed calendar day. */
+        const val CURRENT_SELECTOR = "current"
 
         const val COLUMN_PROTOCOL_VERSION = "protocolVersion"
         const val COLUMN_ATTENTION_DAY_ID = "attentionDayId"
@@ -59,10 +61,12 @@ class AttentionInsightProvider : ContentProvider() {
         /**
          * Pure projection over the persisted enforcement snapshot.
          *
-         * A meditation substitution is consumed exactly once per satisfied
-         * meditation gate, so "used" is exactly the count of satisfied
-         * meditation restorative gates for the Attention Day. Morning/Evening/
-         * Standalone meditation never create gates and never consume the cap.
+         * Completion counts come from the durable per-Attention-Day ledger, not
+         * from whichever gates happen to remain current. The ledger is unioned
+         * with still-satisfied gates by gateId, so an upgraded install without a
+         * historical row still counts its existing completion exactly once.
+         * Morning/Evening/Standalone meditation never create gates and never
+         * enter the ledger.
          */
         fun deriveValues(
             snapshot: RestorativeEnforcementSnapshot,
@@ -72,8 +76,20 @@ class AttentionInsightProvider : ContentProvider() {
             val gates = snapshot.restorativeGates.values
                 .filter { it.attentionDayId == attentionDayId }
             val satisfied = gates.filter { it.satisfied }
-            val readerCompletions = satisfied.count { it.selectedProviderLabel() == "reader" }
-            val meditationCompletions = satisfied.count { it.selectedProviderLabel() == "meditation" }
+            val completionsByGate = LinkedHashMap<String, String>()
+            for (entry in snapshot.restorativeCompletions) {
+                if (entry.attentionDayId == attentionDayId) {
+                    completionsByGate[entry.gateId] = entry.provider
+                }
+            }
+            for (gate in satisfied) {
+                val provider = gate.selectedProviderLabel()
+                if (provider == "reader" || provider == "meditation") {
+                    completionsByGate[gate.gateId] = provider
+                }
+            }
+            val readerCompletions = completionsByGate.values.count { it == "reader" }
+            val meditationCompletions = completionsByGate.values.count { it == "meditation" }
             return mapOf(
                 COLUMN_PROTOCOL_VERSION to PROTOCOL_VERSION,
                 COLUMN_ATTENTION_DAY_ID to (attentionDayId ?: "unknown"),
@@ -107,23 +123,26 @@ class AttentionInsightProvider : ContentProvider() {
         if (columns.any { it !in allowedColumns } || columns.distinct().size != columns.size) return null
 
         val appContext = context?.applicationContext ?: return null
-        val attentionDay = RhythmEnforcementService.loadAttentionDayState(appContext)
-        val restorative = RestorativeEnforcement.load(appContext).copy(
-            restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext),
-            attentionDay = attentionDay,
-        )
-        val state = RhythmEnforcementService.loadAttentionExchangeState(appContext)
-        val currentDayId = attentionDay.id
+        return NativePolicyPersistence.withReadSnapshot {
+            val attentionDay = RhythmEnforcementService.loadAttentionDayState(appContext)
+            val restorative = RestorativeEnforcement.load(appContext).copy(
+                restorativeGates = RhythmEnforcementService.loadCurrentAttentionRestorativeGates(appContext),
+                attentionDay = attentionDay,
+            )
+            val state = RhythmEnforcementService.loadAttentionExchangeState(appContext)
+            val currentDayId = attentionDay.id
 
-        // Fail closed for policy, gracefully empty for Insights: only the
-        // requested Attention Day's facts are ever returned.
-        val cursor = MatrixCursor(columns.toTypedArray())
-        if (requestedDayId == currentDayId) {
-            val values = deriveValues(restorative, currentDayId, state.cooldownsTriggered)
-            cursor.addRow(columns.map { values[it] }.toTypedArray())
+            // Fail closed for policy, gracefully empty for Insights: only the
+            // requested Attention Day's facts are ever returned. The additive
+            // `current` selector resolves to Routine's actual current identity.
+            val cursor = MatrixCursor(columns.toTypedArray())
+            if (requestedDayId == currentDayId || requestedDayId == CURRENT_SELECTOR) {
+                val values = deriveValues(restorative, currentDayId, state.cooldownsTriggered)
+                cursor.addRow(columns.map { values[it] }.toTypedArray())
+            }
+            context?.contentResolver?.let { cursor.setNotificationUri(it, uri) }
+            cursor
         }
-        context?.contentResolver?.let { cursor.setNotificationUri(it, uri) }
-        return cursor
     }
 
     override fun getType(uri: Uri): String? =

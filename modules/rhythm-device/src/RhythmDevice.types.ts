@@ -140,6 +140,8 @@ export interface NativeCooldownPolicyInput {
   endsAt: number;
   attentionDateKey?: string;
   dailyCooldownOrdinal?: number;
+  /** Immutable owning Attention Day for this native cooldown binding. */
+  attentionDayId?: string;
   /** Pass 5A requirement kind wire label. */
   requirementKind?: string;
   /** Baseline/legacy compatibility numbers (CD3 + migrated v1.2). */
@@ -176,7 +178,7 @@ export interface NativeRestorativeGateInput {
 
 export interface NativeAttentionDayInput {
   id: string;
-  startedAt: number;
+  startedAt?: number;
   nextBoundaryAt: number;
 }
 
@@ -185,6 +187,18 @@ export interface NativeMorningMeditationInput {
   sessionId: string;
   requiredQualifiedSeconds: number;
   satisfied: boolean;
+  createdAt?: number;
+  satisfiedAt?: number | null;
+  sourceRhythmicDayId?: string;
+  sessionKind?: string;
+  sourceCooldownId?: string | null;
+  expiresAtEpochMs?: number | null;
+}
+
+export interface NativeMorningMigrationInput {
+  migratedAt: number;
+  migrationAttentionDayId: string;
+  enforceableFromAttentionDayId?: string | null;
 }
 
 export interface NativeAttentionExchangeSnapshot {
@@ -204,7 +218,11 @@ export interface NativeAttentionExchangeSnapshot {
   attentionDay?: NativeAttentionDayInput | null;
   activeRestorativeGates?: NativeRestorativeGateInput[];
   morningMeditation?: NativeMorningMeditationInput | null;
+  morningRequirements?: NativeMorningMeditationInput[];
+  morningMigration?: NativeMorningMigrationInput | null;
   officialCompanionPackages?: string[];
+  essentialPackages?: string[];
+  managedPackages?: string[];
 }
 
 export interface NativeRoutineWindowInput {
@@ -306,6 +324,7 @@ export type NativeMeditationAvailability =
   | 'available'
   | 'not-installed'
   | 'untrusted-signature'
+  | 'permission-denied'
   | 'protocol-incompatible'
   | 'unavailable';
 

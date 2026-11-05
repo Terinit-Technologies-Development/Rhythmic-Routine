@@ -204,7 +204,9 @@ describe('Pass 04D — V1 Android App Discovery & Overlay Enforcement Finalizati
         type: 'morning-buffer',
         startTime: '06:30',
         endTime: '08:00',
-        activeDays: [1, 2, 3, 4, 5, 6, 7],
+        // This scenario measures the evening window only; morning is inactive
+        // so the independent mandatory-morning hold cannot mask the assertion.
+        activeDays: [],
         protectedGroupIds: ['social'],
         enabled: true,
         tagline: 'Morning focus',

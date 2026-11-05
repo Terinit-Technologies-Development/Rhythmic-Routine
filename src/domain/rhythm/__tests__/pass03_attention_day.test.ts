@@ -202,13 +202,20 @@ describe('Pass 3 — Attention Day boundary algorithm (spec 51)', () => {
     assert.equal(nextDay.id, 'ad-2026-09-28');
     assert.notEqual(noBuffer.id, nextDay.id);
 
-    const disabled: RoutineWindow[] = [{ ...morningBuffer, enabled: false }];
-    const fallback = resolveAttentionDay(localTime(2026, 9, 27, 23, 59), disabled);
-    assert.equal(fallback.id, 'ad-2026-09-27');
-
     const malformed: RoutineWindow[] = [{ ...morningBuffer, endTime: 'not-a-time' }];
     const malformedFallback = resolveAttentionDay(localTime(2026, 9, 27, 23, 59), malformed);
     assert.equal(malformedFallback.id, 'ad-2026-09-27');
+    assert.equal(malformedFallback.startedAt, localTime(2026, 9, 27, 0));
+  });
+
+  test('a disabled Morning Buffer still supplies the daily accounting clock', () => {
+    const disabled: RoutineWindow[] = [{ ...morningBuffer, enabled: false }];
+    const beforeMidnight = resolveAttentionDay(localTime(2026, 9, 27, 23, 59), disabled);
+    const afterMidnight = resolveAttentionDay(localTime(2026, 9, 28, 0, 1), disabled);
+    assert.equal(beforeMidnight.id, 'ad-20260927-0730');
+    assert.equal(afterMidnight.id, 'ad-20260927-0730');
+    assert.equal(afterMidnight.startedAt, localTime(2026, 9, 27, 7, 30));
+    assert.equal(afterMidnight.nextBoundaryAt, localTime(2026, 9, 28, 7, 30));
   });
 
   test('ids are opaque, stable, and chronological', () => {
@@ -224,13 +231,16 @@ describe('Pass 3 — Attention Day boundary algorithm (spec 51)', () => {
     );
   });
 
-  test('incomplete active days fall back deterministically', () => {
+  test('inactive weekdays still get their own clock boundary (no Friday-to-Monday stretch)', () => {
     const weekdaysOnly: RoutineWindow[] = [
       { ...morningBuffer, activeDays: [1, 2, 3, 4, 5] }, // Mon-Fri
     ];
-    // Sunday 27 Sep 2026 -> most recent active boundary is Friday 25th 07:30.
+    // Sunday 27 Sep 2026 opens at Sunday 07:30 even though the Morning Buffer
+    // restriction window itself is inactive on Sunday.
     const sunday = resolveAttentionDay(localTime(2026, 9, 27, 12), weekdaysOnly);
-    assert.equal(sunday.id, 'ad-20260925-0730');
+    assert.equal(sunday.id, 'ad-20260927-0730');
+    assert.equal(sunday.startedAt, localTime(2026, 9, 27, 7, 30));
     assert.equal(sunday.nextBoundaryAt, localTime(2026, 9, 28, 7, 30));
+    assert.notEqual(sunday.id, 'ad-20260925-0730');
   });
 });

@@ -1,10 +1,32 @@
 import { RoutineWindow, RhythmState } from '../../types/domain';
 import { ActiveCooldown, ActiveRiskSession, getActiveCooldowns } from './types';
 
+const CLOCK_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * Strictly parses a persisted local clock time ("HH:MM", 00:00-23:59).
+ * Returns null for missing/malformed values so restriction evaluation leaves
+ * the window inactive instead of inventing an all-day window. An invalid time
+ * must never create a lock.
+ */
+export function parseClockTimeToMinutes(timeStr: string | undefined | null): number | null {
+  if (typeof timeStr !== 'string') return null;
+  const value = timeStr.trim();
+  if (!CLOCK_TIME_PATTERN.test(value)) return null;
+  const [hours, minutes] = value.split(':');
+  return Number(hours) * 60 + Number(minutes);
+}
+
 /**
  * Converts "HH:MM" string to minutes since midnight (0 - 1439).
+ *
+ * Retains the historical lenient fallback for non-domain inputs. Restriction
+ * window evaluation uses `parseClockTimeToMinutes` and rejects malformed
+ * persisted values.
  */
 export function parseTimeToMinutes(timeStr: string): number {
+  const parsed = parseClockTimeToMinutes(timeStr);
+  if (parsed !== null) return parsed;
   if (!timeStr) return 0;
   const parts = timeStr.split(':');
   const hours = Number(parts[0]) || 0;
@@ -21,6 +43,11 @@ export function getIsoWeekday(date: Date): number {
   return day === 0 ? 7 : day;
 }
 
+/** Empty or malformed persisted `activeDays` means "no active routine days". */
+function getActiveDays(window: RoutineWindow): number[] {
+  return Array.isArray(window.activeDays) ? window.activeDays : [];
+}
+
 /**
  * Determines whether a given time is inside a specific Routine Window,
  * supporting same-day, cross-midnight, enabled status, and active weekdays.
@@ -31,14 +58,20 @@ export function isInsideWindow(now: Date, window: RoutineWindow): boolean {
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const currentWeekday = getIsoWeekday(now);
 
-  const startMinutes = parseTimeToMinutes(window.startTime);
-  const endMinutes = parseTimeToMinutes(window.endTime || '23:59');
+  const startMinutes = parseClockTimeToMinutes(window.startTime);
+  const endMinutes = parseClockTimeToMinutes(window.endTime ?? '23:59');
 
+  // Missing/malformed persisted times leave this window inactive so invalid
+  // configuration cannot create an accidental all-day restriction. Empty
+  // activeDays likewise means "no active days".
+  if (startMinutes === null || endMinutes === null) return false;
+
+  const activeDays = getActiveDays(window);
   const isCrossMidnight = startMinutes > endMinutes;
 
   if (!isCrossMidnight) {
     // Same-day window (e.g., 06:30 to 08:30)
-    const inActiveDay = window.activeDays.includes(currentWeekday);
+    const inActiveDay = activeDays.includes(currentWeekday);
     if (!inActiveDay) return false;
 
     return currentMinutes >= startMinutes && currentMinutes < endMinutes;
@@ -49,13 +82,13 @@ export function isInsideWindow(now: Date, window: RoutineWindow): boolean {
     const isMorningPart = currentMinutes < endMinutes;
 
     if (isEveningPart) {
-      return window.activeDays.includes(currentWeekday);
+      return activeDays.includes(currentWeekday);
     }
 
     if (isMorningPart) {
       // Previous weekday initiated the window
       const prevWeekday = currentWeekday === 1 ? 7 : currentWeekday - 1;
-      return window.activeDays.includes(prevWeekday);
+      return activeDays.includes(prevWeekday);
     }
 
     return false;
@@ -104,17 +137,27 @@ export function isInsideOvernightProtection(
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const currentWeekday = getIsoWeekday(now); // 1 = Mon ... 7 = Sun
 
-  const eveningStartMinutes = parseTimeToMinutes(evening.startTime);
-  const eveningEndMinutes = parseTimeToMinutes(evening.endTime || '23:59');
-  const morningStartMinutes = parseTimeToMinutes(morning.startTime);
+  const eveningStartMinutes = parseClockTimeToMinutes(evening.startTime);
+  const eveningEndMinutes = parseClockTimeToMinutes(evening.endTime ?? '23:59');
+  const morningStartMinutes = parseClockTimeToMinutes(morning.startTime);
+
+  if (
+    eveningStartMinutes === null ||
+    eveningEndMinutes === null ||
+    morningStartMinutes === null
+  ) {
+    return false;
+  }
 
   const eveningIsCrossMidnight = eveningStartMinutes > eveningEndMinutes;
+  const eveningDays = getActiveDays(evening);
+  const morningDays = getActiveDays(morning);
 
   // Case 1: Post-midnight morning portion (00:00 up to Morning Buffer start)
   if (currentMinutes < morningStartMinutes) {
     const prevWeekday = currentWeekday === 1 ? 7 : currentWeekday - 1;
-    const eveningAppliedLastNight = evening.activeDays.includes(prevWeekday);
-    const morningAppliesToday = morning.activeDays.includes(currentWeekday);
+    const eveningAppliedLastNight = eveningDays.includes(prevWeekday);
+    const morningAppliesToday = morningDays.includes(currentWeekday);
 
     if (!eveningAppliedLastNight || !morningAppliesToday) {
       return false;
@@ -132,8 +175,8 @@ export function isInsideOvernightProtection(
   // Case 2: Pre-midnight evening portion (Evening Wind-Down end up to 23:59)
   if (!eveningIsCrossMidnight && currentMinutes >= eveningEndMinutes) {
     const nextWeekday = currentWeekday === 7 ? 1 : currentWeekday + 1;
-    const eveningAppliesTonight = evening.activeDays.includes(currentWeekday);
-    const morningAppliesTomorrow = morning.activeDays.includes(nextWeekday);
+    const eveningAppliesTonight = eveningDays.includes(currentWeekday);
+    const morningAppliesTomorrow = morningDays.includes(nextWeekday);
 
     if (!eveningAppliesTonight || !morningAppliesTomorrow) {
       return false;
@@ -162,13 +205,15 @@ export function isInsideOpenDay(
   const morning = windows.find((w) => w.type === 'morning-buffer');
   const evening = windows.find((w) => w.type === 'evening-wind-down');
 
-  const startMinutes = morning?.enabled
-    ? parseTimeToMinutes(morning.endTime || '08:00')
-    : 0;
+  const parsedMorningEnd = morning?.endTime
+    ? parseClockTimeToMinutes(morning.endTime)
+    : 8 * 60;
+  const startMinutes = morning?.enabled ? parsedMorningEnd ?? 8 * 60 : 0;
 
-  const endMinutes = evening?.enabled
-    ? parseTimeToMinutes(evening.startTime || '21:30')
-    : 1440;
+  const parsedEveningStart = evening
+    ? parseClockTimeToMinutes(evening.startTime)
+    : 21 * 60 + 30;
+  const endMinutes = evening?.enabled ? parsedEveningStart ?? 21 * 60 + 30 : 1440;
 
   return currentMinutes >= startMinutes && currentMinutes < endMinutes;
 }

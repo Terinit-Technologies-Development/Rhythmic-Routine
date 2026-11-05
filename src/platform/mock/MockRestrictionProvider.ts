@@ -1,6 +1,7 @@
 import {
   NativeAccessLeasePolicy,
   RestrictionCapability,
+  RestrictionLeaseResult,
   RestrictionProvider,
   RestrictionResult,
 } from '../RestrictionProvider';
@@ -45,12 +46,14 @@ export class MockRestrictionProvider implements RestrictionProvider {
     };
   }
 
-  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<void> {
+  async startAccessLease(lease: NativeAccessLeasePolicy): Promise<RestrictionLeaseResult> {
     this.activeLeases.set(lease.groupId, lease);
+    return { status: 'applied', groupId: lease.groupId };
   }
 
-  async endAccessLease(groupId: string): Promise<void> {
+  async endAccessLease(groupId: string): Promise<RestrictionLeaseResult> {
     this.activeLeases.delete(groupId);
+    return { status: 'applied', groupId };
   }
 }
 

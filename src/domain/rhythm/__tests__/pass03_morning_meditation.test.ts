@@ -32,6 +32,9 @@ function morningEvidence(
     completedQualifiedSeconds: 1800,
     completedAtEpochMs: 1,
     lastUpdatedAtEpochMs: 1,
+    sessionKind: 'MORNING_REQUIRED',
+    sourceCooldownId: null,
+    sourceRhythmicDayId: DAY,
     ...overrides,
   };
 }

@@ -104,8 +104,8 @@ class RestorativeReconciliationTest {
     }
 
     @Test
-    fun `a replacement gate for the same group replaces without duplication`() {
-        val previous = snapshot(mapOf("social" to gate(ordinal = 4)))
+    fun `a completed gate permits a new cycle for the same group without duplication`() {
+        val previous = snapshot(mapOf("social" to gate(ordinal = 4, status = "satisfied")))
         val next = snapshot(
             mapOf("social" to gate(gateId = RestorativeEnforcement.gateIdFor(attentionDayId, "social", 5), ordinal = 5))
         )
@@ -120,12 +120,12 @@ class RestorativeReconciliationTest {
     }
 
     @Test
-    fun `a new attention day replaces the store wholesale`() {
+    fun `a new attention day carries the actual unfinished gate`() {
         val previous = snapshot(mapOf("social" to gate()))
         val newDay = snapshot(emptyMap(), dayId = "ad-20260930-0800")
 
         val merged = RestorativeEnforcement.reconcileIncoming(previous, newDay)
-        assertTrue(merged.restorativeGates.isEmpty())
+        assertEquals(previous.restorativeGates, merged.restorativeGates)
         assertEquals("ad-20260930-0800", merged.attentionDay?.id)
     }
 

@@ -220,7 +220,7 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     }
   });
 
-  test('midnight resets daily totals and gates but preserves a cross-midnight timer', () => {
+  test('midnight resets daily totals but preserves the unfinished gate, evidence, and timer', () => {
     const start = localTime(2026, 9, 24, 23, 50);
     const end = start + 60 * 60_000;
     const midnight = localTime(2026, 9, 25, 0, 0);
@@ -231,17 +231,21 @@ describe('v1.2 Productive Attention Exchange domain', () => {
       evidence: evidence(getLocalDateKey(start), 1200, 10),
       timestamp: start + 3,
     });
+    const originalGate = engine.getRuntime().activeReadingGates?.social;
+    assert.ok(originalGate);
     engine.dispatch({ type: 'CLOCK_TICK', timestamp: midnight });
 
     const runtime = engine.getRuntime();
     assert.equal(runtime.dailyAttentionExchange?.dateKey, getLocalDateKey(midnight));
     assert.equal(runtime.dailyAttentionExchange?.cooldownsTriggered, 0);
     assert.equal(runtime.dailyAttentionExchange?.highestRequiredActiveSeconds, 0);
-    assert.deepEqual(runtime.activeReadingGates, {});
+    assert.deepEqual(runtime.activeReadingGates?.social, originalGate);
     assert.equal(runtime.activeCooldowns.social?.endsAt, end);
-    assert.equal(runtime.readingEvidence, undefined);
+    assert.equal(runtime.readingEvidence?.dateKey, getLocalDateKey(start));
+    assert.equal(runtime.readingEvidence?.verifiedActiveSeconds, 1200);
+    assert.equal(runtime.readingEvidence?.qualifiedPages, 10);
     assert.equal(engine.getAttentionGateStatus('social', midnight).phase, 'cooldown-active');
-    assert.equal(engine.getAttentionGateStatus('social', midnight).requiredQualifiedPages, 0);
+    assert.equal(engine.getAttentionGateStatus('social', midnight).requiredQualifiedPages, 36);
   });
 
   test('runtime persistence restores ordinal, gates, cached evidence, and cooldown snapshots defensively', () => {
@@ -435,7 +439,7 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     });
   });
 
-  test('editing Morning Buffer time keeps the active gate and counters until the next edited boundary', () => {
+  test('editing Morning Buffer preserves unfinished gate across the next boundary while new counters reset', () => {
     const start = localTime(2026, 9, 27, 12);
     const morningBuffer = (endTime: string) => ({
       id: 'morning-buffer',
@@ -490,6 +494,6 @@ describe('v1.2 Productive Attention Exchange domain', () => {
     const nextDay = engine.getRuntime();
     assert.equal(nextDay.dailyAttentionExchange?.attentionDayId, resolveAttentionDay(nextBoundary, editedSchedule.routineWindows).id);
     assert.equal(nextDay.dailyAttentionExchange?.cooldownsTriggered, 0);
-    assert.equal(nextDay.activeRestorativeGates?.social, undefined);
+    assert.deepEqual(nextDay.activeRestorativeGates?.social, originalGate);
   });
 });

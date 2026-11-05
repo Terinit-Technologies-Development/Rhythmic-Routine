@@ -177,6 +177,12 @@ export const FallbackModule = {
     _expiresAt: number
   ): Promise<boolean> => false,
   queryRecoveryStatus: async (_sessionId: string): Promise<NativeRecoveryStatus | null> => null,
+  queryRecoveryStatusDetailed: async (
+    _sessionId: string
+  ): Promise<Record<string, unknown>> => ({
+    queryStatus: 'unavailable',
+    availability: 'unavailable',
+  }),
   queryDailyReadingEvidence: async (dateKey: string): Promise<NativeDailyReadingEvidence> => ({
     providerAvailable: false,
     protocolCompatible: false,
@@ -193,6 +199,9 @@ export const FallbackModule = {
   queryMeditationStatus: async (
     _sessionId: string
   ): Promise<NativeMeditationSessionEvidence | null> => null,
+  queryMeditationStatusDetailed: async (
+    _sessionId: string
+  ): Promise<Record<string, unknown> | null> => null,
   seedGroupAllowanceExhaustionForQa: async (
     _groupId: string,
     _packageName: string

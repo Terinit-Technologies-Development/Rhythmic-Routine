@@ -21,6 +21,15 @@ export interface ReadingRequirement {
   qualifiedPages: number;
 }
 
+/** One durable, verified cooldown-Meditation completion. */
+export interface MeditationCompletionEntry {
+  gateId: string;
+  groupId: string;
+  providerSessionId: string;
+  attentionDayId: string;
+  completedAt: number;
+}
+
 export interface DailyAttentionExchangeState {
   /** @deprecated Local calendar date key. Kept for native/Reader compatibility. */
   dateKey: string;
@@ -44,8 +53,16 @@ export interface DailyAttentionExchangeState {
   /**
    * Pass 3: cooldown Meditation substitutions consumed in this Attention Day.
    * Capped (2/day). Morning/Evening/Standalone meditation never consume it.
+   * Kept as a projection of [meditationCompletions] for older native/UI readers.
    */
   meditationSubstitutionsUsed?: number;
+  /**
+   * Durable, append-only per-Attention-Day completion ledger. One entry per
+   * verified cooldown gate/provider session; a gate can never contribute twice
+   * and a morning session is never recorded here. Survives restart, re-import
+   * and day rollover (old entries are retained for Insights history).
+   */
+  meditationCompletions?: MeditationCompletionEntry[];
 }
 
 export interface ActiveReadingGate {
@@ -152,6 +169,7 @@ export function createDailyAttentionExchangeState(
     highestRequiredQualifiedPages: 0,
     updatedAt,
     meditationSubstitutionsUsed: 0,
+    meditationCompletions: [],
     ...(attentionDayId ? { attentionDayId } : {}),
     ...(Number.isFinite(attentionDayNextBoundaryAt)
       ? { attentionDayNextBoundaryAt }
@@ -170,7 +188,8 @@ export function reconcileAttentionExchangeDate(
       (!Number.isFinite(state.attentionDayNextBoundaryAt) ||
         state.attentionDayNextBoundaryAt! > now);
     if (!sameAttentionDay) {
-      return createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+      const next = createDailyAttentionExchangeState(dateKey, now, state.attentionDayId);
+      return carryCompletionLedgerIntoNewDay(next, state);
     }
     // `dateKey` remains calendar-day scoped for Reader compatibility. Cooldown
     // ordinals and substitutions are Attention-Day scoped and must carry over
@@ -181,7 +200,10 @@ export function reconcileAttentionExchangeDate(
       highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
       highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
       updatedAt: now,
-      meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+      meditationSubstitutionsUsed: resolveMeditationSubstitutionsUsed(state, state.attentionDayId),
+      ...(state.meditationCompletions !== undefined
+        ? { meditationCompletions: normalizeMeditationCompletions(state.meditationCompletions) }
+        : {}),
       ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
       ...(Number.isFinite(state.attentionDayNextBoundaryAt)
         ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
@@ -194,7 +216,10 @@ export function reconcileAttentionExchangeDate(
     highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
     highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
     updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
-    meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+    meditationSubstitutionsUsed: resolveMeditationSubstitutionsUsed(state, state.attentionDayId),
+    ...(state.meditationCompletions !== undefined
+      ? { meditationCompletions: normalizeMeditationCompletions(state.meditationCompletions) }
+      : {}),
     ...(state.attentionDayId ? { attentionDayId: state.attentionDayId } : {}),
     ...(Number.isFinite(state.attentionDayNextBoundaryAt)
       ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
@@ -222,33 +247,154 @@ export function reconcileAttentionExchangeForAttentionDay(
       highestRequiredActiveSeconds: nonNegativeInteger(state.highestRequiredActiveSeconds),
       highestRequiredQualifiedPages: nonNegativeInteger(state.highestRequiredQualifiedPages),
       updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : now,
-      meditationSubstitutionsUsed: nonNegativeInteger(state.meditationSubstitutionsUsed),
+      meditationSubstitutionsUsed: resolveMeditationSubstitutionsUsed(state, attentionDayId),
+      ...(state.meditationCompletions !== undefined
+        ? { meditationCompletions: normalizeMeditationCompletions(state.meditationCompletions) }
+        : {}),
       attentionDayId,
       ...(Number.isFinite(state.attentionDayNextBoundaryAt)
         ? { attentionDayNextBoundaryAt: state.attentionDayNextBoundaryAt }
         : {}),
     };
   }
-  return createDailyAttentionExchangeState(dateKey, now, attentionDayId);
+  const next = createDailyAttentionExchangeState(dateKey, now, attentionDayId);
+  return carryCompletionLedgerIntoNewDay(next, state);
+}
+
+/**
+ * New Attention Days reset the numeric counter but keep the additive owning-day
+ * completion history needed by PD-2 late completion/cap checks. Legacy states
+ * without a ledger keep their exact previous shape.
+ */
+function carryCompletionLedgerIntoNewDay(
+  next: DailyAttentionExchangeState,
+  previous: DailyAttentionExchangeState
+): DailyAttentionExchangeState {
+  if (previous.meditationCompletions === undefined) {
+    const { meditationCompletions: _ignored, ...rest } = next;
+    void _ignored;
+    return rest;
+  }
+  return {
+    ...next,
+    meditationCompletions: normalizeMeditationCompletions(previous.meditationCompletions),
+  };
 }
 
 /**
  * Consumes one cooldown-Meditation substitution. Idempotency is enforced by
  * callers through gate state (substitution is consumed exactly once per gate);
- * this helper only enforces the Attention Day cap.
+ * this helper only enforces the Attention Day cap. Prefer
+ * [recordMeditationCompletion], which also appends the durable ledger entry.
  */
 export function consumeMeditationSubstitution(
   state: DailyAttentionExchangeState,
   now: number,
   maxSubstitutions: number = 2
 ): DailyAttentionExchangeState {
-  const used = nonNegativeInteger(state.meditationSubstitutionsUsed);
+  const used = resolveMeditationSubstitutionsUsed(state, state.attentionDayId);
   if (used >= maxSubstitutions) return state;
   return {
     ...state,
     meditationSubstitutionsUsed: used + 1,
     updatedAt: now,
   };
+}
+
+/** Completions recorded for one Attention Day (never cross-day). */
+export function meditationCompletionsForAttentionDay(
+  state: DailyAttentionExchangeState,
+  attentionDayId: string | undefined
+): MeditationCompletionEntry[] {
+  if (!attentionDayId) return [];
+  return normalizeMeditationCompletions(state.meditationCompletions).filter(
+    (entry) => entry.attentionDayId === attentionDayId
+  );
+}
+
+/**
+ * The authoritative substitution count for an Attention Day. The ledger wins;
+ * the numeric projection is retained only as an upgrade fallback so an
+ * existing v1.2 count is never reset early.
+ */
+export function resolveMeditationSubstitutionsUsed(
+  state: DailyAttentionExchangeState,
+  attentionDayId: string | undefined
+): number {
+  const ledgerCount = meditationCompletionsForAttentionDay(state, attentionDayId).length;
+  const sameDay =
+    state.attentionDayId === undefined || state.attentionDayId === attentionDayId;
+  return Math.max(ledgerCount, sameDay ? nonNegativeInteger(state.meditationSubstitutionsUsed) : 0);
+}
+
+/**
+ * Appends one verified cooldown-Meditation completion. Idempotent by gateId, so
+ * repeated provider returns, retries, re-imports and restarts never count the
+ * same gate twice. The cap is enforced against the durable ledger.
+ */
+export function recordMeditationCompletion(
+  state: DailyAttentionExchangeState,
+  entry: MeditationCompletionEntry,
+  now: number,
+  maxSubstitutions: number = 2
+): DailyAttentionExchangeState {
+  const completions = normalizeMeditationCompletions(state.meditationCompletions);
+  if (completions.some((item) => item.gateId === entry.gateId)) return state;
+  const sameAsCurrentDay =
+    state.attentionDayId === undefined || state.attentionDayId === entry.attentionDayId;
+  const entryDayUsed = Math.max(
+    meditationCompletionsForAttentionDay(state, entry.attentionDayId).length,
+    sameAsCurrentDay ? nonNegativeInteger(state.meditationSubstitutionsUsed) : 0
+  );
+  if (entryDayUsed >= maxSubstitutions) return state;
+  const currentDayUsed = resolveMeditationSubstitutionsUsed(state, state.attentionDayId);
+  return {
+    ...state,
+    meditationCompletions: [...completions, { ...entry }],
+    // A late completion is charged to its ORIGINAL Attention Day through the
+    // ledger. Only a completion in the current day advances the current-day
+    // numeric projection; an old-day completion must not debit the new day.
+    meditationSubstitutionsUsed: sameAsCurrentDay
+      ? currentDayUsed + 1
+      : currentDayUsed,
+    updatedAt: now,
+  };
+}
+
+/** Drops malformed persisted ledger rows; never invents completions. */
+export function normalizeMeditationCompletions(
+  value: unknown
+): MeditationCompletionEntry[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: MeditationCompletionEntry[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Partial<MeditationCompletionEntry>;
+    if (
+      typeof entry.gateId !== 'string' ||
+      entry.gateId.length === 0 ||
+      typeof entry.groupId !== 'string' ||
+      entry.groupId.length === 0 ||
+      typeof entry.providerSessionId !== 'string' ||
+      typeof entry.attentionDayId !== 'string' ||
+      entry.attentionDayId.length === 0 ||
+      typeof entry.completedAt !== 'number' ||
+      !Number.isFinite(entry.completedAt) ||
+      seen.has(entry.gateId)
+    ) {
+      continue;
+    }
+    seen.add(entry.gateId);
+    result.push({
+      gateId: entry.gateId,
+      groupId: entry.groupId,
+      providerSessionId: entry.providerSessionId,
+      attentionDayId: entry.attentionDayId,
+      completedAt: entry.completedAt as number,
+    });
+  }
+  return result;
 }
 
 /**
@@ -379,6 +525,31 @@ export function isTrustedEvidenceForDate(
   );
 }
 
+/**
+ * Reader V2 evidence is calendar-day scoped. A carried CD3 gate may be
+ * satisfied by trusted evidence for the current local date OR its own creation
+ * date — never by pooling the two aggregates and never by an Attention-Day
+ * sum (FR-08/POL-03, PD-2 SC-7/SC-8).
+ */
+function trustedReadingEvidenceForGate(
+  evidence: ReadingEvidenceAvailability | undefined,
+  currentDateKey: string,
+  gateDateKey: string
+): ReadingEvidenceAvailability | undefined {
+  if (!evidence) return undefined;
+  if (evidence.dateKey === currentDateKey && isTrustedEvidenceForDate(evidence, currentDateKey)) {
+    return evidence;
+  }
+  if (
+    gateDateKey !== currentDateKey &&
+    evidence.dateKey === gateDateKey &&
+    isTrustedEvidenceForDate(evidence, gateDateKey)
+  ) {
+    return evidence;
+  }
+  return undefined;
+}
+
 export function reconcileReadingGate(input: {
   gate: ActiveReadingGate;
   evidence?: ReadingEvidenceAvailability;
@@ -386,15 +557,22 @@ export function reconcileReadingGate(input: {
   currentDateKey: string;
 }): ActiveReadingGate | undefined {
   const { gate, evidence, now, currentDateKey } = input;
-  if (gate.attentionDateKey !== currentDateKey) return undefined;
+  // PD-2: an unfinished gate is carried across calendar/Attention-Day
+  // boundaries. Only verified completion removes it; a missing, failed or
+  // stale projection never does.
   if (gate.cooldownEndsAt > now) return { ...gate };
-  if (!isTrustedEvidenceForDate(evidence, currentDateKey)) return { ...gate };
+  const trusted = trustedReadingEvidenceForGate(
+    evidence,
+    currentDateKey,
+    gate.attentionDateKey
+  );
+  if (!trusted) return { ...gate };
 
   const requirement: ReadingRequirement = {
     activeSeconds: gate.requiredReadingSeconds,
     qualifiedPages: gate.requiredQualifiedPages,
   };
-  return isReadingRequirementSatisfied(evidence, requirement) ? undefined : { ...gate };
+  return isReadingRequirementSatisfied(trusted, requirement) ? undefined : { ...gate };
 }
 
 export function deriveAttentionGateStatus(input: {
@@ -420,7 +598,7 @@ export function deriveAttentionGateStatus(input: {
       }
     : undefined);
   const groupId = gate?.groupId ?? cooldown?.groupId ?? input.groupId ?? '';
-  if (!gate || gate.attentionDateKey !== input.currentDateKey) {
+  if (!gate) {
     if (cooldown && cooldown.endsAt > input.now) {
       const currentDateCooldown = cooldown.attentionDateKey === input.currentDateKey;
       const requiredReadingSeconds = currentDateCooldown ? cooldown.requiredReadingSeconds ?? 0 : 0;
@@ -454,9 +632,14 @@ export function deriveAttentionGateStatus(input: {
     return emptyAttentionGateStatus(groupId);
   }
 
-  const trustedEvidence = isTrustedEvidenceForDate(input.evidence, input.currentDateKey)
-    ? input.evidence
-    : undefined;
+  // PD-2: a gate created on an earlier calendar day remains the same
+  // obligation. Current-day OR creation-day V2 evidence may satisfy it; the
+  // two daily aggregates are never merged.
+  const trustedEvidence = trustedReadingEvidenceForGate(
+    input.evidence,
+    input.currentDateKey,
+    gate.attentionDateKey
+  );
   const values = {
     verifiedActiveSeconds: trustedEvidence?.verifiedActiveSeconds ?? 0,
     qualifiedPages: trustedEvidence?.qualifiedPages ?? 0,

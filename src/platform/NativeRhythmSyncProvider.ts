@@ -1,10 +1,11 @@
 import { RhythmConfiguration, RhythmRuntime } from '../domain/rhythm/types';
 import RhythmDeviceModule from '../../modules/rhythm-device';
-import { NativeAttentionExchangeSnapshot } from '../../modules/rhythm-device/src/RhythmDevice.types';
+import { NativeAttentionExchangeSnapshot, NativeRoutineWindowInput } from '../../modules/rhythm-device/src/RhythmDevice.types';
 import { offlineActivities } from '../data/mockData';
 import { DEFAULT_READING_ATTENTION_POLICY } from '../domain/rhythm/attentionExchange';
 import { OFFICIAL_COMPANION_PACKAGES } from '../domain/rhythm/restrictions';
 import { getLocalDateKey } from '../domain/rhythm/allowance';
+import { attentionDayStartedAtFromId } from '../domain/rhythm/morningMeditation';
 import {
   requirementKindForCooldownOrdinal,
   RESTORATIVE_POLICY,
@@ -50,7 +51,8 @@ export type NativeSyncStage =
   | 'base-restrictions'
   | 'risk-policies'
   | 'cooldowns'
-  | 'routine-schedule';
+  | 'routine-schedule'
+  | 'morning-meditation';
 
 /** Evidence of one native-projection attempt. Never silent. */
 export interface NativeSyncDiagnostics {
@@ -211,7 +213,63 @@ export function computeMonitoringConfigSignature(config: RhythmConfiguration): s
   return JSON.stringify(payload);
 }
 
+/**
+ * Projects windows in SEMANTIC configuration order. The native Attention Day
+ * resolver takes the first usable Morning Buffer clock, so sorting by id would
+ * silently choose a different boundary than the JS resolver.
+ */
+export function projectNativeRoutineSchedule(config: RhythmConfiguration): {
+  windows: NativeRoutineWindowInput[];
+  allRiskPackages: string[];
+} {
+  const allRiskPackages = config.apps
+    .filter((a) => a.classification === 'risk')
+    .map((a) => a.id)
+    .sort();
+
+  const windows = config.routineWindows
+    .filter(
+      (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
+        w.type === 'morning-buffer' ||
+        w.type === 'evening-wind-down'
+    )
+    .map((w) => {
+      const protectedPackageNames = new Set<string>();
+      for (const gid of w.protectedGroupIds) {
+        const grp = config.riskGroups.find((g) => g.id === gid);
+        if (grp) {
+          for (const pkg of grp.appIds) {
+            protectedPackageNames.add(pkg);
+          }
+        }
+      }
+      return {
+        id: w.id,
+        type: w.type,
+        startTime: w.startTime,
+        endTime: w.endTime ?? '00:00',
+        activeDays: [...w.activeDays].sort(),
+        protectedPackages: Array.from(protectedPackageNames).sort(),
+        enabled: w.enabled,
+      };
+    });
+
+  return { windows, allRiskPackages };
+}
+
+/** Android payload + idempotency fingerprint preserve semantic window order. */
+export function projectNativeRoutineSchedulePayload(config: RhythmConfiguration) {
+  const { windows, allRiskPackages } = projectNativeRoutineSchedule(config);
+  return sanitizeForNative({ windows, allRiskPackages });
+}
+
 export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvider {
+  constructor(
+    private readonly syncNowOverride?: (
+      runtime: RhythmRuntime,
+      config: RhythmConfiguration
+    ) => Promise<void>
+  ) {}
   private lastSnapshot?: IOSSharedRhythmSnapshot;
   private lastConfigSignature?: string;
   private lastAndroidBaseRestrictionsSignature?: string;
@@ -223,6 +281,8 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   private syncStage: NativeSyncStage | undefined;
   private lastSyncDiagnostics: NativeSyncDiagnostics = { success: true, updatedAt: 0 };
   private lastProjectionCheckAt = 0;
+  /** Serializes overlapping JS publications so an older config cannot land last. */
+  private syncQueue: Promise<void> = Promise.resolve();
 
   private static readonly PROJECTION_CHECK_INTERVAL_MS = 30_000;
 
@@ -271,6 +331,22 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
   }
 
   async sync(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
+    const run = this.syncQueue.then(
+      () => this.syncNow(runtime, config),
+      () => this.syncNow(runtime, config)
+    );
+    this.syncQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async syncNow(runtime: RhythmRuntime, config: RhythmConfiguration): Promise<void> {
+    if (this.syncNowOverride) {
+      await this.syncNowOverride(runtime, config);
+      return;
+    }
     this.syncStage = undefined;
     try {
       const os = getPlatformOS();
@@ -359,6 +435,18 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             `RhythmDevice native module unavailable (${moduleDiagnostics.source}${moduleDiagnostics.loadError ? `: ${moduleDiagnostics.loadError}` : ''})`
           );
         }
+        // B1 capability gate: an old native binary without the authoritative
+        // attention-state projection cannot be reported as ENFORCED.
+        if (
+          typeof RhythmDeviceModule.setAttentionExchangeState !== 'function' ||
+          typeof RhythmDeviceModule.setAttentionExchangePolicy !== 'function' ||
+          typeof RhythmDeviceModule.setRoutineSchedule !== 'function'
+        ) {
+          this.syncStage = 'attention-state';
+          throw new Error(
+            'RhythmDevice native module lacks the B1 morning-enforcement projection capability'
+          );
+        }
 
         // Seed native defaults and an empty native store before any group-policy
         // update can cause the AccessibilityService to evaluate an exhausted ledger.
@@ -389,11 +477,34 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 endsAt: cooldown.endsAt,
                 attentionDateKey: cooldown.attentionDateKey,
                 dailyCooldownOrdinal: cooldown.dailyCooldownOrdinal,
+                attentionDayId: cooldown.attentionDayId,
                 requiredReadingSeconds: cooldown.requiredReadingSeconds,
                 requiredQualifiedPages: cooldown.requiredQualifiedPages,
                 ...cooldownRequirementProjection(cooldown),
               };
             });
+          const morningRequirements = (
+            runtime.morningMeditation?.requirements?.length
+              ? runtime.morningMeditation.requirements
+              : runtime.morningMeditation?.requirement
+              ? [runtime.morningMeditation.requirement]
+              : []
+          )
+            .slice()
+            .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+            .map((item) => ({
+              attentionDayId: item.attentionDayId,
+              sessionId: item.sessionId,
+              requiredQualifiedSeconds: item.requiredQualifiedSeconds,
+              createdAt: item.createdAt ?? 0,
+              sourceRhythmicDayId: item.sourceRhythmicDayId ?? item.attentionDayId,
+              sessionKind: 'MORNING_REQUIRED',
+              satisfied: item.satisfiedAt !== undefined,
+              satisfiedAt: item.satisfiedAt ?? null,
+              expiresAtEpochMs: item.expiresAtEpochMs ?? null,
+            }));
+          const oldestPending =
+            morningRequirements.find((item) => !item.satisfied) ?? morningRequirements[0];
           const attentionState = sanitizeForNative({
             dailyAttentionExchange: runtime.dailyAttentionExchange ?? {
               dateKey: getLocalDateKey(),
@@ -412,7 +523,10 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
             attentionDay: runtime.dailyAttentionExchange?.attentionDayId
               ? {
                   id: runtime.dailyAttentionExchange.attentionDayId,
-                  startedAt: 0,
+                  startedAt:
+                    attentionDayStartedAtFromId(
+                      runtime.dailyAttentionExchange.attentionDayId
+                    ) ?? 0,
                   nextBoundaryAt:
                     runtime.dailyAttentionExchange.attentionDayNextBoundaryAt ?? 0,
                 }
@@ -436,15 +550,35 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 restorativeReadingPages: gate.requiredRestorativeQualifiedPages ?? null,
               })
             ),
-            morningMeditation: runtime.morningMeditation?.requirement
+            morningMeditation: oldestPending ?? null,
+            morningRequirements,
+            morningMigration: runtime.morningMeditation?.migration
               ? {
-                  attentionDayId: runtime.morningMeditation.requirement.attentionDayId,
-                  sessionId: runtime.morningMeditation.requirement.sessionId,
-                  requiredQualifiedSeconds:
-                    runtime.morningMeditation.requirement.requiredQualifiedSeconds,
-                  satisfied: Boolean(runtime.morningMeditation.requirement.satisfiedAt),
+                  migratedAt: runtime.morningMeditation.migration.migratedAt,
+                  migrationAttentionDayId:
+                    runtime.morningMeditation.migration.migrationAttentionDayId,
+                  enforceableFromAttentionDayId:
+                    runtime.morningMeditation.migration.enforceableFromAttentionDayId ?? null,
                 }
               : null,
+            /** Explicit Essential facts so native never restricts an Essential app. */
+            essentialPackages: config.apps
+              .filter((app) => app.classification === 'essential')
+              .map((app) => app.id)
+              .sort(),
+            /**
+             * Explicit managed nonessential facts. Production clears the opaque
+             * base set, so without this native morning focus would silently
+             * omit ordinary managed apps.
+             */
+            managedPackages: config.apps
+              .filter(
+                (app) =>
+                  app.classification !== 'essential' &&
+                  !OFFICIAL_COMPANION_PACKAGES.has(app.id)
+              )
+              .map((app) => app.id)
+              .sort(),
             officialCompanionPackages: [...OFFICIAL_COMPANION_PACKAGES],
           });
           const attentionStateSignature = JSON.stringify(attentionState);
@@ -511,6 +645,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
                 endsAt: cd.endsAt,
                 attentionDateKey: cd.attentionDateKey,
                 dailyCooldownOrdinal: cd.dailyCooldownOrdinal,
+                attentionDayId: cd.attentionDayId,
                 requiredReadingSeconds: cd.requiredReadingSeconds,
                 requiredQualifiedPages: cd.requiredQualifiedPages,
                 ...cooldownRequirementProjection(cd),
@@ -530,44 +665,7 @@ export class PlatformNativeRhythmSyncProvider implements NativeRhythmSyncProvide
         // 3. Sync native routine schedule with explicit window types and allRiskPackages
         this.syncStage = 'routine-schedule';
         if (RhythmDeviceModule.setRoutineSchedule) {
-          const allRiskPackages = config.apps
-            .filter((a) => a.classification === 'risk')
-            .map((a) => a.id)
-            .sort();
-
-          const scheduleWindows = config.routineWindows
-            .filter(
-              (w): w is typeof w & { type: 'morning-buffer' | 'evening-wind-down' } =>
-                w.type === 'morning-buffer' ||
-                w.type === 'evening-wind-down'
-            )
-            .map((w) => {
-              const protectedPackageNames = new Set<string>();
-              for (const gid of w.protectedGroupIds) {
-                const grp = config.riskGroups.find((g) => g.id === gid);
-                if (grp) {
-                  for (const pkg of grp.appIds) {
-                    protectedPackageNames.add(pkg);
-                  }
-                }
-              }
-
-              return {
-                id: w.id,
-                type: w.type,
-                startTime: w.startTime,
-                endTime: w.endTime ?? '00:00',
-                activeDays: [...w.activeDays].sort(),
-                protectedPackages: Array.from(protectedPackageNames).sort(),
-                enabled: w.enabled,
-              };
-            })
-            .sort((a, b) => a.id.localeCompare(b.id));
-
-          const scheduleInput = sanitizeForNative({
-            windows: scheduleWindows,
-            allRiskPackages,
-          });
+          const scheduleInput = projectNativeRoutineSchedulePayload(config);
           const schedSig = JSON.stringify(scheduleInput);
           if (this.lastAndroidRoutineScheduleSignature !== schedSig) {
             const saved = await RhythmDeviceModule.setRoutineSchedule(scheduleInput);

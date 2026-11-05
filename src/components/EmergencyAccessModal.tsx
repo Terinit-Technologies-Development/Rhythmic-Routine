@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import { HeartHandshake, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, shadows } from '../theme/tokens';
 import { usePrototypeStore } from '../store/usePrototypeStore';
 import { getPlatformAccessLeasePolicy } from '../types/domain';
+import { deriveEmergencyAccessPresentation } from '../domain/rhythm/emergencyAccessPresentation';
 
 export const EmergencyAccessModal: React.FC = () => {
   const visible = usePrototypeStore((s) => s.emergencyModalVisible);
@@ -18,26 +19,62 @@ export const EmergencyAccessModal: React.FC = () => {
   const requestProtectedMutation = usePrototypeStore((s) => s.requestProtectedMutation);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
+  const morningMeditation = usePrototypeStore((s) => s.morningMeditation);
+  const emergencyAccessError = usePrototypeStore((s) => s.emergencyAccessError);
+  const clearEmergencyAccessError = usePrototypeStore((s) => s.clearEmergencyAccessError);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!visible) return null;
 
   const policy = getPlatformAccessLeasePolicy(Platform.OS);
   const durationMinutes = policy.defaultMinutes;
   const targetGroup = riskGroups.find((g) => g.id === activeRiskGroupId) || riskGroups[0];
+  const morningFocusActive =
+    morningMeditation?.state === 'morning-meditation-required' ||
+    Boolean(
+      morningMeditation?.requirement &&
+        morningMeditation.requirement.satisfiedAt === undefined
+    );
+  const presentation = deriveEmergencyAccessPresentation({
+    morningFocusActive,
+    durationMinutes,
+    groupName: targetGroup?.name,
+  });
+
+  const closeModal = () => {
+    setVisible(false);
+    setError(null);
+    clearEmergencyAccessError();
+  };
 
   const handleGrantOverride = async () => {
     const groupId = targetGroup?.id || 'social';
-    setVisible(false);
-    await requestProtectedMutation({
-      operation: 'start-access-lease',
-      summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
-      payload: { groupId, durationMinutes },
-    });
+    setError(null);
+    setSubmitting(true);
+    try {
+      const outcome = await requestProtectedMutation({
+        operation: 'start-access-lease',
+        summary: `Allow ${targetGroup?.name ?? 'Risk Group'} for ${durationMinutes} minutes using Emergency Access`,
+        payload: { groupId, durationMinutes },
+      });
+      if (outcome.status === 'executed' || outcome.status === 'pending-approval') {
+        setVisible(false);
+        clearEmergencyAccessError();
+        setError(null);
+      }
+    } catch {
+      setError(
+        'Emergency access could not be confirmed. Check your current restriction status before trying again.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <View style={styles.overlay}>
-      <TouchableWithoutFeedback onPress={() => setVisible(false)}>
+      <TouchableWithoutFeedback onPress={closeModal}>
         <View style={StyleSheet.absoluteFill} />
       </TouchableWithoutFeedback>
 
@@ -49,17 +86,17 @@ export const EmergencyAccessModal: React.FC = () => {
         <Text style={styles.title}>Need emergency access?</Text>
 
         <Text style={styles.message}>
-          Take a gentle breath. Rhythm is here to protect your attention, not to lock you out.
-          {'\n\n'}
-          You will receive <Text style={styles.bold}>{durationMinutes} minutes</Text> of temporary access to <Text style={styles.bold}>{targetGroup?.name ?? 'your apps'}</Text>.
-          {'\n\n'}
-          Your active cooldown will continue running in the background and restrictions will resume automatically when the lease expires.
+          {presentation.message}
         </Text>
+
+        {error || emergencyAccessError ? (
+          <Text style={styles.errorText}>{error ?? emergencyAccessError}</Text>
+        ) : null}
 
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.cancelBtn}
-            onPress={() => setVisible(false)}
+            onPress={closeModal}
             activeOpacity={0.8}
           >
             <Text style={styles.cancelBtnText}>Stay in Rhythm</Text>
@@ -68,11 +105,14 @@ export const EmergencyAccessModal: React.FC = () => {
           <TouchableOpacity
             style={styles.unlockBtn}
             onPress={handleGrantOverride}
+            disabled={submitting}
             activeOpacity={0.8}
           >
             <View style={styles.unlockRow}>
               <ShieldAlert size={16} color={colors.amberDark} />
-              <Text style={styles.unlockBtnText}>Grant {durationMinutes}-Min Override</Text>
+              <Text style={styles.unlockBtnText}>
+                {presentation.actionLabel}
+              </Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -124,9 +164,13 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 24,
   },
-  bold: {
-    fontWeight: '700',
-    color: colors.text,
+  errorText: {
+    width: '100%',
+    marginBottom: 12,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.coralDark,
+    textAlign: 'center',
   },
   actions: {
     width: '100%',

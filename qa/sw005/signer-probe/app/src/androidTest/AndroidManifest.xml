@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SW-2026-005 A4 TEST-ONLY instrumentation manifest.
+  The probes intentionally use InstrumentationRegistry.targetContext, so the
+  exact signature permissions and exact package visibility live in the AUT main
+  manifest. This test manifest adds no permissions, queries or network access.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

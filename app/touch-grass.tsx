@@ -15,41 +15,103 @@ import { ScreenHeader } from '../src/components/ScreenHeader';
 import { TouchGrassMeadowLandscape } from '../src/components/Artwork';
 import { OfflineActivityCard } from '../src/components/OfflineActivityCard';
 import { RestorativeChoiceCard } from '../src/components/RestorativeChoiceCard';
+import { MorningMeditationCard } from '../src/components/MorningMeditationCard';
 import { usePrototypeStore } from '../src/store/usePrototypeStore';
 import { useRemainingSeconds } from '../src/domain/timer';
 import { resolveGroupAllowanceMinutes } from '../src/domain/rhythm/allowance';
 import { formatSecondsToHHMMSS } from '../src/domain/selectors';
+import { deriveTouchGrassPresentation } from '../src/domain/rhythm/touchGrassPresentation';
 
 export default function TouchGrassScreen() {
   const activeTimerEndsAt = usePrototypeStore((s) => s.activeTimerEndsAt);
+  const rhythmState = usePrototypeStore((s) => s.rhythmState);
+  const morningMeditation = usePrototypeStore((s) => s.morningMeditation);
   const attentionStatus = usePrototypeStore((s) => s.activeAttentionGateStatus);
   const refreshReadingEvidence = usePrototypeStore((s) => s.refreshReadingEvidence);
   const openRhythmicReader = usePrototypeStore((s) => s.openRhythmicReader);
   const offlineActivities = usePrototypeStore((s) => s.offlineActivities);
   const setEmergencyModalVisible = usePrototypeStore((s) => s.setEmergencyModalVisible);
   const restorativeStatus = usePrototypeStore((s) => s.restorativeStatus);
+  const restorativeProviderDiagnostics = usePrototypeStore(
+    (s) => s.restorativeProviderDiagnostics
+  );
+  const activeRestorativeGates = usePrototypeStore((s) => s.activeRestorativeGates);
   const selectRestorativeProvider = usePrototypeStore((s) => s.selectRestorativeProvider);
   const launchMeditationForGate = usePrototypeStore((s) => s.launchMeditationForGate);
   const launchReaderForGate = usePrototypeStore((s) => s.launchReaderForGate);
   const refreshMeditationEvidence = usePrototypeStore((s) => s.refreshMeditationEvidence);
+  const refreshReaderEvidence = usePrototypeStore((s) => s.refreshReaderEvidence);
   const riskGroups = usePrototypeStore((s) => s.riskGroups);
   const activeRiskGroupId = usePrototypeStore((s) => s.activeRiskGroupId);
   const group = activeRiskGroupId
     ? riskGroups.find((g) => g.id === activeRiskGroupId)
     : undefined;
+  const pendingRestorativeGate = Object.values(activeRestorativeGates ?? {}).find(
+    (gate) => gate.status !== 'satisfied'
+  );
+  const restorativeHold = Boolean(
+    pendingRestorativeGate ||
+      (restorativeStatus &&
+        restorativeStatus.requirementKind !== 'none' &&
+        !restorativeStatus.gateSatisfied)
+  );
+  // The choice card, its handlers and provider diagnostics all bind to the
+  // store's primary restorative projection. Header group/provider/phase must
+  // describe that same obligation; the raw pending-gate scan is only a fallback
+  // when no projection exists.
+  const fallbackRestorativeGate = restorativeStatus ? undefined : pendingRestorativeGate;
+  const restorativeGroupId = restorativeStatus?.groupId ?? fallbackRestorativeGate?.groupId;
+  const restorativeGroupName = restorativeGroupId
+    ? riskGroups.find((g) => g.id === restorativeGroupId)?.name
+    : group?.name;
+  const restorativeProvider = restorativeStatus
+    ? restorativeStatus.selectedProvider
+    : fallbackRestorativeGate?.selectedProvider;
+  const restorativePhase = restorativeStatus?.phase;
+  // A different pending obligation stays visible, but never as this card.
+  const otherPendingRestorativeGate = restorativeStatus
+    ? Object.values(activeRestorativeGates ?? {}).find(
+        (gate) =>
+          gate.status !== 'satisfied' && gate.groupId !== restorativeStatus.groupId
+      )
+    : undefined;
+  const otherPendingRestorativeGroupName = otherPendingRestorativeGate
+    ? riskGroups.find((g) => g.id === otherPendingRestorativeGate.groupId)?.name ??
+      otherPendingRestorativeGate.groupId
+    : undefined;
+  const currentMeditationDiagnostic =
+    restorativeProviderDiagnostics?.meditation &&
+    restorativeProviderDiagnostics.meditation.gateId === restorativeStatus?.gateId
+      ? restorativeProviderDiagnostics.meditation
+      : undefined;
+  const currentReaderDiagnostic =
+    restorativeProviderDiagnostics?.reader &&
+    restorativeProviderDiagnostics.reader.gateId === restorativeStatus?.gateId
+      ? restorativeProviderDiagnostics.reader
+      : undefined;
   const threshold = group ? resolveGroupAllowanceMinutes(group) : undefined;
   const recovery = group?.cooldownMinutes;
 
-  // A bound Meditation session can finish while Routine is backgrounded. Its
+  // A bound provider session can finish while Routine is backgrounded. Its
   // completion is authoritative only after querying that exact session again;
   // refresh when this screen returns to the foreground rather than relaunching
   // the recovery request (which could alter an already-completed record).
   useEffect(() => {
     const groupId = restorativeStatus?.groupId;
-    if (!groupId || restorativeStatus.selectedProvider !== 'meditation') return;
+    const selectedProvider = restorativeStatus?.selectedProvider;
+    if (
+      !groupId ||
+      (selectedProvider !== 'meditation' && selectedProvider !== 'reader')
+    ) {
+      return;
+    }
 
     const refresh = () => {
-      void refreshMeditationEvidence(groupId).catch(() => undefined);
+      const pending =
+        selectedProvider === 'meditation'
+          ? refreshMeditationEvidence(groupId)
+          : refreshReaderEvidence(groupId);
+      void pending.catch(() => undefined);
     };
     refresh();
 
@@ -60,7 +122,12 @@ export default function TouchGrassScreen() {
       if (resumed) refresh();
     });
     return () => subscription?.remove();
-  }, [restorativeStatus?.groupId, restorativeStatus?.selectedProvider, refreshMeditationEvidence]);
+  }, [
+    restorativeStatus?.groupId,
+    restorativeStatus?.selectedProvider,
+    refreshMeditationEvidence,
+    refreshReaderEvidence,
+  ]);
 
   const configuredActivity = group?.recoveryActivityId
     ? offlineActivities.find((a) => a.id === group.recoveryActivityId)
@@ -69,23 +136,22 @@ export default function TouchGrassScreen() {
     ? [configuredActivity, ...offlineActivities.filter((a) => a.id !== configuredActivity.id)].slice(0, 4)
     : offlineActivities.slice(0, 4);
   const countdownSeconds = useRemainingSeconds(activeTimerEndsAt);
-  const isPostCooldownAttention = Boolean(
-    attentionStatus && attentionStatus.phase !== 'none' && attentionStatus.phase !== 'cooldown-active'
-  );
-  const isReaderEvidenceUnavailable = attentionStatus?.phase === 'reader-unavailable';
-  const isReaderEvidenceIncompatible = attentionStatus?.phase === 'reader-incompatible';
-  const hasReadingRequirement = Boolean(
-    attentionStatus &&
-    (attentionStatus.requiredReadingSeconds > 0 || attentionStatus.requiredQualifiedPages > 0)
-  );
-  const afterCooldownProgress = [
-    attentionStatus?.remainingReadingSeconds
-      ? `${formatSecondsToHHMMSS(attentionStatus.remainingReadingSeconds)} reading remaining`
-      : undefined,
-    attentionStatus?.remainingQualifiedPages
-      ? `${attentionStatus.remainingQualifiedPages} qualified pages remaining`
-      : undefined,
-  ].filter(Boolean).join(' · ');
+  const presentation = deriveTouchGrassPresentation({
+    morning: morningMeditation,
+    hasActiveCooldown:
+      rhythmState === 'cooldown' && countdownSeconds > 0,
+    attention: attentionStatus,
+    restorativeHold,
+    restorativeGroupName,
+    restorativeProvider,
+    restorativePhase,
+    restorativeStatus,
+    otherPendingRestorativeGroupName,
+    groupName: group?.name,
+    allowanceMinutes: threshold,
+    cooldownMinutes: recovery,
+  });
+  const isPostCooldownAttention = presentation.showReadingRequirements;
 
   const continueReading = async () => {
     try {
@@ -117,24 +183,8 @@ export default function TouchGrassScreen() {
             <Sprout size={24} color={colors.forest} strokeWidth={2.3} />
           </View>
 
-          <Text style={styles.title}>
-            {isPostCooldownAttention
-              ? 'Productive attention 🌱'
-              : group ? `${group.name} Cooldown 🌱` : 'Touch grass 🌱'}
-          </Text>
-          <Text style={styles.subtitle}>
-            {isPostCooldownAttention
-              ? isReaderEvidenceUnavailable
-                ? 'The cooldown has ended. Reader evidence is unavailable, so productive attention cannot be verified yet.'
-                : isReaderEvidenceIncompatible
-                  ? 'The cooldown has ended. Reader evidence is incompatible with the required protocol.'
-                  : attentionStatus?.phase === 'satisfied'
-                    ? 'Both reading requirements are verified. Rhythm is updating your access.'
-                    : 'The cooldown has ended. Complete both reading requirements to regain access.'
-              : group
-                ? `${threshold} min group allowance reached · ${recovery} min recovery break.${hasReadingRequirement ? `\nAfter the timer: ${afterCooldownProgress || 'reading requirements verified'}.` : ''}\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`
-                : `Recovery break active.\nCome back in ${hrs > 0 ? `${hrs}h ` : ''}${mins}m.`}
-          </Text>
+          <Text style={styles.title}>{presentation.title}</Text>
+          <Text style={styles.subtitle}>{presentation.subtitle}</Text>
         </View>
 
         {/* Hero Illustration & Live Timer Card */}
@@ -147,11 +197,13 @@ export default function TouchGrassScreen() {
           {/* Floating Frosted Glass Card */}
           <View style={styles.timerCard}>
             <View style={styles.cooldownBadge}>
-              {isPostCooldownAttention
+              {presentation.mode === 'morning' || presentation.mode === 'morning-and-cooldown' || presentation.mode === 'morning-and-attention'
+                ? <Sprout size={12} color={colors.forestDark} strokeWidth={2.5} />
+                : isPostCooldownAttention
                 ? <BookOpen size={12} color={colors.forestDark} strokeWidth={2.5} />
                 : <Lock size={12} color={colors.forestDark} strokeWidth={2.5} />}
               <Text style={styles.cooldownBadgeText}>
-                {isPostCooldownAttention ? 'Productive attention' : 'Cooldown in progress'}
+                {presentation.badge}
               </Text>
             </View>
 
@@ -178,7 +230,7 @@ export default function TouchGrassScreen() {
                   </TouchableOpacity>
                 )}
               </View>
-            ) : (
+            ) : presentation.showCooldownTimer ? (
               <View style={styles.digitsRow}>
                 <View style={styles.digitCol}>
                   <Text style={styles.digitNumber}>{hrs.toString().padStart(2, '0')}</Text>
@@ -195,9 +247,35 @@ export default function TouchGrassScreen() {
                   <Text style={styles.digitUnit}>SEC</Text>
                 </View>
               </View>
+            ) : (
+              <View style={styles.attentionRequirements}>
+                <Text style={styles.attentionRequirementPrimary}>
+                  {presentation.showMorningFocus
+                    ? 'Morning obligation in progress'
+                    : presentation.showRestorativeHold
+                    ? presentation.restorativeObligationLabel ?? 'Restorative obligation in progress'
+                    : 'No active hold'}
+                </Text>
+                <Text style={styles.attentionRequirementSecondary}>
+                  {presentation.showMorningFocus
+                    ? 'Use the morning meditation card below; the bound session is verified by Routine.'
+                    : presentation.showRestorativeHold
+                    ? presentation.restorativeProgressLabel ??
+                      'Complete the restorative task below; other routine policy may still apply.'
+                    : 'No cooldown, morning task or restorative task is currently blocking access.'}
+                </Text>
+                {presentation.showRestorativeHold && presentation.restorativeNextAction ? (
+                  <Text style={styles.attentionRequirementSecondary}>
+                    {presentation.restorativeNextAction}
+                  </Text>
+                ) : null}
+              </View>
             )}
           </View>
         </View>
+
+        {/* B1 — mandatory morning meditation: launches the exact bound session. */}
+        <MorningMeditationCard />
 
         {/* Pass 3 — Restorative Choice: one discrete requirement for CD4+
             (Meditation 30 min OR Reading 30 min + 11 pages). The cooldown
@@ -211,16 +289,22 @@ export default function TouchGrassScreen() {
               }}
               onBeginProvider={async (provider) => {
                 if (provider === 'meditation') {
-                  const started = await launchMeditationForGate(restorativeStatus.groupId);
-                  if (started) await refreshMeditationEvidence(restorativeStatus.groupId);
+                  await launchMeditationForGate(restorativeStatus.groupId);
+                  await refreshMeditationEvidence(restorativeStatus.groupId);
                 } else {
                   await launchReaderForGate(restorativeStatus.groupId);
                 }
               }}
-              meditationUnavailableReason={
-                restorativeStatus.phase === 'meditation-unavailable' ||
-                restorativeStatus.phase === 'meditation-incompatible'
-                  ? 'unavailable'
+              providerDiagnostics={
+                currentMeditationDiagnostic || currentReaderDiagnostic
+                  ? {
+                      ...(currentMeditationDiagnostic
+                        ? { meditation: currentMeditationDiagnostic }
+                        : {}),
+                      ...(currentReaderDiagnostic
+                        ? { reader: currentReaderDiagnostic }
+                        : {}),
+                    }
                   : undefined
               }
             />
@@ -265,7 +349,7 @@ export default function TouchGrassScreen() {
           onPress={() => setEmergencyModalVisible(true)}
           activeOpacity={0.7}
         >
-          <Text style={styles.emergencyLinkText}>Need emergency access?</Text>
+          <Text style={styles.emergencyLinkText}>{presentation.emergencyLinkText}</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>

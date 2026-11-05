@@ -61,6 +61,10 @@ function meditationEvidence(
     completedQualifiedSeconds: 1800,
     completedAtEpochMs: NOW,
     lastUpdatedAtEpochMs: NOW,
+    // Mandatory trusted identity metadata for a cooldown completion.
+    sessionKind: 'COOLDOWN_RESTORATIVE',
+    sourceCooldownId: 'gate-social-o4',
+    sourceRhythmicDayId: DAY,
     ...overrides,
   };
 }
@@ -238,7 +242,7 @@ describe('Pass 3 — Meditation substitutions (spec 48-49)', () => {
       attentionDayId: DAY,
       currentDateKey: '2026-09-27',
       acceptedEvidenceDateKeys: ['2026-09-27'],
-      meditationEvidence: meditationEvidence('m2'),
+      meditationEvidence: meditationEvidence('m2', { sourceCooldownId: 'gate-social-o5' }),
       meditationSubstitutionsUsed: 1,
     });
     assert.equal(first.gate?.status, 'satisfied');

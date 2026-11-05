@@ -25,6 +25,7 @@ export type MeditationProviderAvailability =
   | 'available'
   | 'not-installed'
   | 'untrusted-signature'
+  | 'permission-denied'
   | 'protocol-incompatible'
   | 'unavailable';
 
@@ -38,7 +39,7 @@ export type MeditationSessionStatus =
   | 'INVALID'
   | 'UNKNOWN';
 
-/** Durable status exposed by Meditation's status provider (7 columns only). */
+/** Durable status exposed by Meditation's status provider (7 base columns). */
 export interface MeditationSessionEvidence {
   sessionId: string;
   protocolVersion: number;
@@ -47,7 +48,41 @@ export interface MeditationSessionEvidence {
   completedQualifiedSeconds: number;
   completedAtEpochMs: number | null;
   lastUpdatedAtEpochMs: number;
+  /**
+   * Additive V1 identity metadata (A2). Present only when the caller
+   * explicitly requested the three identity columns and the provider is new
+   * enough to return them. Missing metadata is a capability limitation, never
+   * a match.
+   */
+  sessionKind?: 'MORNING_REQUIRED' | 'COOLDOWN_RESTORATIVE' | string;
+  sourceCooldownId?: string | null;
+  sourceRhythmicDayId?: string | null;
 }
+
+export function hasMeditationIdentityMetadata(
+  evidence: MeditationSessionEvidence | null | undefined
+): boolean {
+  return Boolean(
+    evidence &&
+      typeof evidence.sessionKind === 'string' &&
+      evidence.sessionKind.length > 0 &&
+      (typeof evidence.sourceRhythmicDayId === 'string' ||
+        evidence.sourceRhythmicDayId === null) &&
+      (typeof evidence.sourceCooldownId === 'string' || evidence.sourceCooldownId === null)
+  );
+}
+
+export type MeditationQueryStatus =
+  | 'available'
+  | 'not-installed'
+  | 'untrusted-signature'
+  | 'permission-denied'
+  | 'protocol-incompatible'
+  | 'session-missing'
+  | 'corrupt'
+  | 'query-failed'
+  | 'unavailable'
+  | 'legacy-ambiguous-null';
 
 export interface MeditationEvidenceResult {
   availability: MeditationProviderAvailability;
@@ -55,6 +90,10 @@ export interface MeditationEvidenceResult {
   evidence?: MeditationSessionEvidence;
   /** 'session-missing' / 'session-corrupt' are availability-neutral failures. */
   sessionMissing?: boolean;
+  /** True only when the three additive identity columns were returned. */
+  identityMetadataAvailable?: boolean;
+  /** Additive detailed reason; legacy bridges may omit it. */
+  queryStatus?: MeditationQueryStatus;
 }
 
 /** Wire payload sent to Meditation (Bundle fields of extra_request_payload). */
@@ -77,6 +116,8 @@ export interface MeditationEvidenceBridge {
     request: MeditationRecoveryRequestPayload
   ): Promise<boolean>;
   queryMeditationStatus(sessionId: string): Promise<MeditationSessionEvidence | null>;
+  /** Additive typed query; old bridges may omit it. */
+  queryMeditationStatusResult?(sessionId: string): Promise<MeditationEvidenceResult>;
 }
 
 /**
@@ -102,6 +143,30 @@ export function isVerifiedMeditationCompletion(input: {
     evidence.completedQualifiedSeconds >= requiredQualifiedSeconds &&
     Number.isFinite(evidence.requiredQualifiedSeconds) &&
     evidence.requiredQualifiedSeconds >= requiredQualifiedSeconds
+  );
+}
+
+/**
+ * The single trusted-completion rule for a cooldown restorative gate. On top
+ * of the base rule it requires additive identity metadata and binds the
+ * completion to the EXACT cooldown/gate that produced the request. A morning
+ * session can never satisfy a cooldown gate, and a stale completion from
+ * another gate can never leak across.
+ */
+export function isVerifiedCooldownMeditationCompletion(input: {
+  evidence?: MeditationSessionEvidence | null;
+  sessionId: string;
+  requiredQualifiedSeconds?: number;
+  sourceCooldownId: string;
+}): boolean {
+  const { evidence, sessionId, requiredQualifiedSeconds, sourceCooldownId } = input;
+  if (!isVerifiedMeditationCompletion({ evidence, sessionId, requiredQualifiedSeconds })) {
+    return false;
+  }
+  if (!evidence || !hasMeditationIdentityMetadata(evidence)) return false;
+  return (
+    evidence.sessionKind === 'COOLDOWN_RESTORATIVE' &&
+    evidence.sourceCooldownId === sourceCooldownId
   );
 }
 
@@ -140,6 +205,19 @@ export function parseMeditationSessionEvidence(
     'INVALID',
     'UNKNOWN',
   ];
+  const sessionKind = typeof raw.sessionKind === 'string' && raw.sessionKind.length > 0
+    ? raw.sessionKind
+    : undefined;
+  const sourceCooldownId = raw.sourceCooldownId === null
+    ? null
+    : typeof raw.sourceCooldownId === 'string' && raw.sourceCooldownId.length > 0
+    ? raw.sourceCooldownId
+    : undefined;
+  const sourceRhythmicDayId = raw.sourceRhythmicDayId === null
+    ? null
+    : typeof raw.sourceRhythmicDayId === 'string' && raw.sourceRhythmicDayId.length > 0
+    ? raw.sourceRhythmicDayId
+    : undefined;
   return {
     sessionId,
     protocolVersion,
@@ -150,5 +228,8 @@ export function parseMeditationSessionEvidence(
     completedQualifiedSeconds,
     completedAtEpochMs,
     lastUpdatedAtEpochMs,
+    ...(sessionKind !== undefined ? { sessionKind } : {}),
+    ...(sourceCooldownId !== undefined ? { sourceCooldownId } : {}),
+    ...(sourceRhythmicDayId !== undefined ? { sourceRhythmicDayId } : {}),
   };
 }

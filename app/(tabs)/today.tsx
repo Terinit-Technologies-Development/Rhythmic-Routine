@@ -13,6 +13,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, radii, shadows } from '../../src/theme/tokens';
 import { ScreenHeader } from '../../src/components/ScreenHeader';
 import { RhythmStateHeroCard } from '../../src/components/RhythmStateHeroCard';
+import { MorningMeditationCard } from '../../src/components/MorningMeditationCard';
 import { ReadingQuotaCard } from '../../src/components/ReadingQuotaCard';
 import { DayTimeline } from '../../src/components/DayTimeline';
 import { RiskGroupCard } from '../../src/components/RiskGroupCard';
@@ -97,6 +98,9 @@ export default function TodayScreen() {
 
         {/* Centerpiece Hero Countdown Card */}
         <RhythmStateHeroCard />
+
+        {/* Bound morning requirement entry point (self-hides once resolved) */}
+        <MorningMeditationCard />
 
         {/* Reading quota: today's verified reading and cooldown targets */}
         <ReadingQuotaCard />

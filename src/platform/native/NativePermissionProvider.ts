@@ -16,13 +16,18 @@ function getPlatformOS(): string {
 }
 
 export class NativePermissionProvider implements PermissionProvider {
+  constructor(
+    private readonly device: typeof RhythmDeviceModule = RhythmDeviceModule,
+    private readonly platformOS: () => string = getPlatformOS
+  ) {}
+
   async getStatus(): Promise<PermissionState> {
     try {
-      const nativeStatus = await RhythmDeviceModule.checkPermissions();
+      const nativeStatus = await this.device.checkPermissions();
       const usageAccess = nativeStatus.hasUsagePermission ? 'granted' : 'denied';
 
       let restrictionAuthorization: PermissionState['restrictionAuthorization'] = 'unsupported';
-      const os = getPlatformOS();
+      const os = this.platformOS();
       if (os === 'ios') {
         if (nativeStatus.familyControlsStatus === 'approved') {
           restrictionAuthorization = 'granted';
@@ -33,11 +38,23 @@ export class NativePermissionProvider implements PermissionProvider {
         restrictionAuthorization = nativeStatus.hasRestrictionPermission ? 'granted' : 'denied';
       }
 
-      // Capability truth requires BOTH the real native module and the
-      // Accessibility enforcement service. An unavailable bridge must never be
-      // presented as enforcement capable.
-      const moduleDiagnostics = await RhythmDeviceModule.getNativeModuleDiagnostics();
-      const nativeReady = moduleDiagnostics.available && nativeStatus.hasRestrictionPermission;
+      // Capability truth requires BOTH the real native module and a positively
+      // running Accessibility enforcement service. The enabled-setting bit can
+      // remain true while the service is not bound/running.
+      const moduleDiagnostics = await this.device.getNativeModuleDiagnostics();
+      let serviceRunning = false;
+      if (moduleDiagnostics.available && os === 'android') {
+        try {
+          const enforcement = await this.device.getEnforcementDiagnostics();
+          serviceRunning = enforcement?.serviceRunning === true;
+        } catch {
+          serviceRunning = false;
+        }
+      }
+      const nativeReady =
+        moduleDiagnostics.available &&
+        nativeStatus.hasRestrictionPermission &&
+        (os !== 'android' || serviceRunning);
 
       return {
         usageAccess,
@@ -55,7 +72,7 @@ export class NativePermissionProvider implements PermissionProvider {
 
   async requestUsageAccess(): Promise<void> {
     try {
-      await RhythmDeviceModule.requestUsagePermission();
+      await this.device.requestUsagePermission();
     } catch {
       // Ignored
     }
@@ -63,11 +80,11 @@ export class NativePermissionProvider implements PermissionProvider {
 
   async requestRestrictionAccess(): Promise<void> {
     try {
-      const os = getPlatformOS();
+      const os = this.platformOS();
       if (os === 'ios') {
-        await RhythmDeviceModule.requestFamilyControls();
+        await this.device.requestFamilyControls();
       } else if (os === 'android') {
-        await RhythmDeviceModule.requestRestrictionPermission();
+        await this.device.requestRestrictionPermission();
       }
     } catch {
       // Ignored

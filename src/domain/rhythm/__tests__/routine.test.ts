@@ -93,6 +93,70 @@ describe('Rhythm Engine — Routine Resolution', () => {
     assert.equal(isInsideWindow(mondayMorning, disabledWindows[0]), false);
   });
 
+  test('Empty activeDays means no active routine days, not all days', () => {
+    const noDays: RoutineWindow = { ...windows[0], activeDays: [] };
+    const mondayMorning = new Date('2026-08-31T07:15:00');
+    assert.equal(isInsideWindow(mondayMorning, noDays), false);
+    assert.equal(isInsideRoutineWindow(mondayMorning, [noDays], 'morning-buffer'), false);
+  });
+
+  test('Malformed persisted clock times leave the window inactive without an all-day lock', () => {
+    const malformedStart: RoutineWindow = {
+      ...windows[0],
+      startTime: 'not-a-time',
+      endTime: '23:59',
+    };
+    const malformedEnd: RoutineWindow = {
+      ...windows[0],
+      startTime: '06:30',
+      endTime: '99:99',
+    };
+    const mondayMidday = new Date('2026-08-31T12:00:00');
+
+    assert.equal(isInsideWindow(mondayMidday, malformedStart), false);
+    assert.equal(isInsideWindow(mondayMidday, malformedEnd), false);
+  });
+
+  test('Cross-midnight windows bind the morning part to the previous active day', () => {
+    const fridayEvening: RoutineWindow = {
+      ...windows[1],
+      activeDays: [5], // Friday only
+    };
+
+    // Friday 2026-09-04 initiated the window.
+    assert.equal(
+      isInsideWindow(new Date('2026-09-04T23:00:00'), fridayEvening),
+      true
+    );
+    // Saturday 02:00 still belongs to Friday's crossing window.
+    assert.equal(
+      isInsideWindow(new Date('2026-09-05T02:00:00'), fridayEvening),
+      true
+    );
+    // Sunday 02:00 belongs to Saturday, which is not active.
+    assert.equal(
+      isInsideWindow(new Date('2026-09-06T02:00:00'), fridayEvening),
+      false
+    );
+    // Monday 02:00 belongs to Sunday, which is not active.
+    assert.equal(
+      isInsideWindow(new Date('2026-09-07T02:00:00'), fridayEvening),
+      false
+    );
+  });
+
+  test('A disabled cross-midnight window is inactive in both halves', () => {
+    const disabledEvening: RoutineWindow = { ...windows[1], enabled: false };
+    assert.equal(
+      isInsideWindow(new Date('2026-09-04T23:00:00'), disabledEvening),
+      false
+    );
+    assert.equal(
+      isInsideWindow(new Date('2026-09-05T02:00:00'), disabledEvening),
+      false
+    );
+  });
+
   test('State priority: Evening Wind-Down > Morning Buffer > Cooldown > Risk Session > Available', () => {
     const windDownTime = new Date('2026-08-31T23:00:00');
     const morningTime = new Date('2026-08-31T07:00:00');

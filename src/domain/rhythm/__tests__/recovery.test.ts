@@ -309,5 +309,59 @@ describe('Pass 03: Recovery Engine & Re-entry Gate', () => {
       });
       assert.equal(typeof launched, 'boolean');
     });
+
+    test('detailed Reader result preserves denial and completion taxonomy', async () => {
+      const module = RhythmDeviceModule as unknown as {
+        queryRecoveryStatusDetailed?: (sessionId: string) => Promise<Record<string, unknown>>;
+      };
+      const original = module.queryRecoveryStatusDetailed;
+      try {
+        module.queryRecoveryStatusDetailed = async () => ({
+          availability: 'permission-denied',
+          queryStatus: 'permission-denied',
+        });
+        const client = new NativeRecoveryProviderClient();
+        const denied = await client.queryRecoveryStatusResult('bound-reader');
+        assert.equal(denied.availability, 'permission-denied');
+        assert.equal(denied.queryStatus, 'permission-denied');
+        assert.equal(denied.evidence, undefined);
+
+        module.queryRecoveryStatusDetailed = async (sessionId) => ({
+          availability: 'available',
+          queryStatus: 'available',
+          evidence: {
+            sessionId,
+            protocolVersion: 1,
+            status: 'COMPLETE',
+            activeSeconds: 1800,
+            qualifiedPages: 11,
+            completedAtEpochMs: 1234,
+          },
+        });
+        const complete = await client.queryRecoveryStatusResult('bound-reader');
+        assert.equal(complete.availability, 'available');
+        assert.equal(complete.queryStatus, 'available');
+        assert.equal(complete.evidence?.status, 'COMPLETE');
+
+        module.queryRecoveryStatusDetailed = async () => ({
+          availability: 'available',
+          queryStatus: 'available',
+          evidence: {
+            sessionId: 'other-session',
+            protocolVersion: 1,
+            status: 'COMPLETE',
+            activeSeconds: 1800,
+            qualifiedPages: 11,
+            completedAtEpochMs: 1234,
+          },
+        });
+        const corrupt = await client.queryRecoveryStatusResult('bound-reader');
+        assert.equal(corrupt.availability, 'unavailable');
+        assert.equal(corrupt.queryStatus, 'corrupt');
+        assert.equal(corrupt.evidence, undefined);
+      } finally {
+        module.queryRecoveryStatusDetailed = original;
+      }
+    });
   });
 });
